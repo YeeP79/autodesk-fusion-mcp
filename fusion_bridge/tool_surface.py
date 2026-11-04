@@ -15,6 +15,7 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+PARAMETERS = "parameters"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -370,6 +371,51 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": PARAMETERS,
+        "description": (
+            "Read the active design's parameters and what they drive, or set user parameter expressions. "
+            "action 'list' (default): user parameters with expression, value in the parameter's own unit, "
+            "comment, favorite, direct dependents and the features/sketches they drive (transitively, "
+            "depth-capped); include_model adds model parameters with owning feature/sketch and role. "
+            "Filter with name_contains / comment_contains; rows are capped by limit with truncation info. "
+            "Pass name for one parameter in detail: what it references and its full dependents tree. "
+            "action 'set': updates = [{name, expression}] for USER parameters only (model parameters are "
+            "refused). dry_run defaults to true and shows old -> new expression, unknown identifiers, cycles "
+            "and the dependents that would change. With dry_run false the expressions are set in order, "
+            "stopping at the first failure; the result says which applied and the timeline health. "
+            "Run the compute tool afterwards: API recompute does not always regenerate geometry like the UI."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "set"], "description": "Default 'list'."},
+                "include_model": {"type": "boolean",
+                                  "description": "list: also return model parameters (default false)."},
+                "name_contains": {"type": "string", "description": "list: case-insensitive name filter."},
+                "comment_contains": {"type": "string", "description": "list: case-insensitive comment filter."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000,
+                          "description": "list: maximum rows per section (default 100)."},
+                "name": {"type": "string", "description": "list: show this one parameter in detail."},
+                "depth": {"type": "integer", "minimum": 1, "maximum": 20,
+                          "description": "How many levels of dependents to follow (default 5)."},
+                "updates": {
+                    "type": "array",
+                    "description": "set: 1-50 user parameters to change, applied in this order.",
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "expression": {"type": "string",
+                                           "description": "Fusion expression, e.g. '1.75 in' or 'width / 2'."},
+                        },
+                        "required": ["name", "expression"],
+                    },
+                },
+                "dry_run": {"type": "boolean", "description": "set: preview only (default true)."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +437,7 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    parameters,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +459,7 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        PARAMETERS: parameters,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
