@@ -18,6 +18,7 @@ import adsk.fusion
 from .. import settings
 from ..lib import fusionAddInUtils as futil
 from ..lib import mcp_server as mcp_server_module
+from . import timeline_health
 from .dispatch import get_app
 
 
@@ -188,11 +189,17 @@ def run_python(arguments):
             "isError": False,
         }
     except Exception as exc:
+        error_text = str(exc)
+        tb = traceback.format_exc()
+        summary = timeline_health.rollback_summary(error_text)
+        if summary:
+            error_text = f"{summary}\n\n{timeline_health.truncate(error_text)}"
+            tb = timeline_health.truncate(tb)
         payload = {
             "stdout": stdout_buffer.getvalue(),
             "stderr": stderr_buffer.getvalue(),
-            "error": str(exc),
-            "traceback": traceback.format_exc(),
+            "error": error_text,
+            "traceback": tb,
             "success": False,
         }
         return {

@@ -28,6 +28,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "delete_script",
         "get_active_selection",
         "manage_annotations",
+        "timeline_health",
     }
 
     def test_all_expected_tools_present(self):

@@ -15,6 +15,7 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+TIMELINE_HEALTH = "timeline_health"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -370,6 +371,25 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": TIMELINE_HEALTH,
+        "description": (
+            "Report the active design's timeline health: marker position vs item count (warns if rolled back), "
+            "the active component (warns if not root), healthy/warning/error counts, and every non-healthy item "
+            "with index, name, entity type, health, Fusion's error/warning message and suppressed flag. "
+            "Run this when an edit is refused because Fusion rolled it back: API edits fail while the timeline "
+            "has broken features. suppress_broken with confirm: true suppresses error-state items earliest first "
+            "(skipping already-suppressed ones) and reports what it suppressed; this changes the design."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "suppress_broken": {"type": "boolean",
+                                    "description": "Suppress error-state timeline items (default false). Requires confirm: true."},
+                "confirm": {"type": "boolean", "description": "Must be true alongside suppress_broken."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +411,7 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    timeline_health,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +433,7 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        TIMELINE_HEALTH: timeline_health,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
