@@ -88,6 +88,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `delete_features` | Delete timeline items by name, with dependent checks and a dry-run plan (default) |
 | `parameters` | List parameters and what they drive; dry-run or set user parameter expressions |
 | `editable_files` | Personal Use: list editable designs against the limit, with hints on which to release (read-only) |
+| `project_tree` | Read-only cloud project tree: folders, files, versions, read-only flags and links resolved to paths |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |
