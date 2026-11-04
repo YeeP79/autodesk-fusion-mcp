@@ -18,6 +18,8 @@ MANAGE_ANNOTATIONS = "manage_annotations"
 COMPUTE = "compute"
 DOCUMENT_VERSIONS = "document_versions"
 RESTORE_VERSION = "restore_version"
+DOCUMENT_STATUS = "document_status"
+ACTIVATE_DOCUMENT = "activate_document"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -431,6 +433,34 @@ TOOL_DEFINITIONS = [
             "required": ["version_number", "confirm"],
         },
     },
+    {
+        "name": DOCUMENT_STATUS,
+        "description": (
+            "List every open document: name, whether it is active, document/product types, "
+            "isModified, isSaved and, when saved to the cloud, DataFile id, version number, "
+            "isReadOnly ('unknown' if unreadable), project, folder path and which open documents "
+            "reference it. Warns when the active document is read-only (saves will not stick, "
+            "common on Personal Use licences) or has unsaved changes. Only the active document "
+            "reads reliably; switch with activate_document."
+        ),
+        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+    },
+    {
+        "name": ACTIVATE_DOCUMENT,
+        "description": (
+            "Make an open document the active one. Give exactly one of name (document name such "
+            "as 'Frame v3', or the DataFile name 'Frame') or data_file_id (from document_status). "
+            "Ambiguous names are refused with the candidates and their folder paths. Returns the "
+            "newly active document and its warnings."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "name": {"type": "string", "description": "Open document or DataFile name."},
+                "data_file_id": {"type": "string", "description": "DataFile id from document_status."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -455,6 +485,8 @@ def build_tool_handlers(
     compute,
     document_versions,
     restore_version,
+    document_status,
+    activate_document,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -479,6 +511,8 @@ def build_tool_handlers(
         COMPUTE: compute,
         DOCUMENT_VERSIONS: document_versions,
         RESTORE_VERSION: restore_version,
+        DOCUMENT_STATUS: document_status,
+        ACTIVATE_DOCUMENT: activate_document,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")

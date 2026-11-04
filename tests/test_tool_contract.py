@@ -31,6 +31,8 @@ class ToolSurfaceTests(unittest.TestCase):
         "compute",
         "document_versions",
         "restore_version",
+        "document_status",
+        "activate_document",
     }
 
     def test_all_expected_tools_present(self):

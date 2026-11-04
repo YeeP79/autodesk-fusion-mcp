@@ -79,6 +79,8 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `document_versions` | List the active document's cloud versions, newest first |
 | `restore_version` | Promote an older version and reopen the active document on it (requires confirm) |
 | `manage_annotations` | List, claim, complete or release session-only selection annotations |
+| `document_status` | List open documents with active, modified, read-only and folder details |
+| `activate_document` | Make an open document active by name or DataFile id |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |

@@ -18,6 +18,7 @@ import adsk.fusion
 from .. import settings
 from ..lib import fusionAddInUtils as futil
 from ..lib import mcp_server as mcp_server_module
+from . import document_guard
 from .dispatch import get_app
 
 
@@ -183,6 +184,10 @@ def run_python(arguments):
             else [],
             "success": True,
         }
+        # Non-blocking: edits to a read-only document apply but never save.
+        warning = document_guard.active_document_warning()
+        if warning:
+            payload["warnings"] = [warning]
         return {
             "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
             "isError": False,
