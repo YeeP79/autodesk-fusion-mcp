@@ -28,6 +28,8 @@ class ToolSurfaceTests(unittest.TestCase):
         "delete_script",
         "get_active_selection",
         "manage_annotations",
+        "document_status",
+        "activate_document",
     }
 
     def test_all_expected_tools_present(self):
