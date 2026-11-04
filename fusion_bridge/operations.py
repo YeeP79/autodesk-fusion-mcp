@@ -8,6 +8,7 @@ import adsk.core
 
 from . import (
     annotations,
+    dialogs,
     doc_lookup,
     python_exec,
     script_store,
@@ -151,4 +152,5 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     delete_script=_wrap(script_store.delete_script),
     get_active_selection=_wrap(selection.get_active_selection),
     manage_annotations=_wrap(annotations.manage_annotations),
+    fusion_dialogs=_wrap(dialogs.fusion_dialogs),
 )

@@ -15,6 +15,12 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+FUSION_DIALOGS = "fusion_dialogs"
+
+# Tools the HTTP server thread runs inline instead of dispatching to Fusion's
+# main thread. Only for handlers that never call the Fusion API: they must
+# keep working while a modal dialog blocks the main thread.
+DIRECT_TOOL_NAMES = frozenset({FUSION_DIALOGS})
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -370,6 +376,28 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": FUSION_DIALOGS,
+        "description": (
+            "macOS only. List or dismiss modal dialogs that block Fusion's main thread "
+            "(symptom: other tools fail with 'Request cancelled' or 'Timed out waiting for the "
+            "Fusion main thread'). Runs outside the main thread via Accessibility, so it works "
+            "while Fusion is blocked. list (default) reports modal windows/sheets with title, "
+            "role/subrole and button names. dismiss acts on the first modal dialog (optionally "
+            "filtered by title_contains): it presses Cancel or Close, otherwise sends Escape; it "
+            "never presses Save, Delete, Yes, OK, Replace or Continue. Needs Accessibility "
+            "permission for Fusion."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "dismiss"],
+                           "description": "list (default) or dismiss."},
+                "title_contains": {"type": "string",
+                                   "description": "Only consider dialogs whose title contains this text (case-insensitive)."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +419,7 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    fusion_dialogs,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +441,7 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        FUSION_DIALOGS: fusion_dialogs,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
