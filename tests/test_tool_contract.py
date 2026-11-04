@@ -45,6 +45,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "rename_folder",
         "rename_file",
         "remove_empty_folders",
+        "sketch_profile",
     }
 
     def test_all_expected_tools_present(self):

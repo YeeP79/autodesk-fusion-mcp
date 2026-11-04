@@ -37,6 +37,7 @@ MOVE_FILES = "move_files"
 RENAME_FOLDER = "rename_folder"
 RENAME_FILE = "rename_file"
 REMOVE_EMPTY_FOLDERS = "remove_empty_folders"
+SKETCH_PROFILE = "sketch_profile"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -69,6 +70,9 @@ CAMERA_SCHEMA = {
     },
     "required": ["eye", "target", "up_vector", "projection"], "additionalProperties": False,
 }
+
+_COORD_SCHEMA = {"type": "array", "items": {"type": "number"},
+                 "description": "[x, y] in sketch space or [x, y, z] in model space."}
 
 # Each tool: {"name", "description", "inputSchema"}
 TOOL_DEFINITIONS = [
@@ -790,6 +794,59 @@ TOOL_DEFINITIONS = [
             "required": ["project"],
         },
     },
+    {
+        "name": SKETCH_PROFILE,
+        "description": (
+            "Build a closed sketch outline safely, or inspect a sketch's profiles. "
+            "closed_polyline: new sketch on sketch_plane (xy|xz|yz of the component) or plane_entity_token; "
+            "points are [x,y] in sketch space or, with space 'model', [x,y,z] in the component's model space "
+            "(mapped with Sketch.modelToSketchSpace; on XZ, sketch y is model -z). The loop closes itself; "
+            "every curve shares SketchPoints with its neighbors, so moving a vertex keeps the profile closed. "
+            "arcs replace segment i (points i -> i+1) with a 3-point arc via mid_point, or bulge "
+            "(DXF tan(sweep/4), + = counterclockwise about the sketch normal, 1 = semicircle). "
+            "The outline is refused before anything is created if it self-intersects, repeats a point, "
+            "has a zero-length segment, doubles back, encloses no area or (model space) leaves the plane. "
+            "Returns sketch and profile entity tokens, warns when more than one profile results, and stores "
+            "$sketch_profile_sketch / $sketch_profile_profile for follow-up calls. "
+            "profiles: for a sketch by name (in component) or sketch_entity_token, list every profile with "
+            "area, centroid (sketch space) and loop counts, the largest_profile, and with point the "
+            "profile_containing it. Areas are in units squared. Profile tokens change when the sketch recomputes."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "action": {"type": "string", "enum": ["closed_polyline", "profiles"]},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"],
+                          "description": "Units of every coordinate in and out."},
+                "space": {"type": "string", "enum": ["sketch", "model"],
+                          "description": "Coordinate space of points/mid_point/point (default sketch)."},
+                "sketch_plane": {"type": "string", "enum": ["xy", "xz", "yz"],
+                                 "description": "closed_polyline: construction plane of the component."},
+                "plane_entity_token": {"type": "string",
+                                       "description": "closed_polyline: construction plane or planar face token."},
+                "component": {"type": "string", "description": "Component name (default root)."},
+                "points": {"type": "array", "items": _COORD_SCHEMA,
+                           "description": "closed_polyline: 2-500 outline vertices; the loop closes itself."},
+                "arcs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {
+                            "index": {"type": "integer", "minimum": 0, "description": "Segment to replace."},
+                            "bulge": {"type": "number"},
+                            "mid_point": {**_COORD_SCHEMA, "description": "A point on the arc between its ends."},
+                        },
+                        "required": ["index"],
+                    },
+                },
+                "name": {"type": "string",
+                         "description": "closed_polyline: new sketch name (must be unused). profiles: sketch to inspect."},
+                "sketch_entity_token": {"type": "string", "description": "profiles: sketch to inspect."},
+                "point": {**_COORD_SCHEMA, "description": "profiles: report which profile contains this point."},
+            },
+            "required": ["action", "units"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -828,6 +885,7 @@ def build_tool_handlers(
     rename_folder,
     rename_file,
     remove_empty_folders,
+    sketch_profile,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -866,6 +924,7 @@ def build_tool_handlers(
         RENAME_FOLDER: rename_folder,
         RENAME_FILE: rename_file,
         REMOVE_EMPTY_FOLDERS: remove_empty_folders,
+        SKETCH_PROFILE: sketch_profile,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
