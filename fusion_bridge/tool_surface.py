@@ -15,6 +15,7 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+DELETE_FEATURES = "delete_features"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -370,6 +371,36 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": DELETE_FEATURES,
+        "description": (
+            "Delete timeline items (features, sketches, construction geometry, ...) by name in the ACTIVE "
+            "parametric design. Use this instead of BRepBody.deleteMe() (bodies regenerate from their "
+            "features) or deleting everything after a timeline index. Every name must resolve to exactly "
+            "one item, optionally scoped to a component; ambiguous or missing names refuse the whole call "
+            "with candidates. Items in linked (external) components are never touched. Later items that "
+            "consume a target (sketch profiles/paths, created bodies, construction geometry) are dependents: "
+            "the call refuses unless include_dependents=true, which deletes them too. Items that only use a "
+            "body the target modified are reported as possibly_affected and kept. dry_run defaults to true "
+            "and returns the plan (delete order, latest first) without changing anything. After deleting, "
+            "returns timeline health counts and items that went to error."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "names": {"type": "array", "items": {"type": "string"},
+                          "description": "Timeline item names exactly as shown in the timeline/browser."},
+                "component": {"type": "string",
+                              "description": "Only match items owned by this component (by name). Default: any "
+                                             "component of the active design except linked ones."},
+                "include_dependents": {"type": "boolean",
+                                       "description": "Also delete detected dependents (default false: refuse)."},
+                "dry_run": {"type": "boolean",
+                            "description": "Return the plan without deleting (default true)."},
+            },
+            "required": ["names"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +422,7 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    delete_features,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +444,7 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        DELETE_FEATURES: delete_features,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
