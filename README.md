@@ -89,6 +89,10 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `parameters` | List parameters and what they drive; dry-run or set user parameter expressions |
 | `editable_files` | Personal Use: list editable designs against the limit, with hints on which to release (read-only) |
 | `project_tree` | Read-only cloud project tree: folders, files, versions, read-only flags and links resolved to paths |
+| `move_files` | Move cloud files between folders/projects (dry run by default) with a before/after link check |
+| `rename_folder` | Rename a cloud folder, refusing case-insensitive sibling clashes; case-only renames go via a temp name |
+| `rename_file` | Rename a cloud file (dry run by default), refusing clashes and open files, with a link check |
+| `remove_empty_folders` | List truly empty cloud folders and delete them children-first (dry run by default) |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |

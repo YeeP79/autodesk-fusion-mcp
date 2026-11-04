@@ -41,6 +41,10 @@ class ToolSurfaceTests(unittest.TestCase):
         "parameters",
         "editable_files",
         "project_tree",
+        "move_files",
+        "rename_folder",
+        "rename_file",
+        "remove_empty_folders",
     }
 
     def test_all_expected_tools_present(self):
