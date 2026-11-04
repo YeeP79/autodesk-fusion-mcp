@@ -9,6 +9,7 @@ import adsk.core
 from . import (
     annotations,
     doc_lookup,
+    file_ops,
     project_tree,
     python_exec,
     script_store,
@@ -153,4 +154,8 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     get_active_selection=_wrap(selection.get_active_selection),
     manage_annotations=_wrap(annotations.manage_annotations),
     project_tree=_wrap(project_tree.project_tree),
+    move_files=_wrap(file_ops.move_files),
+    rename_folder=_wrap(file_ops.rename_folder),
+    rename_file=_wrap(file_ops.rename_file),
+    remove_empty_folders=_wrap(file_ops.remove_empty_folders),
 )

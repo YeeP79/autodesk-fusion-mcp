@@ -29,6 +29,10 @@ class ToolSurfaceTests(unittest.TestCase):
         "get_active_selection",
         "manage_annotations",
         "project_tree",
+        "move_files",
+        "rename_folder",
+        "rename_file",
+        "remove_empty_folders",
     }
 
     def test_all_expected_tools_present(self):

@@ -16,6 +16,10 @@ DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
 PROJECT_TREE = "project_tree"
+MOVE_FILES = "move_files"
+RENAME_FOLDER = "rename_folder"
+RENAME_FILE = "rename_file"
+REMOVE_EMPTY_FOLDERS = "remove_empty_folders"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -402,6 +406,88 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "name": MOVE_FILES,
+        "description": (
+            "Move cloud files (active hub) into another folder, optionally in another project. dry_run defaults to "
+            "true and only reports the plan; pass dry_run=false to move. Files are given as paths "
+            "('Folder/Sub/Name', case-insensitive) or ids ('urn:...'). Refuses, changing nothing, when a path "
+            "matches several files (lists path, version and id of each), when the target folder already has a "
+            "file of that name and type (ignoring case), or when a file is open in Fusion (close it yourself; "
+            "the tool never closes documents). A link check snapshots every moved file and every file linking "
+            "to or from it before and after, and reports changed paths and lost or unresolvable links."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "project": {"type": "string", "description": "Project (name or id) the files are in."},
+                "files": {"type": "array", "items": {"type": "string"},
+                          "description": "1 to 50 file paths inside the project (e.g. 'Chassis/Tube') or file ids."},
+                "to_folder": {"type": "string",
+                              "description": "Target folder path inside the target project ('' = its root)."},
+                "to_project": {"type": "string",
+                               "description": "Target project (name or id) for a cross-project move. Default: 'project'."},
+                "create_missing": {"type": "boolean",
+                                   "description": "Create missing folders on the to_folder path (default false)."},
+                "dry_run": {"type": "boolean", "description": "Only report the plan (default true)."},
+            },
+            "required": ["project", "files", "to_folder"],
+        },
+    },
+    {
+        "name": RENAME_FOLDER,
+        "description": (
+            "Rename a cloud folder. dry_run defaults to true. Folder names are case-insensitive in Fusion: "
+            "refuses when a sibling already has the new name in any case. A case-only rename of the same folder "
+            "is done in two steps through a temporary name, reported step by step (and restored if the second "
+            "step fails). Files inside are link-checked before and after."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "project": {"type": "string", "description": "Project name or id."},
+                "folder": {"type": "string", "description": "Path of the folder to rename, e.g. 'Chassis/drivetrain'."},
+                "new_name": {"type": "string", "description": "New folder name (a name, not a path)."},
+                "dry_run": {"type": "boolean", "description": "Only report the plan (default true)."},
+            },
+            "required": ["project", "folder", "new_name"],
+        },
+    },
+    {
+        "name": RENAME_FILE,
+        "description": (
+            "Rename a cloud file (name without extension). dry_run defaults to true. Refuses on ambiguous paths, "
+            "on a sibling file with the same name and type (ignoring case), and on files open in Fusion. "
+            "Links are checked before and after."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "project": {"type": "string", "description": "Project name or id."},
+                "file": {"type": "string", "description": "File path inside the project or file id ('urn:...')."},
+                "new_name": {"type": "string", "description": "New file name without extension."},
+                "dry_run": {"type": "boolean", "description": "Only report the plan (default true)."},
+            },
+            "required": ["project", "file", "new_name"],
+        },
+    },
+    {
+        "name": REMOVE_EMPTY_FOLDERS,
+        "description": (
+            "List truly empty cloud folders (no files, no non-empty subfolders) under a project or a folder "
+            "subtree; the start folder itself is never removed. dry_run defaults to true; with dry_run=false "
+            "they are deleted children first, each re-checked as still empty just before deletion."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "project": {"type": "string", "description": "Project name or id."},
+                "folder": {"type": "string", "description": "Only look inside this folder path. Default: project root."},
+                "dry_run": {"type": "boolean", "description": "Only list them (default true)."},
+            },
+            "required": ["project"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -424,6 +510,10 @@ def build_tool_handlers(
     get_active_selection,
     manage_annotations,
     project_tree,
+    move_files,
+    rename_folder,
+    rename_file,
+    remove_empty_folders,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -446,6 +536,10 @@ def build_tool_handlers(
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
         PROJECT_TREE: project_tree,
+        MOVE_FILES: move_files,
+        RENAME_FOLDER: rename_folder,
+        RENAME_FILE: rename_file,
+        REMOVE_EMPTY_FOLDERS: remove_empty_folders,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
