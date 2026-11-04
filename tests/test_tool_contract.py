@@ -35,6 +35,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "activate_document",
         "timeline_health",
         "fusion_dialogs",
+        "delete_features",
     }
 
     def test_all_expected_tools_present(self):
