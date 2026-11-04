@@ -82,6 +82,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `document_status` | List open documents with active, modified, read-only and folder details |
 | `activate_document` | Make an open document active by name or DataFile id |
 | `timeline_health` | Report broken timeline items, rolled-back marker and active component; optionally suppress broken items |
+| `fusion_dialogs` | macOS: list or dismiss (Cancel/Close/Escape only) modal dialogs blocking Fusion's main thread; runs off the main thread, needs Accessibility |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |
