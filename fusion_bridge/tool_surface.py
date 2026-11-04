@@ -28,6 +28,8 @@ FUSION_DIALOGS = "fusion_dialogs"
 # keep working while a modal dialog blocks the main thread.
 DIRECT_TOOL_NAMES = frozenset({FUSION_DIALOGS})
 DELETE_FEATURES = "delete_features"
+LIST_BODIES = "list_bodies"
+DESCRIBE_BODY = "describe_body"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -38,6 +40,8 @@ STANDARD_VIEWS = ["front", "back", "left", "right", "top", "bottom", "isometric"
                   "iso_top_left", "iso_top_right", "iso_bottom_left", "iso_bottom_right"]
 PROJECTIONS = ["orthographic", "perspective", "perspective_with_ortho_faces"]
 CLEAN_VIEW_CATEGORIES = ["sketches", "construction", "origin", "joints", "canvases", "decals"]
+UNITS_SCHEMA = {"type": "string", "enum": ["in", "cm", "mm"],
+                "description": "Length unit for output (default: in). Areas/volumes use its square/cube."}
 POINT_SCHEMA = {
     "type": "object", "properties": {axis: {"type": "number", "minimum": -1e12, "maximum": 1e12} for axis in ("x", "y", "z")},
     "required": ["x", "y", "z"], "additionalProperties": False,
@@ -550,6 +554,48 @@ TOOL_DEFINITIONS = [
             "required": ["names"],
         },
     },
+    {
+        "name": LIST_BODIES,
+        "description": (
+            "List B-Rep bodies in the active design: occurrence fullPathName ('root' for root bodies), "
+            "component, linked (referenced component), body name and body_index, visibility of body and "
+            "owning occurrence, solid vs surface, volume (in3 and cm3), area, and world-coordinate bounding box. "
+            "Hidden bodies are excluded by default because they are often stale reference geometry. "
+            "Filters are case-insensitive substrings. Output is capped with total_matched and truncated."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "include_hidden": {"type": "boolean", "description": "Include hidden bodies and bodies in hidden occurrences (default: false)."},
+                "name_contains": {"type": "string", "description": "Only bodies whose name contains this text."},
+                "component_contains": {"type": "string", "description": "Only bodies whose component name contains this text."},
+                "units": UNITS_SCHEMA,
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Row cap (default: 200)."},
+            },
+        },
+    },
+    {
+        "name": DESCRIBE_BODY,
+        "description": (
+            "Describe one body (identify it with occurrence_path and body_name from list_bodies; add body_index "
+            "when names repeat). Ambiguous or missing matches are refused with candidates. Reports face counts by "
+            "surface type, edge/shell/lump counts, isSolid, center of mass and principal axes, and analytic faces "
+            "in world coordinates, largest first: cylinders (diameter, axis, length along axis, sweep, concave "
+            "bore vs convex boss, creating feature), planes (point, outward normal, area), cones, tori (major/minor "
+            "radius) and spheres. Fillet faces can look like bores by radius: check concavity, sweep_deg and created_by."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "occurrence_path": {"type": "string", "description": "Occurrence fullPathName from list_bodies, or 'root'."},
+                "body_name": {"type": "string"},
+                "body_index": {"type": "integer", "minimum": 0, "description": "Index of the body within its occurrence (from list_bodies)."},
+                "units": UNITS_SCHEMA,
+                "max_faces": {"type": "integer", "minimum": 1, "maximum": 500, "description": "Cap per face type (default: 25)."},
+            },
+            "required": ["occurrence_path", "body_name"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -579,6 +625,8 @@ def build_tool_handlers(
     timeline_health,
     fusion_dialogs,
     delete_features,
+    list_bodies,
+    describe_body,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -608,6 +656,8 @@ def build_tool_handlers(
         TIMELINE_HEALTH: timeline_health,
         FUSION_DIALOGS: fusion_dialogs,
         DELETE_FEATURES: delete_features,
+        LIST_BODIES: list_bodies,
+        DESCRIBE_BODY: describe_body,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")

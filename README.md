@@ -75,6 +75,8 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `get_viewport` | Read camera state and viewport dimensions |
 | `set_viewport` | Standard views, projection, orbit, pan, zoom, fit and camera restoration |
 | `get_active_selection` | Get objects currently selected in the viewport |
+| `list_bodies` | List B-Rep bodies with occurrence path, visibility, volume, area and world bounding box |
+| `describe_body` | One body's surface-type counts, analytic faces (bores vs bosses, planes, tori), center of mass |
 | `compute` | Run Fusion's Compute All / Assembly Compute and wait for it to finish |
 | `document_versions` | List the active document's cloud versions, newest first |
 | `restore_version` | Promote an older version and reopen the active document on it (requires confirm) |
