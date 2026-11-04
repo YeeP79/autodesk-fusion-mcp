@@ -16,6 +16,8 @@ DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
 COMPUTE = "compute"
+DOCUMENT_VERSIONS = "document_versions"
+RESTORE_VERSION = "restore_version"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -390,6 +392,45 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "name": DOCUMENT_VERSIONS,
+        "description": (
+            "List versions of the active document's cloud file, newest first: version number, "
+            "date created (ISO 8601 UTC), description, milestone name and creator when available. "
+            "is_current marks the version loaded in the open document; is_latest the newest. Read-only."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500,
+                          "description": "Maximum versions to return (default: 20)."},
+                "description": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": RESTORE_VERSION,
+        "description": (
+            "Restore an older version of the active document. Promotes that version to a new latest "
+            "version (history is kept), closes the document without saving and reopens it so the "
+            "restored content is loaded and active. Closing also closes documents it links. "
+            "Refuses unless confirm is true (the refusal describes what would happen), and refuses when "
+            "the document or other open documents have unsaved changes unless discard_unsaved is true. "
+            "Returns the new version number."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "version_number": {"type": "integer", "minimum": 1,
+                                   "description": "Version to restore, from document_versions."},
+                "confirm": {"type": "boolean", "description": "Must be true to restore."},
+                "discard_unsaved": {"type": "boolean",
+                                    "description": "Discard unsaved changes instead of refusing (default: false)."},
+                "description": {"type": "string"},
+            },
+            "required": ["version_number", "confirm"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -412,6 +453,8 @@ def build_tool_handlers(
     get_active_selection,
     manage_annotations,
     compute,
+    document_versions,
+    restore_version,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -434,6 +477,8 @@ def build_tool_handlers(
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
         COMPUTE: compute,
+        DOCUMENT_VERSIONS: document_versions,
+        RESTORE_VERSION: restore_version,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")

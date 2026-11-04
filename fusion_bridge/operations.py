@@ -10,6 +10,7 @@ from . import (
     annotations,
     compute,
     doc_lookup,
+    document_versions,
     python_exec,
     script_store,
     selection,
@@ -152,5 +153,7 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     delete_script=_wrap(script_store.delete_script),
     get_active_selection=_wrap(selection.get_active_selection),
     manage_annotations=_wrap(annotations.manage_annotations),
+    document_versions=_wrap(document_versions.document_versions),
+    restore_version=_wrap(document_versions.restore_version),
     compute=_wrap(compute.compute),
 )

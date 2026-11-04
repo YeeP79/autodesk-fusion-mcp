@@ -29,6 +29,8 @@ class ToolSurfaceTests(unittest.TestCase):
         "get_active_selection",
         "manage_annotations",
         "compute",
+        "document_versions",
+        "restore_version",
     }
 
     def test_all_expected_tools_present(self):
