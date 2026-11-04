@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import _fusion_test_bootstrap  # noqa: F401
-from fusion_bridge import viewport, tool_surface
+from fusion_bridge import clean_view, viewport, tool_surface
 from lib import png_image
 
 
@@ -263,6 +263,184 @@ class ViewportTests(unittest.TestCase):
     def test_schema_and_implementation_have_same_views_and_projections(self):
         self.assertEqual(set(tool_surface.STANDARD_VIEWS),set(viewport.VIEW_NAMES))
         self.assertEqual(set(tool_surface.PROJECTIONS),set(viewport.PROJECTIONS))
+
+
+class Flags:
+    """Fake Fusion object holding boolean visibility flags; optional failing attributes."""
+    def __init__(self, name='', fail_set=(), fail_restore=(), **flags):
+        object.__setattr__(self, '_flags', dict(flags))
+        object.__setattr__(self, '_fail_set', set(fail_set))
+        object.__setattr__(self, '_fail_restore', set(fail_restore))
+        object.__setattr__(self, 'name', name)
+        object.__setattr__(self, 'writes', [])
+
+    def __getattr__(self, attribute):
+        flags = object.__getattribute__(self, '_flags')
+        if attribute in flags:
+            return flags[attribute]
+        raise AttributeError(attribute)
+
+    def __setattr__(self, attribute, value):
+        if attribute in self._fail_set and value is False:
+            raise RuntimeError('referenced component is read-only')
+        if attribute in self._fail_restore and value is True:
+            raise RuntimeError('restore refused')
+        self.writes.append((attribute, value))
+        self._flags[attribute] = value
+
+
+def visibility(**overrides):
+    flags = {a: True for attrs in clean_view.DESIGN_FLAGS.values() for a in attrs}
+    flags.update(overrides)
+    return Flags(**flags)
+
+
+def component(name, **overrides):
+    flags = {a: True for attrs in clean_view.FOLDER_FLAGS.values() for a in attrs}
+    flags.update(overrides)
+    return Flags(name, **flags)
+
+
+class FakeDesign:
+    def __init__(self, visibility, root, components=(), linked=()):
+        self.objectVisibility = visibility
+        self.rootComponent = root
+        self.allComponents = [root, *components]
+        object.__setattr__(root, 'allOccurrences', [SimpleNamespace(component=c) for c in (*components, *components, *linked)])
+
+
+def snapshot(*objects):
+    return [dict(o._flags) for o in objects]
+
+
+class CleanViewPlanTests(unittest.TestCase):
+    def setUp(self):
+        self.vis = visibility(isOriginPointsVisible=False)
+        self.root, self.sub, self.linked = component('Root'), component('Sub', isDecalFolderLightBulbOn=False), component('Linked')
+        self.design = FakeDesign(self.vis, self.root, [self.sub], [self.linked])
+
+    def test_plan_uses_object_visibility_and_component_folders_without_bodies(self):
+        toggles = clean_view.plan(self.design)
+        design_attrs = {a for _, _, t, a in toggles if t is self.vis}
+        self.assertEqual(design_attrs, {a for attrs in clean_view.DESIGN_FLAGS.values() for a in attrs})
+        folder = [(t.name, a) for _, _, t, a in toggles if t is not self.vis]
+        # Components deduplicated; linked component reached via occurrences; only canvases/decals.
+        self.assertEqual(sorted(folder), sorted((n, a) for n in ('Root', 'Sub', 'Linked')
+                                                for a in ('isCanvasFolderLightBulbOn', 'isDecalFolderLightBulbOn')))
+        self.assertFalse(any('Bodies' in a for *_, a in toggles))
+
+    def test_folder_fallback_without_object_visibility(self):
+        self.design.objectVisibility = None
+        attrs = {a for _, _, t, a in clean_view.plan(self.design, ('canvases',)) if t is self.root}
+        self.assertEqual(attrs, {a for c, attrs in clean_view.FOLDER_FLAGS.items() if c != 'canvases' for a in attrs})
+
+    def test_keep_and_validation(self):
+        categories = {c for c, *_ in clean_view.plan(self.design, ('sketches', 'joints'))}
+        self.assertEqual(categories, {'construction', 'origin', 'canvases', 'decals'})
+        self.assertEqual(clean_view.validate_keep(['joints', 'sketches']), ('sketches', 'joints'))
+        for bad in ('sketches', ['bodies'], [1], None):
+            with self.subTest(keep=bad):
+                with self.assertRaises(ValueError):
+                    clean_view.validate_keep(bad)
+        with self.assertRaises(ValueError):
+            clean_view.plan(None)
+
+    def test_hide_then_restore_returns_exact_prior_state(self):
+        before = snapshot(self.vis, self.root, self.sub, self.linked)
+        cleaner = clean_view.CleanView(clean_view.plan(self.design))
+        cleaner.hide()
+        self.assertTrue(all(v is False for v in self.vis._flags.values()))
+        self.assertTrue(self.root.isSketchFolderLightBulbOn)  # Object Visibility covers sketches; folders untouched.
+        self.assertFalse(self.vis.isSketchesVisible)
+        self.assertFalse(self.linked.isCanvasFolderLightBulbOn)
+        # Already-hidden flags are never written.
+        self.assertNotIn(('isOriginPointsVisible', False), self.vis.writes)
+        self.assertNotIn(('isDecalFolderLightBulbOn', False), self.sub.writes)
+        self.assertEqual(cleaner.restore(), [])
+        self.assertEqual(snapshot(self.vis, self.root, self.sub, self.linked), before)
+        report = cleaner.report()
+        self.assertEqual(report['hidden'], list(clean_view.CATEGORIES))
+        self.assertTrue(report['restored'])
+        self.assertNotIn('warnings', report)
+
+    def test_unwritable_flag_is_skipped_with_warning_and_failed_restore_is_named(self):
+        locked = Flags('Locked', fail_set={'isCanvasFolderLightBulbOn'}, fail_restore={'isDecalFolderLightBulbOn'},
+                       isCanvasFolderLightBulbOn=True, isDecalFolderLightBulbOn=True)
+        design = FakeDesign(visibility(), component('Root'), linked=[locked])
+        cleaner = clean_view.CleanView(clean_view.plan(design, ('sketches',)), ('sketches',))
+        cleaner.hide()
+        self.assertTrue(locked.isCanvasFolderLightBulbOn)
+        self.assertEqual(cleaner.restore(), ["component 'Locked'.isDecalFolderLightBulbOn: restore refused"])
+        report = cleaner.report()
+        self.assertFalse(report['restored'])
+        self.assertEqual(report['kept'], ['sketches'])
+        self.assertIn("could not hide component 'Locked'.isCanvasFolderLightBulbOn", report['warnings'][0])
+        self.assertIn('RESTORE FAILED', report['warnings'][-1])
+        self.assertIn('isDecalFolderLightBulbOn', report['warnings'][-1])
+
+
+class CleanViewCaptureTests(ViewportTests):
+    def setUp(self):
+        super().setUp()
+        self.vis, self.root, self.sub = visibility(), component('Root'), component('Sub', isCanvasFolderLightBulbOn=False)
+        self.app.activeProduct = FakeDesign(self.vis, self.root, [self.sub])
+        self.seen = []
+        save = self.vp.saveAsImageFile
+
+        def spy(path, width, height):
+            self.seen.append(snapshot(self.vis, self.root, self.sub))
+            return save(path, width, height)
+        self.vp.saveAsImageFile = spy
+
+    def test_clean_capture_hides_during_save_and_restores_after_every_outcome(self):
+        for fail in (False, True, 'exception'):
+            with self.subTest(failure=fail):
+                before = snapshot(self.vis, self.root, self.sub)
+                camera = self.result(viewport.get_viewport({}))
+                self.vp.fail_save = fail
+                result = viewport.capture({'clean_view': True, 'clean_view_keep': ['joints'], 'fit': True})
+                self.assertEqual(result['isError'], bool(fail))
+                during = self.seen[-1]
+                self.assertFalse(during[0]['isSketchesVisible'])
+                self.assertTrue(during[0]['isJointsVisible'])
+                self.assertFalse(during[1]['isCanvasFolderLightBulbOn'])
+                self.assertEqual(snapshot(self.vis, self.root, self.sub), before)
+                self.assertEqual(self.result(viewport.get_viewport({})), camera)
+                report = json.loads(result['content'][-1]['text'])['clean_view']
+                self.assertEqual(report['hidden'], ['sketches', 'construction', 'origin', 'canvases', 'decals'])
+                self.assertEqual(report['kept'], ['joints'])
+                self.assertTrue(report['restored'])
+                if not fail:
+                    self.assertEqual(result['content'][0]['type'], 'image')
+
+    def test_plain_capture_leaves_flags_alone_and_adds_no_report(self):
+        result = viewport.capture({})
+        self.assertEqual(len(result['content']), 1)
+        self.assertEqual(self.vis.writes + self.root.writes, [])
+
+    def test_invalid_clean_view_arguments_touch_nothing(self):
+        for args in ({'clean_view': 'yes'}, {'clean_view': True, 'clean_view_keep': ['bodies']},
+                     {'clean_view_keep': ['sketches']}, {'clean_view': True, 'clean_view_keep': 'sketches'}):
+            with self.subTest(args=args):
+                self.assertTrue(viewport.capture(args)['isError'])
+        self.assertEqual(self.vis.writes + self.root.writes, [])
+        self.app.activeProduct = SimpleNamespace()  # e.g. a drawing, not a design
+        self.assertIn('active Fusion design', viewport.capture({'clean_view': True})['content'][0]['text'])
+        self.assertEqual(self.vp.saved, [])
+
+    def test_failed_restore_keeps_image_and_names_flag(self):
+        self.vis._fail_restore.add('isSketchesVisible')
+        result = viewport.capture({'clean_view': True})
+        self.assertFalse(result['isError'])
+        report = json.loads(result['content'][-1]['text'])['clean_view']
+        self.assertFalse(report['restored'])
+        self.assertIn('objectVisibility.isSketchesVisible', report['warnings'][-1])
+        self.assertTrue(self.vis.isUserWorkPlanesVisible)
+
+    def test_schema_lists_clean_view_categories(self):
+        props = next(t for t in tool_surface.TOOL_DEFINITIONS if t['name'] == 'capture_viewport')['inputSchema']['properties']
+        self.assertEqual(props['clean_view']['type'], 'boolean')
+        self.assertEqual(tuple(props['clean_view_keep']['items']['enum']), clean_view.CATEGORIES)
 
 
 if __name__=='__main__':

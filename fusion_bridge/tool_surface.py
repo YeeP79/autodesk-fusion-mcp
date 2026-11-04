@@ -30,6 +30,7 @@ RESOURCE_DESCRIPTION = "Workflow guidance, API patterns, naming rules, and model
 STANDARD_VIEWS = ["front", "back", "left", "right", "top", "bottom", "isometric",
                   "iso_top_left", "iso_top_right", "iso_bottom_left", "iso_bottom_right"]
 PROJECTIONS = ["orthographic", "perspective", "perspective_with_ortho_faces"]
+CLEAN_VIEW_CATEGORIES = ["sketches", "construction", "origin", "joints", "canvases", "decals"]
 POINT_SCHEMA = {
     "type": "object", "properties": {axis: {"type": "number", "minimum": -1e12, "maximum": 1e12} for axis in ("x", "y", "z")},
     "required": ["x", "y", "z"], "additionalProperties": False,
@@ -146,7 +147,10 @@ TOOL_DEFINITIONS = [
             "Capture the active Fusion viewport as a PNG. Optional view and fit are temporary: "
             "the original camera is restored even on failure. Background can be viewport, "
             "transparent, or #RRGGBB. Crop uses pixels in the rendered image, origin top-left. "
-            "Returns only the cropped region when crop is provided; limit 16 megapixels."
+            "Returns only the cropped region when crop is provided; limit 16 megapixels. "
+            "clean_view temporarily hides sketches, construction geometry, origin, joints, canvases "
+            "and decals (never bodies) and restores each flag afterwards, even on failure; a text item "
+            "reports which categories were hidden and whether all were restored."
         ),
         "inputSchema": {
             "type": "object",
@@ -165,6 +169,12 @@ TOOL_DEFINITIONS = [
                 "fit": {"type": "boolean", "description": "Temporarily fit all graphics before capture (default: false)."},
                 "background": {"type": "string", "description": "viewport (default), transparent, or a solid #RRGGBB color."},
                 "anti_aliasing": {"type": "boolean", "description": "Smooth rendered edges (default: true)."},
+                "clean_view": {"type": "boolean", "description": "Temporarily hide non-body clutter for this capture (default: false)."},
+                "clean_view_keep": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": list(CLEAN_VIEW_CATEGORIES)},
+                    "description": "Categories to leave visible when clean_view is true.",
+                },
                 "crop": {
                     "type": "object", "description": "Rectangle inside the rendered image; output dimensions equal crop width/height.",
                     "properties": {k: {"type": "integer", "minimum": 0 if k in ("x", "y") else 1, "maximum": 8192}
