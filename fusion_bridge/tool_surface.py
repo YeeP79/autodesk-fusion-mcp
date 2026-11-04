@@ -15,6 +15,7 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+COMPUTE = "compute"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -370,6 +371,25 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": COMPUTE,
+        "description": (
+            "Run Fusion's own Compute All (scope 'all') or Assembly Compute (scope 'assembly') command "
+            "and wait for it to finish. Use after API edits to parameters, sketches or joints: "
+            "Design.computeAll() does not always regenerate geometry or re-solve joint positions "
+            "the way the UI command does. Returns elapsed time and a timeline health summary "
+            "(healthy/warning/error counts and the names of features in error)."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "scope": {"type": "string", "enum": ["all", "assembly"],
+                          "description": "'all' = Modify > Compute All (default); 'assembly' = Assembly Compute."},
+                "timeout_seconds": {"type": "number", "minimum": 1, "maximum": 3600,
+                                    "description": "How long to wait for the compute to finish (default 300)."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +411,7 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    compute,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +433,7 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        COMPUTE: compute,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")

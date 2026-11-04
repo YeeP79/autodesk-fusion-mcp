@@ -28,6 +28,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "delete_script",
         "get_active_selection",
         "manage_annotations",
+        "compute",
     }
 
     def test_all_expected_tools_present(self):
@@ -127,6 +128,37 @@ class OperationsRegistryTests(unittest.TestCase):
                 self.assertTrue(
                     callable(handler), f"Handler for {name} is not callable"
                 )
+
+
+class ComputeToolTests(unittest.TestCase):
+    """compute tool schema and argument validation (no Fusion needed)."""
+
+    def _schema(self):
+        return next(t for t in tool_surface.TOOL_DEFINITIONS if t["name"] == "compute")["inputSchema"]
+
+    def test_scope_enum(self):
+        self.assertEqual(self._schema()["properties"]["scope"]["enum"], ["all", "assembly"])
+
+    def test_no_required_fields(self):
+        self.assertNotIn("required", self._schema())
+
+    def test_rejects_unknown_scope(self):
+        from fusion_bridge import compute
+        result = compute.compute({"scope": "everything"})
+        self.assertTrue(result["isError"])
+        self.assertIn("scope", result["content"][0]["text"])
+
+    def test_rejects_bad_timeout(self):
+        from fusion_bridge import compute
+        for bad in (0, -5, "10", True):
+            with self.subTest(timeout=bad):
+                result = compute.compute({"timeout_seconds": bad})
+                self.assertTrue(result["isError"])
+                self.assertIn("timeout_seconds", result["content"][0]["text"])
+
+    def test_command_ids(self):
+        from fusion_bridge import compute
+        self.assertEqual(compute.COMMAND_IDS, {"all": "FusionComputeAllCommand", "assembly": "XRefsBUComputeCmd"})
 
 
 if __name__ == "__main__":
