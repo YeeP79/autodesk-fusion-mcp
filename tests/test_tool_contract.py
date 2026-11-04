@@ -39,6 +39,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "list_bodies",
         "describe_body",
         "parameters",
+        "editable_files",
     }
 
     def test_all_expected_tools_present(self):

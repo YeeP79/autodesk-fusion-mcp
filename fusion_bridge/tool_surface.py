@@ -31,6 +31,7 @@ DELETE_FEATURES = "delete_features"
 LIST_BODIES = "list_bodies"
 DESCRIBE_BODY = "describe_body"
 PARAMETERS = "parameters"
+EDITABLE_FILES = "editable_files"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -642,6 +643,35 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "name": EDITABLE_FILES,
+        "description": (
+            "Read-only report for Fusion for Personal Use (limited number of editable documents). "
+            "Walks the active hub's projects (or one project) and lists every Fusion design that is "
+            "editable, the count against the limit (from Data.personalUseLimits when available), path, "
+            "version and heuristic 'safe to release' hints: not open, not changed for stale_days, "
+            "and which designs link it. Never changes anything: the API cannot toggle read-only; "
+            "the user does it in the Data Panel (right-click > Make Read-Only / Make Editable). "
+            "The cloud walk can be slow; capped by max_files/max_depth, elapsed time reported."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "project": {"type": "string",
+                            "description": "Only walk projects whose name matches (case-insensitive; exact match wins, else substring)."},
+                "editable_limit": {"type": "integer", "minimum": 1,
+                                   "description": "Override the editable limit (default: personalUseLimits.maxEditableFileCount, else 10)."},
+                "max_files": {"type": "integer", "minimum": 1, "maximum": 20000,
+                              "description": "Stop the walk after this many design files (default 500)."},
+                "max_depth": {"type": "integer", "minimum": 0, "maximum": 64,
+                              "description": "Folder levels below each project root to walk (default 8)."},
+                "stale_days": {"type": "number", "minimum": 0,
+                               "description": "A file unchanged for this many days counts as stale (default 14)."},
+                "include_read_only": {"type": "boolean",
+                                      "description": "Also list read-only designs found by the walk (default false)."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -674,6 +704,7 @@ def build_tool_handlers(
     list_bodies,
     describe_body,
     parameters,
+    editable_files,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -706,6 +737,7 @@ def build_tool_handlers(
         LIST_BODIES: list_bodies,
         DESCRIBE_BODY: describe_body,
         PARAMETERS: parameters,
+        EDITABLE_FILES: editable_files,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")

@@ -87,6 +87,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `fusion_dialogs` | macOS: list or dismiss (Cancel/Close/Escape only) modal dialogs blocking Fusion's main thread; runs off the main thread, needs Accessibility |
 | `delete_features` | Delete timeline items by name, with dependent checks and a dry-run plan (default) |
 | `parameters` | List parameters and what they drive; dry-run or set user parameter expressions |
+| `editable_files` | Personal Use: list editable designs against the limit, with hints on which to release (read-only) |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |
@@ -185,6 +186,49 @@ Edits use revision checks, so an old UI cannot overwrite a newer annotation.
 If captured geometry is missing, claiming it is rejected; edit the annotation
 and capture its selection again. Annotations do not freeze geometry or prevent
 ordinary modeling changes by the user or other agents.
+
+### Editable files (Fusion for Personal Use)
+
+Personal Use allows a limited number of editable documents (10 at the time of
+writing); every other document opens read-only and saving it does nothing.
+`editable_files` reports where you stand without changing anything:
+
+- `editable_count`, `editable_limit` and `slots_free`. The count and limit
+  come from `Data.personalUseLimits` (`editableFileCount`,
+  `maxEditableFileCount`) when Fusion reports them; `editable_limit` overrides
+  the limit, and 10 is the fallback.
+- `editable_files`: each editable design with its path
+  (`project/folder/.../name`), version, and `safe_to_release_hints`. Files in
+  `personalUseLimits.editableFiles` that the walk did not reach (another hub,
+  the `project` filter, or the caps) are still listed, marked `outside_walk`.
+- Hints are heuristics: `likely_safe` is true when the file is not open and
+  has not changed for `stale_days` (default 14). Open documents, and above
+  all open documents with unsaved changes, are listed as `blockers`.
+  `parent_references` names designs that link the file; they still load it
+  when it is read-only, but Edit In Place on it from those assemblies needs it
+  editable.
+- The walk covers the active hub only (`app.data.dataProjects`). It is a
+  cloud walk and can take a while: it stops after `max_files` designs
+  (default 500) and `max_depth` folder levels (default 8), reports
+  `walk.truncated`, and returns `elapsed_seconds`.
+
+**Switching a file between editable and read-only must be done by you**, in
+the Data Panel (right-click the file, **Make Editable** / **Make Read-Only**). What the installed
+API offers (checked against the Fusion API definitions shipped with the app,
+`Api/Python/packages/adsk/core.py` and the C++ headers):
+
+- `DataFile.isReadOnly`: read-only property, no setter. Also true when
+  someone else is editing the file.
+- `Data.personalUseLimits` -> `PersonalUseLimits` with `maxEditableFileCount`,
+  `editableFileCount` and `editableFiles`, all read-only (`null` on paid
+  licences).
+- No `DataFile` or `Document` method makes a file editable or read-only.
+- Fusion has UI commands `ActiveDocumentActivateCommand` ("Make Editable") and
+  `ActiveDocumentDeactivateCommand` ("Make Read-Only") for the active
+  document, and `ActiveDocumentsShowActiveDocumentsListCommand` ("My Editable
+  Documents"). They are not API members: they act on the active document
+  only, Make Read-Only opens a confirmation dialog (which blocks the bridge),
+  and they are undocumented, so this add-in deliberately does not run them.
 
 ## Architecture
 
