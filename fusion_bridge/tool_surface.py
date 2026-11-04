@@ -15,6 +15,7 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+CHECK_SOLIDS = "check_solids"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -43,6 +44,13 @@ CAMERA_SCHEMA = {
                               "description": "Required for perspective cameras only; angle in degrees."},
     },
     "required": ["eye", "target", "up_vector", "projection"], "additionalProperties": False,
+}
+
+BODY_REF_SCHEMA = {
+    "type": "object",
+    "properties": {"occurrence_path": {"type": "string", "description": "Occurrence fullPathName, or 'root'."},
+                   "body_name": {"type": "string"}},
+    "required": ["occurrence_path", "body_name"], "additionalProperties": False,
 }
 
 # Each tool: {"name", "description", "inputSchema"}
@@ -370,6 +378,63 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": CHECK_SOLIDS,
+        "description": (
+            "Geometry sanity check to run after modeling features (read-only). Checks: validity "
+            "(isSolid, volume > 0, faces below min_face_area, edges below min_edge_length), slivers "
+            "(long thin faces whose mean width 2*area/perimeter is below sliver_width, and bodies whose "
+            "face count is far above the median of the checked bodies: twisted lofts), lumps (several "
+            "lumps or extra shells in one body: union/base-feature artifacts), interference (overlap "
+            "volume per body pair) and volume_change (diff against a baseline). Default checks: all "
+            "except interference (passing interference_pairs adds it). Default bodies: every visible "
+            "body in the active design; non-solid bodies are flagged and skipped by interference. "
+            "volume_change: a call without baseline_token snapshots every body in the design (hidden "
+            "too) and returns baseline_token; call again after the feature with that token to list "
+            "bodies whose volume or face count changed, appeared or disappeared. Pass edited_component "
+            "(component name or occurrence path) so changes elsewhere, such as a cut that also removed "
+            "material from another component, are flagged as outside_edited_component. Result: ok, "
+            "summary (counts by severity and type) first, then problems sorted by severity and capped "
+            "at max_details. Thresholds are in the chosen units (defaults: 1e-4 in^2, 0.001 in, "
+            "0.002 in, 1e-6 in^3)."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "bodies": {"type": "array", "items": BODY_REF_SCHEMA,
+                           "description": "Only check these bodies (hidden ones included; at most 500). "
+                                          "Default: all visible bodies."},
+                "checks": {"type": "array",
+                           "items": {"type": "string",
+                                     "enum": ["validity", "slivers", "lumps", "interference", "volume_change"]}},
+                # No "type": the value is either the string "all" or a list of pairs
+                # (the owned validator has no anyOf); the handler checks the shape.
+                "interference_pairs": {
+                    "description": "'all' (every pair of checked solid bodies, the default) or a list of pairs, "
+                                   "each a list of two body references. Limited to 300 pairs.",
+                    "items": {"type": "array", "items": BODY_REF_SCHEMA},
+                },
+                "baseline_token": {"type": "string",
+                                   "description": "Token from an earlier check_solids call; reports changes since then."},
+                "snapshot": {"type": "boolean",
+                             "description": "Store a new baseline and return its token (default: true when no baseline_token)."},
+                "edited_component": {"type": "string",
+                                     "description": "Component name or occurrence path the caller edited; "
+                                                    "changes outside it are highlighted."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Report and threshold units (default in)."},
+                "min_face_area": {"type": "number", "minimum": 1e-12},
+                "min_edge_length": {"type": "number", "minimum": 1e-12},
+                "sliver_width": {"type": "number", "minimum": 1e-12},
+                "sliver_aspect": {"type": "number", "minimum": 1e-12,
+                                  "description": "Minimum length/width for a thin face to count as a sliver (default 50)."},
+                "face_count_factor": {"type": "number", "minimum": 1e-12,
+                                      "description": "Flag bodies with more than this times the median face count (default 5)."},
+                "min_overlap_volume": {"type": "number", "minimum": 1e-12},
+                "max_details": {"type": "integer", "minimum": 1, "maximum": 500,
+                                "description": "Maximum problem rows returned (default 50)."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +456,7 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    check_solids,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +478,7 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        CHECK_SOLIDS: check_solids,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
