@@ -38,6 +38,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "delete_features",
         "list_bodies",
         "describe_body",
+        "parameters",
     }
 
     def test_all_expected_tools_present(self):

@@ -86,6 +86,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `timeline_health` | Report broken timeline items, rolled-back marker and active component; optionally suppress broken items |
 | `fusion_dialogs` | macOS: list or dismiss (Cancel/Close/Escape only) modal dialogs blocking Fusion's main thread; runs off the main thread, needs Accessibility |
 | `delete_features` | Delete timeline items by name, with dependent checks and a dry-run plan (default) |
+| `parameters` | List parameters and what they drive; dry-run or set user parameter expressions |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |
