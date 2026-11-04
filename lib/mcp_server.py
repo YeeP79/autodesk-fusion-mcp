@@ -217,6 +217,10 @@ class MCPServer:
         self.server_thread: Optional[threading.Thread] = None
         self.is_running = False
         self._start_time: Optional[float] = None
+        # POST requests currently being handled; wait_until_idle() uses it
+        # to know a reply has been written before the server is torn down.
+        self._active_posts = 0
+        self._activity = threading.Condition()
 
     def log(self, message: str):
         """Log a message."""
@@ -242,6 +246,22 @@ class MCPServer:
                 """Suppress default HTTP logging."""
                 server_ref.log(f"HTTP: {format % args}")
 
+            def parse_request(self):
+                """Refuse requests on keep-alive connections of a stopped server.
+
+                Client connections outlive ``stop()`` (only the listening
+                socket closes), so after an in-process reload a pooled
+                connection would still reach this stale handler. A 503 with
+                ``Connection: close`` makes the client reconnect to the new
+                server instead.
+                """
+                if not super().parse_request():
+                    return False
+                if not server_ref.is_running:
+                    self.send_error(503, "MCP server restarting; reconnect")
+                    return False
+                return True
+
             # ----------------------------------------------------------
             # HTTP method routing
             # ----------------------------------------------------------
@@ -265,15 +285,19 @@ class MCPServer:
 
             def do_POST(self):
                 """Handle POST requests."""
-                if not self._validate_origin():
-                    return
-                parsed = urlparse(self.path)
-                if parsed.path == "/mcp":
-                    self._handle_mcp_post()
-                else:
-                    # The body was not consumed, so do not interpret it as
-                    # the next request on a keep-alive connection.
-                    self._send_empty(404, close=True)
+                server_ref._track_post(1)
+                try:
+                    if not self._validate_origin():
+                        return
+                    parsed = urlparse(self.path)
+                    if parsed.path == "/mcp":
+                        self._handle_mcp_post()
+                    else:
+                        # The body was not consumed, so do not interpret it as
+                        # the next request on a keep-alive connection.
+                        self._send_empty(404, close=True)
+                finally:
+                    server_ref._track_post(-1)
 
             def do_DELETE(self):
                 """Handle DELETE requests (session termination)."""
@@ -810,6 +834,24 @@ class MCPServer:
                     f"Port {self.port} is already in use. Is another instance running?"
                 )
             raise
+
+    def _track_post(self, delta):
+        with self._activity:
+            self._active_posts += delta
+            if self._active_posts <= 0:
+                self._activity.notify_all()
+
+    def wait_until_idle(self, timeout):
+        """Block until no POST is being handled, or *timeout* seconds pass.
+
+        A tool reply is written to its socket before ``do_POST`` returns, so
+        idle means every reply produced so far has been sent. Long-lived GET
+        streams are not counted. Returns ``True`` when idle was reached.
+        """
+        with self._activity:
+            return self._activity.wait_for(
+                lambda: self._active_posts <= 0, timeout=timeout
+            )
 
     def _serve_forever(self):
         """Server loop that respects is_running flag."""

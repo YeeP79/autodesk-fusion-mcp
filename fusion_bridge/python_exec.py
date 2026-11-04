@@ -201,25 +201,33 @@ def run_python(arguments):
         }
 
 
+def read_git_commit(addin_dir):
+    """Short commit of the checkout's HEAD as it is on disk now (uncached).
+
+    Reads the git files directly so it works without a ``git`` executable;
+    raises when the add-in directory is not a git checkout.
+    """
+    git_dir, common_dir = _resolve_git_dirs(addin_dir)
+    head_file = os.path.join(git_dir, "HEAD")
+    if not os.path.exists(head_file):
+        return None
+    with open(head_file, "r", encoding="utf-8") as handle:
+        head = handle.read().strip()
+    if head.startswith("ref: "):
+        return _read_ref(git_dir, common_dir, head[5:])
+    return head[:8]
+
+
 def get_version_info(addin_dir):
     global _CACHED_VERSION_INFO
     if _CACHED_VERSION_INFO is not None:
         return _CACHED_VERSION_INFO
 
     version = mcp_server_module.SERVER_INFO.get("version", "unknown")
-    git_commit = None
     try:
-        git_dir, common_dir = _resolve_git_dirs(addin_dir)
-        head_file = os.path.join(git_dir, "HEAD")
-        if os.path.exists(head_file):
-            with open(head_file, "r", encoding="utf-8") as handle:
-                head = handle.read().strip()
-            if head.startswith("ref: "):
-                ref_name = head[5:]
-                git_commit = _read_ref(git_dir, common_dir, ref_name)
-            else:
-                git_commit = head[:8]
+        git_commit = read_git_commit(addin_dir)
     except Exception as exc:
+        git_commit = None
         futil.log(f"[version] git commit lookup failed: {exc}")
 
     _CACHED_VERSION_INFO = f"v{version} ({git_commit})" if git_commit else f"v{version}"

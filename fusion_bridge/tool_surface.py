@@ -15,6 +15,8 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+BRIDGE_INFO = "bridge_info"
+RELOAD_ADDIN = "reload_addin"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -370,6 +372,28 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": BRIDGE_INFO,
+        "description": (
+            "Report which add-in code is running versus what is on disk: running commit, load time, "
+            "reload generation and last reload outcome; disk commit and source files changed since load "
+            "(up_to_date is false when a reload would pick up new code); loaded module file paths. "
+            "Read-only; use after reload_addin to confirm the new code is live."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": RELOAD_ADDIN,
+        "description": (
+            "Restart this add-in in place so code changed on disk takes effect, without the user using "
+            "Utilities > Add-Ins. Replies immediately, then stops the server, re-imports the add-in's "
+            "modules and starts it again; the connection drops for a few seconds. Afterwards call "
+            "bridge_info: generation is one higher and last_reload.status is 'reloaded'. If the new code "
+            "fails, the previous code is started again (status 'restored', error included). Resets "
+            "session state: stored $objects, execute_python sessions and annotations."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +415,8 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    bridge_info,
+    reload_addin,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +438,8 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        BRIDGE_INFO: bridge_info,
+        RELOAD_ADDIN: reload_addin,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
