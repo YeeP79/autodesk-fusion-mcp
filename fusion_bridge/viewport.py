@@ -10,6 +10,7 @@ import tempfile
 import adsk.core
 
 from ..lib import png_image
+from . import clean_view as clean
 
 VIEW_NAMES = {
     "front": "FrontViewOrientation", "back": "BackViewOrientation",
@@ -263,9 +264,10 @@ def _dimension(value, name):
 
 
 def capture(arguments):
-    """Capture PNG; optional view/fit are temporary and always restored."""
+    """Capture PNG; optional view/fit/clean_view are temporary and always restored."""
     path = None
     vp = original = None
+    cleaner = None
     result = None
     try:
         width = _dimension(arguments.get("width", 800), "width")
@@ -279,6 +281,10 @@ def capture(arguments):
         if not isinstance(background, str) or (background not in ("viewport", "transparent") and not re.fullmatch(r"#[0-9a-fA-F]{6}", background)):
             raise ValueError("background must be viewport, transparent, or #RRGGBB")
         rgb = tuple(int(background[i:i + 2], 16) for i in (1, 3, 5)) if background.startswith("#") else None
+        clean_view = _boolean(arguments.get("clean_view", False), "clean_view")
+        keep = clean.validate_keep(arguments.get("clean_view_keep", []))
+        if "clean_view_keep" in arguments and not clean_view:
+            raise ValueError("clean_view_keep requires clean_view: true")
         vp = _viewport()
         rendered_width, rendered_height = width or vp.width, height or vp.height
         if rendered_width * rendered_height > png_image.MAX_PIXELS:
@@ -290,6 +296,10 @@ def capture(arguments):
             x, y, w, h = crop
             if min(w, h) < 1 or x + w > rendered_width or y + h > rendered_height:
                 raise ValueError("Crop must fit inside the rendered image; origin is top-left")
+        if clean_view:
+            # Hide before fit so fit frames the remaining geometry.
+            cleaner = clean.CleanView(clean.plan(adsk.core.Application.get().activeProduct, keep), keep)
+            cleaner.hide()
         if view is not None or fit:
             original = vp.camera
             original.isSmoothTransition = False
@@ -323,10 +333,19 @@ def capture(arguments):
                 os.remove(path)
             except OSError:
                 pass
+        if cleaner is not None:
+            cleaner.restore()
+            if original is None:
+                try:
+                    vp.refresh()
+                except Exception:
+                    pass  # Display refresh only; the flags are already restored.
         if original is not None:
             try:
                 vp.camera = original
                 vp.refresh()
             except Exception as exc:
                 result = _fail(f"Capture finished but restoring the camera failed: {exc}")
+        if cleaner is not None:
+            result["content"].append({"type": "text", "text": json.dumps({"clean_view": cleaner.report()}, indent=2)})
     return result

@@ -71,7 +71,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 |---|---|
 | `call_autodesk_api` | Execute a generic Fusion API call via dotted path |
 | `execute_python` | Run Python code inside the live Fusion session |
-| `capture_viewport` | PNG capture with temporary views, transparency, solid backgrounds and cropping |
+| `capture_viewport` | PNG capture with temporary views, transparency, solid backgrounds, cropping and a clean view that hides sketches/construction/joints |
 | `get_viewport` | Read camera state and viewport dimensions |
 | `set_viewport` | Standard views, projection, orbit, pan, zoom, fit and camera restoration |
 | `get_active_selection` | Get objects currently selected in the viewport |
