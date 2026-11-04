@@ -8,6 +8,7 @@ import adsk.core
 
 from . import (
     annotations,
+    bridge_info,
     bodies,
     delete_features,
     dialogs,
@@ -20,6 +21,7 @@ from . import (
     file_ops,
     project_tree,
     python_exec,
+    reloader,
     script_store,
     selection,
     timeline_health,
@@ -171,6 +173,8 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     delete_script=_wrap(script_store.delete_script),
     get_active_selection=_wrap(selection.get_active_selection),
     manage_annotations=_wrap(annotations.manage_annotations),
+    bridge_info=_wrap(bridge_info.bridge_info),
+    reload_addin=_wrap(reloader.reload_addin),
     check_solids=_wrap(solid_check.check_solids),
     sketch_profile=_wrap(sketch_profile.sketch_profile),
     project_tree=_wrap(project_tree.project_tree),

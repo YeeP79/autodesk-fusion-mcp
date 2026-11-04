@@ -47,6 +47,8 @@ class ToolSurfaceTests(unittest.TestCase):
         "remove_empty_folders",
         "sketch_profile",
         "check_solids",
+        "bridge_info",
+        "reload_addin",
     }
 
     def test_all_expected_tools_present(self):
