@@ -15,6 +15,7 @@ from . import (
     python_exec,
     script_store,
     selection,
+    timeline_health,
     tool_surface,
     value_builders,
     viewport,
@@ -102,11 +103,18 @@ def handle_generic_api_call(call_data):
         return _success(result)
     except Exception as exc:
         tb = traceback.format_exc()
+        error_text = str(exc)
+        summary = timeline_health.rollback_summary(error_text)
+        if summary:
+            error_text = timeline_health.truncate(error_text)
+            tb = timeline_health.truncate(tb)
         text = (
-            f"Error: {type(exc).__name__}: {exc}\n"
+            f"Error: {type(exc).__name__}: {error_text}\n"
             f"Call: {_format_call_signature(api_path, args, kwargs)}\n"
             f"Traceback:\n{tb}"
         )
+        if summary:
+            text = f"{summary}\n\n{text}"
         log(f"Tool call failed: {exc}", adsk.core.LogLevels.ErrorLogLevel)
         log(tb, adsk.core.LogLevels.ErrorLogLevel)
         return _failure(text)
@@ -159,4 +167,5 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     document_versions=_wrap(document_versions.document_versions),
     restore_version=_wrap(document_versions.restore_version),
     compute=_wrap(compute.compute),
+    timeline_health=_wrap(timeline_health.timeline_health),
 )

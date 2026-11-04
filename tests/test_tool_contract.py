@@ -33,6 +33,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "restore_version",
         "document_status",
         "activate_document",
+        "timeline_health",
     }
 
     def test_all_expected_tools_present(self):
