@@ -15,6 +15,7 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+PROJECT_TREE = "project_tree"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -370,6 +371,37 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": PROJECT_TREE,
+        "description": (
+            "Read-only listing of a Fusion cloud project (active hub) as nested folders and files. "
+            "Each file has name, extension/type, version, is_read_only, date_modified (ISO UTC), id and path. "
+            "With include_links, 'uses' (designs it references) and 'used_by' (designs referencing it) are "
+            "resolved by id to project/folder/name paths. File names are not unique: same-name copies are "
+            "grouped in summary.duplicate_names; always identify files by id. Folder names are case-insensitive. "
+            "Empty folders are flagged. Cloud walks are slow: the result reports elapsed time and whether it "
+            "was truncated (max_files, depth, time budget). list_projects=true just lists project names/ids."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "project": {"type": "string",
+                            "description": "Project name or id. Required unless list_projects is true."},
+                "folder": {"type": "string",
+                           "description": "Folder path inside the project, e.g. 'Chassis/Front'. Default: project root."},
+                "depth": {"type": "integer", "minimum": 0, "maximum": 50,
+                          "description": "Subfolder levels to descend below 'folder' (default 3; 0 = that folder only)."},
+                "max_files": {"type": "integer", "minimum": 1, "maximum": 5000,
+                              "description": "Stop after listing this many files (default 500)."},
+                "include_links": {"type": "boolean",
+                                  "description": "Resolve each file's uses/used_by links to paths (default true; slower)."},
+                "name_contains": {"type": "string",
+                                  "description": "Only list files whose name contains this text (case-insensitive)."},
+                "list_projects": {"type": "boolean",
+                                  "description": "List the active hub's project names and ids instead of a tree."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +423,7 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    project_tree,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +445,7 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        PROJECT_TREE: project_tree,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
