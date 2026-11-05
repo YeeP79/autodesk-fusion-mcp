@@ -70,6 +70,12 @@ def iter_body_entries(root):
             }
 
 
+def is_under(path, paths):
+    """True when occurrence *path* sits below one of *paths* ('A:1' holds 'A:1+B:1')."""
+    parts = path.split("+")
+    return any("+".join(parts[:depth]) in paths for depth in range(1, len(parts)))
+
+
 def find_occurrence(root, path):
     """The occurrence whose ``fullPathName`` is *path*, or None."""
     return next((occ for occ in strict_items(safe(root, "allOccurrences"))

@@ -591,7 +591,9 @@ class FakeDesign:
         self.objectVisibility = visibility
         self.rootComponent = root
         self.allComponents = [root, *components]
-        object.__setattr__(root, 'allOccurrences', [SimpleNamespace(component=c) for c in (*components, *components, *linked)])
+        object.__setattr__(root, 'allOccurrences', [
+            *(SimpleNamespace(component=c, isReferencedComponent=False, fullPathName=f'{c.name}:1') for c in (*components, *components)),
+            *(SimpleNamespace(component=c, isReferencedComponent=True, fullPathName=f'{c.name}:1') for c in linked)])
 
 
 def snapshot(*objects):
@@ -605,7 +607,7 @@ class CleanViewPlanTests(unittest.TestCase):
         self.design = FakeDesign(self.vis, self.root, [self.sub], [self.linked])
 
     def test_plan_uses_object_visibility_and_component_folders_without_bodies(self):
-        toggles = clean_view.plan(self.design)
+        toggles = clean_view.plan(self.design, include_linked=True)
         design_attrs = {a for _, _, t, a in toggles if t is self.vis}
         self.assertEqual(design_attrs, {a for attrs in clean_view.DESIGN_FLAGS.values() for a in attrs})
         folder = [(t.name, a) for _, _, t, a in toggles if t is not self.vis]
@@ -632,7 +634,7 @@ class CleanViewPlanTests(unittest.TestCase):
 
     def test_hide_then_restore_returns_exact_prior_state(self):
         before = snapshot(self.vis, self.root, self.sub, self.linked)
-        cleaner = clean_view.CleanView(clean_view.plan(self.design))
+        cleaner = clean_view.prepare(self.design, include_linked=True)
         cleaner.hide()
         self.assertTrue(all(v is False for v in self.vis._flags.values()))
         self.assertTrue(self.root.isSketchFolderLightBulbOn)  # Object Visibility covers sketches; folders untouched.
@@ -652,7 +654,7 @@ class CleanViewPlanTests(unittest.TestCase):
         locked = Flags('Locked', fail_set={'isCanvasFolderLightBulbOn'}, fail_restore={'isDecalFolderLightBulbOn'},
                        isCanvasFolderLightBulbOn=True, isDecalFolderLightBulbOn=True)
         design = FakeDesign(visibility(), component('Root'), linked=[locked])
-        cleaner = clean_view.CleanView(clean_view.plan(design, ('sketches',)), ('sketches',))
+        cleaner = clean_view.prepare(design, ('sketches',), include_linked=True)
         cleaner.hide()
         self.assertTrue(locked.isCanvasFolderLightBulbOn)
         self.assertEqual(cleaner.restore(), ["component 'Locked'.isDecalFolderLightBulbOn: restore refused"])
@@ -662,6 +664,130 @@ class CleanViewPlanTests(unittest.TestCase):
         self.assertIn("could not hide component 'Locked'.isCanvasFolderLightBulbOn", report['warnings'][0])
         self.assertIn('RESTORE FAILED', report['warnings'][-1])
         self.assertIn('isDecalFolderLightBulbOn', report['warnings'][-1])
+
+
+def filled(count=1):
+    return SimpleNamespace(count=count)
+
+
+class CleanViewLinkedTests(unittest.TestCase):
+    def folders(self, design, **options):
+        return {(t.name, a) for _, _, t, a in clean_view.plan(design, **options) if isinstance(t, Flags) and t.name}
+
+    def test_a_linked_component_is_not_touched_by_default(self):
+        linked = component('Stock', canvases=filled(0), decals=filled(0))
+        root = component('Root')
+        cleaner = clean_view.prepare(FakeDesign(visibility(), root, linked=[linked]))
+        cleaner.hide()
+        cleaner.restore()
+        self.assertEqual(linked.writes, [])
+        self.assertEqual(cleaner.report()['linked_left_alone'], 1)
+        self.assertNotIn('left_showing', cleaner.report())
+
+    def test_a_component_inside_a_link_is_linked_too(self):
+        inner, outer, root = component('Inner'), component('Outer'), component('Root')
+        design = FakeDesign(visibility(), root, linked=[outer])
+        occurrences = [*root.allOccurrences,
+                       SimpleNamespace(component=inner, isReferencedComponent=False, fullPathName='Outer:1+Inner:1')]
+        object.__setattr__(root, 'allOccurrences', occurrences)
+        self.assertEqual({name for name, _ in self.folders(design)}, {'Root'})
+
+    def test_a_local_occurrence_named_like_a_link_stays_local(self):
+        local, stock, root = component('Stock2'), component('Stock'), component('Root')
+        design = FakeDesign(visibility(), root, [local], [stock])
+        self.assertEqual({name for name, _ in self.folders(design)}, {'Root', 'Stock2'})
+
+    def test_an_unreadable_link_flag_counts_as_linked(self):
+        mystery, root = component('Mystery'), component('Root')
+        design = FakeDesign(visibility(), root)
+        object.__setattr__(root, 'allOccurrences', [SimpleNamespace(component=mystery)])
+        self.assertEqual({name for name, _ in self.folders(design)}, {'Root'})
+
+    def test_what_a_link_keeps_showing_is_named(self):
+        linked = component('Stock', canvases=filled(0), decals=filled(2))
+        report = clean_view.prepare(FakeDesign(visibility(), component('Root'), linked=[linked])).report()
+        self.assertEqual(report['left_showing'], ["component 'Stock': decals"])
+        self.assertEqual(report['left_showing_total'], 1)
+
+    def test_a_folder_that_cannot_be_read_is_named_as_such(self):
+        linked = component('Stock', canvases=filled(0))
+        report = clean_view.prepare(FakeDesign(visibility(), component('Root'), linked=[linked])).report()
+        self.assertEqual(report['left_showing'], ["component 'Stock': decals (could not read)"])
+
+    def test_a_kept_category_is_not_reported_as_left_showing(self):
+        linked = component('Stock', canvases=filled(0), decals=filled(2))
+        report = clean_view.prepare(FakeDesign(visibility(), component('Root'), linked=[linked]), ('decals',)).report()
+        self.assertNotIn('left_showing', report)
+
+    def test_the_list_is_capped_and_the_total_is_not(self):
+        linked = [component(f'Stock{i}', canvases=filled(1), decals=filled(0)) for i in range(30)]
+        report = clean_view.prepare(FakeDesign(visibility(), component('Root'), linked=linked)).report()
+        self.assertEqual(len(report['left_showing']), clean_view.MAX_LISTED)
+        self.assertEqual(report['left_showing_total'], 30)
+
+    def test_asking_for_links_touches_only_what_needs_hiding(self):
+        full = component('Full', canvases=filled(0), decals=filled(2))
+        empty = component('Empty', canvases=filled(0), decals=filled(0))
+        cleaner = clean_view.prepare(FakeDesign(visibility(), component('Root', canvases=filled(0), decals=filled(0)),
+                                                linked=[full, empty]), include_linked=True)
+        cleaner.hide()
+        self.assertEqual(full.writes, [('isDecalFolderLightBulbOn', False)])
+        self.assertEqual(empty.writes, [])
+        report = cleaner.report()
+        self.assertNotIn('linked_left_alone', report)
+        self.assertNotIn('left_showing', report)
+
+    def test_an_empty_local_folder_is_not_touched_either(self):
+        root = component('Root', canvases=filled(0), decals=filled(1))
+        self.assertEqual(self.folders(FakeDesign(visibility(), root)), {('Root', 'isDecalFolderLightBulbOn')})
+
+    def test_a_local_folder_that_cannot_be_read_is_still_hidden(self):
+        root = component('Root')
+        self.assertEqual(len(self.folders(FakeDesign(visibility(), root))), 2)
+
+    def test_holds(self):
+        self.assertTrue(clean_view.holds(Flags(canvases=filled(3)), 'canvases'))
+        self.assertIs(clean_view.holds(Flags(canvases=filled(0)), 'canvases'), False)
+        self.assertIsNone(clean_view.holds(Flags(), 'canvases'))
+        self.assertIsNone(clean_view.holds(Flags(), 'origin'))
+
+    def test_one_full_folder_of_several_is_enough(self):
+        self.assertTrue(clean_view.holds(Flags(joints=filled(0), jointOrigins=filled(1)), 'joints'))
+
+    def test_a_partly_read_empty_category_is_unknown(self):
+        self.assertIsNone(clean_view.holds(Flags(joints=filled(0)), 'joints'))
+
+    def test_the_folder_fallback_leaves_links_alone_too(self):
+        linked, root = component('Stock'), component('Root')
+        design = FakeDesign(visibility(), root, linked=[linked])
+        design.objectVisibility = None
+        self.assertEqual({name for name, _ in self.folders(design)}, {'Root'})
+
+
+class ModifiedWatchTests(unittest.TestCase):
+    def test_only_what_went_from_clean_to_modified_is_named(self):
+        clean_doc = SimpleNamespace(name='Clean', isModified=False)
+        dirtied = SimpleNamespace(name='Dirtied', isModified=False)
+        already = SimpleNamespace(name='Already', isModified=True)
+        watch = clean_view.ModifiedWatch([clean_doc, dirtied, already])
+        dirtied.isModified = True
+        self.assertEqual(watch.newly_modified(), ['Dirtied'])
+
+    def test_a_document_that_cannot_be_read_is_not_blamed(self):
+        class Gone:
+            name = 'Gone'
+
+            @property
+            def isModified(self):
+                raise RuntimeError('closed')
+
+        unread = SimpleNamespace(name='Later', isModified=False)
+        watch = clean_view.ModifiedWatch([Gone(), unread])
+        unread.__dict__.pop('isModified')
+        self.assertEqual(watch.newly_modified(), [])
+
+    def test_no_documents(self):
+        self.assertEqual(clean_view.ModifiedWatch([]).newly_modified(), [])
 
 
 class CleanViewCaptureTests(ViewportTests):
@@ -721,6 +847,76 @@ class CleanViewCaptureTests(ViewportTests):
         self.assertFalse(report['restored'])
         self.assertIn('objectVisibility.isSketchesVisible', report['warnings'][-1])
         self.assertTrue(self.vis.isUserWorkPlanesVisible)
+
+    def link(self):
+        """A linked component whose document turns modified when a light bulb is written."""
+        document = SimpleNamespace(name='Stock v12', isModified=False)
+
+        class Dirtying(Flags):
+            def __setattr__(self, attribute, value):
+                super().__setattr__(attribute, value)
+                document.isModified = True
+
+        flags = {a: True for attrs in clean_view.FOLDER_FLAGS.values() for a in attrs}
+        linked = Dirtying('Stock', canvases=filled(0), decals=filled(1), **flags)
+        self.app.activeProduct = FakeDesign(self.vis, self.root, [self.sub], [linked])
+        self.app.documents = [SimpleNamespace(name='Parent v3', isModified=False), document]
+        return linked, document
+
+    def test_a_clean_capture_leaves_a_linked_document_clean(self):
+        linked, document = self.link()
+        report = json.loads(viewport.capture({'clean_view': True})['content'][-1]['text'])['clean_view']
+        self.assertEqual(linked.writes, [])
+        self.assertFalse(document.isModified)
+        self.assertEqual(report['documents_marked_modified'], [])
+        self.assertEqual(report['left_showing'], ["component 'Stock': decals"])
+        self.assertNotIn('warnings', report)
+
+    def test_hiding_on_a_link_is_reported_when_it_dirties_the_document(self):
+        linked, document = self.link()
+        result = viewport.capture({'clean_view': True, 'clean_view_linked': True})
+        report = json.loads(result['content'][-1]['text'])['clean_view']
+        self.assertTrue(document.isModified)
+        self.assertTrue(linked.isDecalFolderLightBulbOn)
+        self.assertEqual(report['documents_marked_modified'], ['Stock v12'])
+        self.assertIn(clean_view.MODIFIED_WARNING, report['warnings'])
+
+    def test_a_failed_capture_still_reports_what_it_dirtied(self):
+        _, document = self.link()
+        self.vp.fail_save = True
+        result = viewport.capture({'clean_view': True, 'clean_view_linked': True})
+        self.assertTrue(result['isError'])
+        report = json.loads(result['content'][-1]['text'])['clean_view']
+        self.assertEqual(report['documents_marked_modified'], ['Stock v12'])
+
+    def test_a_plain_capture_says_nothing_when_nothing_changed(self):
+        self.app.documents = [SimpleNamespace(name='Doc', isModified=False)]
+        self.assertEqual(len(viewport.capture({})['content']), 1)
+
+    def test_a_plain_capture_that_dirties_a_document_says_so(self):
+        document = SimpleNamespace(name='Doc', isModified=False)
+        self.app.documents = [document]
+        save = self.vp.saveAsImageFile
+
+        def dirtying(path, width, height):
+            document.isModified = True
+            return save(path, width, height)
+
+        self.vp.saveAsImageFile = dirtying
+        report = json.loads(viewport.capture({})['content'][-1]['text'])
+        self.assertEqual(report['documents_marked_modified'], ['Doc'])
+        self.assertEqual(report['warnings'], [clean_view.MODIFIED_WARNING])
+
+    def test_unreadable_documents_cost_only_the_report(self):
+        self.assertFalse(hasattr(self.app, 'documents'))
+        report = json.loads(viewport.capture({'clean_view': True})['content'][-1]['text'])['clean_view']
+        self.assertEqual(report['documents_marked_modified'], [])
+
+    def test_clean_view_linked_needs_clean_view_and_a_boolean(self):
+        for args in ({'clean_view_linked': True}, {'clean_view': True, 'clean_view_linked': 'yes'}):
+            with self.subTest(args=args):
+                self.assertTrue(viewport.capture(args)['isError'])
+        self.assertEqual(self.vis.writes + self.root.writes, [])
 
     def test_schema_lists_clean_view_categories(self):
         props = next(t for t in tool_surface.TOOL_DEFINITIONS if t['name'] == 'capture_viewport')['inputSchema']['properties']

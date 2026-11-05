@@ -2,7 +2,16 @@
 
 Fusion-free bookkeeping: every flag is read and written with getattr/setattr so
 tests can drive it with plain fake objects. Bodies are never touched.
+
+A capture should not leave files dirty, and restoring a flag does not undo that:
+a light bulb written on a component marks its document modified, and the API has
+no way to clear the mark. So a folder with nothing in it is not touched, and the
+folders of a linked component, which live in another document, are left alone
+unless the caller asks. ``ModifiedWatch`` reports what was dirtied anyway.
 """
+
+from .common.api import safe
+from .common.bodies import is_under
 
 CATEGORIES = ("sketches", "construction", "origin", "joints", "canvases", "decals")
 
@@ -24,6 +33,17 @@ FOLDER_FLAGS = {
     "canvases": ("isCanvasFolderLightBulbOn",),
     "decals": ("isDecalFolderLightBulbOn",),
 }
+# What fills each folder. Origin has no count: it is always there.
+FOLDER_CONTENT = {
+    "sketches": ("sketches",),
+    "construction": ("constructionPlanes", "constructionAxes", "constructionPoints"),
+    "joints": ("joints", "jointOrigins"),
+    "canvases": ("canvases",),
+    "decals": ("decals",),
+}
+MAX_LISTED = 20
+MODIFIED_WARNING = ("marked modified during this capture; the API cannot clear that, so save them or close them "
+                    "without saving")
 
 
 def validate_keep(value):
@@ -33,8 +53,16 @@ def validate_keep(value):
     return tuple(c for c in CATEGORIES if c in value)
 
 
+def _referenced(occurrence):
+    return safe(occurrence, "isReferencedComponent") is not False
+
+
 def _components(design):
-    """Root plus every component reachable from the design, deduplicated."""
+    """``(local, linked)``: every component reachable from the design, deduplicated.
+
+    A component is linked when an occurrence of it is, or sits inside one. An
+    unreadable flag counts as linked, the side that writes nothing.
+    """
     found = []
 
     def add(component):
@@ -46,9 +74,14 @@ def _components(design):
     for component in design.allComponents:
         add(component)
     # Occurrences reach linked (referenced) components even if allComponents omits them.
-    for occurrence in root.allOccurrences:
+    occurrences = list(root.allOccurrences)
+    for occurrence in occurrences:
         add(occurrence.component)
-    return found
+    paths = {safe(occurrence, "fullPathName") for occurrence in occurrences if _referenced(occurrence)}
+    held = [occurrence.component for occurrence in occurrences
+            if _referenced(occurrence) or is_under(safe(occurrence, "fullPathName") or "", paths)]
+    linked = [component for component in found if any(component == seen for seen in held)]
+    return [component for component in found if not any(component == seen for seen in held)], linked
 
 
 def _component_label(component):
@@ -58,8 +91,16 @@ def _component_label(component):
         return "component"
 
 
-def plan(design, keep=()):
-    """List (category, label, target, attribute) toggles to switch off."""
+def holds(component, category):
+    """Does this folder have anything in it? None when that cannot be read."""
+    counts = [safe(safe(component, name), "count") for name in FOLDER_CONTENT.get(category, ())]
+    if any(counts):
+        return True
+    return None if not counts or None in counts else False
+
+
+def _plan(design, keep, include_linked):
+    """``(toggles, what stays showing, linked components left alone)``."""
     if design is None or not hasattr(design, "rootComponent"):
         raise ValueError("clean_view requires an active Fusion design")
     hide = [c for c in CATEGORIES if c not in keep]
@@ -72,21 +113,56 @@ def plan(design, keep=()):
                 toggles.append((category, f"objectVisibility.{attribute}", visibility, attribute))
         else:
             folder_categories.append(category)
-    if folder_categories:
-        for component in _components(design):
-            label = _component_label(component)
-            for category in folder_categories:
+    if not folder_categories:
+        return toggles, [], 0
+    local, linked = _components(design)
+    showing = []
+    for component in [*local, *(linked if include_linked else ())]:
+        label = _component_label(component)
+        for category in folder_categories:
+            if holds(component, category) is not False:
                 for attribute in FOLDER_FLAGS[category]:
                     toggles.append((category, f"{label}.{attribute}", component, attribute))
-    return toggles
+    if include_linked:
+        return toggles, [], 0
+    for component in linked:
+        for category in folder_categories:
+            found = holds(component, category)
+            if found is not False:
+                showing.append(f"{_component_label(component)}: {category}" + ("" if found else " (could not read)"))
+    return toggles, showing, len(linked)
+
+
+def plan(design, keep=(), include_linked=False):
+    """List (category, label, target, attribute) toggles to switch off."""
+    return _plan(design, keep, include_linked)[0]
+
+
+def prepare(design, keep=(), include_linked=False):
+    """A ``CleanView`` for *design*, knowing what it chose to leave alone."""
+    toggles, showing, left_alone = _plan(design, keep, include_linked)
+    return CleanView(toggles, keep, showing, left_alone)
+
+
+class ModifiedWatch:
+    """Which of the open documents, clean at the start, are modified now."""
+
+    def __init__(self, documents):
+        self._clean = [document for document in documents if safe(document, "isModified") is False]
+
+    def newly_modified(self):
+        return [safe(document, "name") or "unnamed document" for document in self._clean
+                if safe(document, "isModified") is True]
 
 
 class CleanView:
     """Switch planned flags off, remember originals, and put them back."""
 
-    def __init__(self, toggles, keep=()):
+    def __init__(self, toggles, keep=(), left_showing=(), linked_left_alone=0):
         self.toggles = toggles
         self.keep = tuple(keep)
+        self.left_showing = list(left_showing)
+        self.linked_left_alone = linked_left_alone
         self.applied = []   # (category, label, target, attribute, original)
         self.warnings = []
         self.restore_failures = []
@@ -138,6 +214,11 @@ class CleanView:
             "kept": list(self.keep),
             "restored": self.restored,
         }
+        if self.linked_left_alone:
+            result["linked_left_alone"] = self.linked_left_alone
+        if self.left_showing:
+            result["left_showing"] = self.left_showing[:MAX_LISTED]
+            result["left_showing_total"] = len(self.left_showing)
         warnings = list(self.warnings)
         if self.restore_failures:
             warnings.append("RESTORE FAILED; these remain hidden: " + "; ".join(self.restore_failures))

@@ -36,6 +36,7 @@ from collections import Counter, OrderedDict, namedtuple
 from . import parameter_graph as graph
 from . import solid_check as sc
 from .common.api import plain_text
+from .common.bodies import is_under
 from .document_lifecycle import OUT_OF_DATE, STALE_NOT_FLAGGED, UNKNOWN
 from .documents import flag_duplicates
 
@@ -155,12 +156,6 @@ def hit(where, message):
 def _short(text):
     text = " ".join(str(text).split())
     return text if len(text) <= MAX_MESSAGE_CHARS else text[:MAX_MESSAGE_CHARS - 3] + "..."
-
-
-def is_under(path, paths):
-    """True when occurrence *path* sits below one of *paths* ('A:1' holds 'A:1+B:1')."""
-    parts = path.split("+")
-    return any("+".join(parts[:depth]) in paths for depth in range(1, len(parts)))
 
 
 def group_instances(entries):

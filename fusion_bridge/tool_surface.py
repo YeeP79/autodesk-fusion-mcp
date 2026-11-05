@@ -259,7 +259,11 @@ TOOL_DEFINITIONS = [
             "Returns only the cropped region when crop is provided; limit 16 megapixels. "
             "clean_view temporarily hides sketches, construction geometry, origin, joints, canvases "
             "and decals (never bodies) and restores each flag afterwards, even on failure; a text item "
-            "reports which categories were hidden and whether all were restored."
+            "reports which categories were hidden and whether all were restored. A restored flag can still "
+            "leave a document marked modified, so empty folders are not touched and neither are linked "
+            "components, whose folders belong to another document: left_showing names what stays visible "
+            "because of that, and clean_view_linked hides it at that price. documents_marked_modified "
+            "lists open documents the capture turned modified; any capture reports it when it is not empty."
         ),
         "inputSchema": {
             "type": "object",
@@ -288,6 +292,9 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "string", "enum": list(CLEAN_VIEW_CATEGORIES)},
                     "description": "Categories to leave visible when clean_view is true.",
                 },
+                "clean_view_linked": {"type": "boolean",
+                                      "description": "Also hide canvases and decals on linked components. This "
+                                                     "can mark the linked documents modified (default: false)."},
                 "crop": {
                     "type": "object", "description": "Rectangle inside the rendered image; output dimensions equal crop width/height.",
                     "properties": {k: {"type": "integer", "minimum": 0 if k in ("x", "y") else 1, "maximum": 8192}

@@ -11,7 +11,9 @@ import adsk.core
 
 from ..lib import png_image
 from . import clean_view as clean
+from .common.api import attempt
 from .common.args import is_finite_number
+from .common.documents import open_documents
 from .common.geometry import add, cross, scaled, sub
 from .common.results import error_result, ok_result
 
@@ -387,6 +389,7 @@ def capture(arguments):
     path = None
     vp = original = None
     cleaner = None
+    watch = None
     result = None
     try:
         width = _dimension(arguments.get("width", 800), "width")
@@ -406,6 +409,9 @@ def capture(arguments):
         keep = clean.validate_keep(arguments.get("clean_view_keep", []))
         if "clean_view_keep" in arguments and not clean_view:
             raise ValueError("clean_view_keep requires clean_view: true")
+        clean_linked = _boolean(arguments.get("clean_view_linked", False), "clean_view_linked")
+        if "clean_view_linked" in arguments and not clean_view:
+            raise ValueError("clean_view_linked requires clean_view: true")
         vp = _viewport()
         rendered_width, rendered_height = width or vp.width, height or vp.height
         if rendered_width * rendered_height > png_image.MAX_PIXELS:
@@ -417,9 +423,11 @@ def capture(arguments):
             x, y, w, h = crop
             if min(w, h) < 1 or x + w > rendered_width or y + h > rendered_height:
                 raise ValueError("Crop must fit inside the rendered image; origin is top-left")
+        app = adsk.core.Application.get()
+        watch = clean.ModifiedWatch(attempt(lambda: open_documents(app), []))
         if clean_view:
             # Hide before fit so fit frames the remaining geometry.
-            cleaner = clean.CleanView(clean.plan(adsk.core.Application.get().activeProduct, keep), keep)
+            cleaner = clean.prepare(app.activeProduct, keep, clean_linked)
             cleaner.hide()
         if view is not None or fit:
             original = vp.camera
@@ -477,6 +485,13 @@ def capture(arguments):
                 vp.refresh()
             except Exception as exc:
                 result = error_result(f"Capture finished but restoring the camera failed: {exc}")
+        modified = watch.newly_modified() if watch is not None else []
         if cleaner is not None:
-            result["content"].append({"type": "text", "text": json.dumps({"clean_view": cleaner.report()}, indent=2)})
+            report = {**cleaner.report(), "documents_marked_modified": modified}
+            if modified:
+                report["warnings"] = [*report.get("warnings", []), clean.MODIFIED_WARNING]
+            result["content"].append({"type": "text", "text": json.dumps({"clean_view": report}, indent=2)})
+        elif modified:
+            report = {"documents_marked_modified": modified, "warnings": [clean.MODIFIED_WARNING]}
+            result["content"].append({"type": "text", "text": json.dumps(report, indent=2)})
     return result
