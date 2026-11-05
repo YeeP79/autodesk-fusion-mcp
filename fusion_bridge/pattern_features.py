@@ -9,10 +9,13 @@ pattern. The result therefore carries ``elements`` (what Fusion made),
 ``bodies_made``, and ``instances_reached`` (the volume change over the seed's
 own), and any of them disagreeing with what was asked is ``suspect``.
 
-Positions are predicted by the pure functions below. Once built they are read
-from each element's transform instead, because that is where the instances are.
-The sense of an edge direction belongs to Fusion, so it is asked of the input;
-the sense of rotation about an edge or a face is not available before the add.
+Positions are predicted by the pure functions below. Once built they are measured
+from each element's faces. ``PatternElement.transform`` is not used: on a 6-hole
+circular pattern placed correctly it read 0, 120, 180, 240, 300 and 0 degrees, and
+never 60. Element 0 is taken as the seed, and faces that cannot be read leave the
+prediction standing with no position check. The sense of an edge direction
+belongs to Fusion, so it is asked of the input; the sense of rotation about an
+edge or a face is not available before the add.
 
 A pattern lands in the seeds' component, whose axes ``axis: x|y|z`` means, and
 direction entities must be in that component too. Inside it Fusion works on
@@ -36,6 +39,7 @@ from .common.args import bool_arg, error_pair, int_arg, is_finite_number, reject
 from .common.bodies import (
     ROOT_PATH,
     SURFACE_TYPES,
+    bbox,
     find_occurrence,
     label,
     native,
@@ -71,7 +75,6 @@ from .common.geometry import (
     rotate_about,
     sub,
     to_cm,
-    to_local,
     to_units,
     unit,
     xyz,
@@ -180,9 +183,31 @@ def count_problems(asked, elements, reached, bodies_made, bodies_expected):
     return problems
 
 
-def transformed(point, matrix):
-    """*point* through a row-major 4x4 ``Matrix3D.asArray()``."""
-    return tuple(sum(matrix[4 * row + i] * point[i] for i in range(3)) + matrix[4 * row + 3] for row in range(3))
+def element_marker(faces):
+    """``(point, exact)``: a point that moves with an element's *faces*, or None when they cannot be read.
+
+    A lone cylinder gives its axis origin, right under any motion. Anything else
+    gives the center of its box, which a rotation shifts unless the shape is round,
+    so it is not *exact*.
+    """
+    if not faces:
+        return None
+    if len(faces) == 1:
+        g = safe(faces[0], "geometry")
+        if SURFACE_TYPES.get(safe(g, "surfaceType")) == "cylinder":
+            origin = attempt(lambda: xyz(g.origin))
+            return None if origin is None else (origin, True)
+    boxes = [bbox(face) for face in faces]
+    if None in boxes:
+        return None
+    low = [min(box[0][i] for box in boxes) for i in range(3)]
+    high = [max(box[1][i] for box in boxes) for i in range(3)]
+    return tuple((a + b) / 2.0 for a, b in zip(low, high)), False
+
+
+def measured_positions(seed, markers):
+    """Each instance as *seed* plus how far its marker sits from element 0's."""
+    return [add(seed, sub(marker, markers[0])) for marker in markers]
 
 
 def same_positions(predicted, built, tolerance_cm=REF_TOLERANCE_CM):
@@ -401,6 +426,7 @@ class Job:
         self.features, self.input = None, None
         self.directions = []
         self.positions = None
+        self.predict = None
         self.positions_trusted = True
 
     def run(self):
@@ -657,9 +683,10 @@ class Job:
         world_one = self._sensed(one, "directionOne")
         world_two = self._sensed(two, "directionTwo") if two is not None else None
         self.directions = [world_one] + ([world_two] if two is not None else [])
+        self.predict = lambda seed: rectangular_positions(seed, world_one, opts["count_one"], spacing_one, world_two,
+                                                          opts["count_two"], spacing_two)
         if opts["seed_point"] is not None:
-            self.positions = rectangular_positions(opts["seed_point"], world_one, opts["count_one"], spacing_one,
-                                                   world_two, opts["count_two"], spacing_two)
+            self.positions = self.predict(opts["seed_point"])
 
     def _total_deg(self):
         value = self.opts["total_angle"]
@@ -682,10 +709,12 @@ class Job:
         self.directions = [direction]
         full = is_full_turn(total)
         self.positions_trusted = not opts["symmetric"] and (axis["named"] or full)
+        origin = self._world_point(axis["origin"])
+        self.predict = lambda seed: circular_positions(seed, origin, direction, opts["count"], total,
+                                                       opts["symmetric"])
         if opts["seed_point"] is None:
             return
-        self.positions = circular_positions(opts["seed_point"], self._world_point(axis["origin"]), direction,
-                                            opts["count"], total, opts["symmetric"])
+        self.positions = self.predict(opts["seed_point"])
         if not self.positions_trusted:
             self.warnings.append("predicted positions assume the rotation sense"
                                  + (" and that 'symmetric' centers the total on the seed" if opts["symmetric"] else
@@ -738,26 +767,33 @@ class Job:
                                baseline_token=token, resolved=self.resolved,
                                warnings=self.warnings + [f"the feature was added but its check failed: {exc}"])
 
-    def _built_positions(self, feature):
-        """World positions from each element's transform; None when they cannot be read."""
-        seed = self.opts["seed_point"]
-        if seed is None:
+    def _markers(self, feature):
+        """World ``(markers, exact)``, one per element; None unless every element's faces can be read."""
+        elements = attempt(lambda: strict_items(feature.patternElements))
+        if not elements:
             return None
-        local = seed if self.frame is None else to_local(seed, self.frame)
-        matrices = attempt(lambda: [element.transform.asArray() for element in strict_items(feature.patternElements)])
-        if not matrices:
-            return None
-        return [self._world_point(transformed(local, matrix)) for matrix in matrices]
+        points, exact = [], True
+        for element in elements:
+            faces = items(safe(element, "faces"))
+            marker = element_marker(faces)
+            if marker is None:
+                return None
+            in_world = safe(faces[0], "assemblyContext") is not None
+            points.append(marker[0] if in_world else self._world_point(marker[0]))
+            exact = exact and marker[1]
+        return points, exact
 
     def _expected_bodies(self):
         counts = [seed["new_bodies"] for seed in self.seeds]
         return None if None in counts else (self._asked() - 1) * sum(counts)
 
-    def _check_positions(self, built, problems):
-        if built is None or self.positions is None or same_positions(self.positions, built):
+    def _check_positions(self, markers, exact, problems):
+        """Element 0's marker, carried by the prediction, must land on the others: any seed_point then checks."""
+        if same_positions(self.predict(markers[0]), markers):
             return
         text = f"the built positions differ from the predicted ones: {self._shown(self.positions)}"
-        (problems if self.positions_trusted else self.warnings).append(text)
+        strict = self.positions_trusted and (exact or self.opts["type"] == "rectangular")
+        (problems if strict else self.warnings).append(text)
 
     def _finish(self, outcome, before, token):
         feature, health = outcome["feature"], outcome["health"]
@@ -781,8 +817,9 @@ class Job:
         problems = count_problems(self._asked(), elements, reached, made, self._expected_bodies())
         if collateral:
             problems.append(text)
-        built = self._built_positions(feature)
-        self._check_positions(built, problems)
+        measured = self._markers(feature) if self.positions is not None else None
+        if measured is not None:
+            self._check_positions(*measured, problems)
 
         if self.opts["feature_name"]:
             try:
@@ -794,12 +831,14 @@ class Job:
         if others:
             self.warnings.append(f"other instances of this component changed with it: {others}")
 
-        shown = built if built is not None else self.positions
+        shown = self.positions
+        if measured is not None:
+            shown = measured_positions(self.opts["seed_point"], measured[0])
         return fo.envelope(
             "suspect" if problems else "built", self.units, feature=row, bodies=changes, baseline_token=token,
             resolved=self.resolved, warnings=problems + self.warnings,
             pattern=self._row(elements, made, to_units(change_cm3, self.units, 3), reached),
-            positions=self._shown(shown), positions_basis="elements" if built is not None else "predicted")
+            positions=self._shown(shown), positions_basis="predicted" if measured is None else "faces")
 
 
 def run(design, document, opts, session):
