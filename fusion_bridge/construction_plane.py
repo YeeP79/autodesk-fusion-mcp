@@ -30,7 +30,7 @@ import adsk.fusion
 
 from .common import feature_ops as fo
 from .common.api import attempt, present, safe, strict_items
-from .common.args import bool_arg, error_pair, is_finite_number, reject_unknown, require_object, text_arg
+from .common.args import bool_arg, error_pair, reject_unknown, require_object, text_arg, vector_arg
 from .common.bodies import (
     ROOT_PATH,
     SURFACE_TYPES,
@@ -94,21 +94,15 @@ _PLANE_TYPE = "ConstructionPlane"
 # -- Argument validation --------------------------------------------------------
 
 
-def _vector(value, where):
-    if not isinstance(value, list) or len(value) != 3 or not all(is_finite_number(c) for c in value):
-        raise ValueError(f"'{where}' must be an array of three finite numbers [x, y, z]")
-    return tuple(float(c) for c in value)
-
-
 def _direction(value, where):
-    direction = unit(_vector(value, where))
+    direction = unit(vector_arg(value, where))
     if direction is None:
         raise ValueError(f"'{where}' has no direction: it is a zero vector")
     return direction
 
 
 def _point(value, where, units):
-    return tuple(c * CM_PER_UNIT[units] for c in _vector(value, where))
+    return tuple(c * CM_PER_UNIT[units] for c in vector_arg(value, where))
 
 
 def _ref_of_kind(value, kind, where, units):

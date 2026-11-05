@@ -62,6 +62,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "timeline_insert",
         "compare_files",
         "compare_bodies",
+        "symmetry_report",
         "extrude_profile",
         "combine_bodies",
         "edge_treatment",

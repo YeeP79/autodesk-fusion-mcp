@@ -49,6 +49,11 @@ def unit(v):
     return tuple(c / n for c in v) if n > 1e-12 else None
 
 
+def mirror_point(point, plane_point, unit_normal):
+    """*point* reflected across the plane through *plane_point* with *unit_normal*."""
+    return sub(point, scaled(unit_normal, 2.0 * dot(sub(point, plane_point), unit_normal)))
+
+
 def to_local(point, frame):
     """A point in the coordinates of *frame*: ``(origin, x, y, z)``, orthonormal axes."""
     origin, *axes = frame

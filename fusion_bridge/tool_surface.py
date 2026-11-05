@@ -55,6 +55,7 @@ EXTRUDE_PROFILE = "extrude_profile"
 TIMELINE_INSERT = "timeline_insert"
 COMPARE_FILES = "compare_files"
 COMPARE_BODIES = "compare_bodies"
+SYMMETRY_REPORT = "symmetry_report"
 AUDIT_DESIGN = "audit_design"
 COMBINE_BODIES = "combine_bodies"
 EDGE_TREATMENT = "edge_treatment"
@@ -266,7 +267,11 @@ TOOL_DEFINITIONS = [
             "Returns only the cropped region when crop is provided; limit 16 megapixels. "
             "clean_view temporarily hides sketches, construction geometry, origin, joints, canvases "
             "and decals (never bodies) and restores each flag afterwards, even on failure; a text item "
-            "reports which categories were hidden and whether all were restored."
+            "reports which categories were hidden and whether all were restored. A restored flag can still "
+            "leave a document marked modified, so empty folders are not touched and neither are linked "
+            "components, whose folders belong to another document: left_showing names what stays visible "
+            "because of that, and clean_view_linked hides it at that price. documents_marked_modified "
+            "lists open documents the capture turned modified; any capture reports it when it is not empty."
         ),
         "inputSchema": {
             "type": "object",
@@ -295,6 +300,9 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "string", "enum": list(CLEAN_VIEW_CATEGORIES)},
                     "description": "Categories to leave visible when clean_view is true.",
                 },
+                "clean_view_linked": {"type": "boolean",
+                                      "description": "Also hide canvases and decals on linked components. This "
+                                                     "can mark the linked documents modified (default: false)."},
                 "crop": {
                     "type": "object", "description": "Rectangle inside the rendered image; output dimensions equal crop width/height.",
                     "properties": {k: {"type": "integer", "minimum": 0 if k in ("x", "y") else 1, "maximum": 8192}
@@ -1810,6 +1818,49 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": SYMMETRY_REPORT,
+        "description": (
+            "How far are the two sides of the active design from a true mirror? Read-only. Pass the plane as "
+            "'plane', 'plane_token' or 'point' + 'normal'. Each visible solid is paired with the body that best "
+            "fits its mirror image, by center of mass, bounding box and volume; names are never used, and each "
+            "occurrence of a component counts. A body through the plane may pair with itself (on_plane). Pairs "
+            "that pass on numbers are then checked closest first by reflecting a temporary copy and comparing "
+            "by booleans, nothing enters the timeline; basis says which decided a pair, and if the kernel "
+            "refuses a reflection, confirmation.available is false and everything rests on numbers.\n"
+            "status: true_mirror (within tolerance, or the booleans find the solids the same), near (within 10x "
+            "tolerance, or the booleans found a difference the numbers did not), different (matched, further "
+            "off). A body with no partner within its own size and half its volume is unmatched. Volume counts "
+            "as a length: the difference share times the body's size (volume_length), so on a big solid a small "
+            "feature can sit inside tolerance: tighten it to look harder. bbox is null for a plane off the world "
+            "axes.\n"
+            "Result: summary (bodies, pairs, true_mirror, near, different, unmatched, on_plane), complete, plane, "
+            "tolerance, confirmation, pairs worst first (a is further along the normal; center_offset is b minus "
+            "a's mirror image), unmatched by side (positive, negative, on_plane), skipped, warnings. Stops at "
+            "time_budget_s; complete: false means unmatched bodies may have partners that were not read."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "plane": {"type": "string", "enum": ["xy", "xz", "yz"], "description": "A world plane through the origin."},
+                "plane_token": {"type": "string", "description": "entityToken of a construction plane or planar face."},
+                "point": {"type": "array", "items": {"type": "number"},
+                          "description": "[x, y, z] on the plane, in units; goes with normal."},
+                "normal": {"type": "array", "items": {"type": "number"}, "description": "[x, y, z] normal of the plane."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "tolerance": {"type": "number", "description": "Length in units. Default the equivalent of 0.01 in."},
+                "include_hidden": {"type": "boolean", "description": "Include hidden bodies, often stale. Default false."},
+                "component_contains": {"type": "string",
+                                       "description": "Only bodies whose component name or occurrence path holds "
+                                                      "this text, ignoring case."},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 1000,
+                                "description": "Pairs listed, and bodies per unmatched side. The summary counts "
+                                               "all. Default 100."},
+                "time_budget_s": {"type": "number", "minimum": 1, "maximum": 110,
+                                  "description": "Stop after this long. Default 90."},
+            },
+        },
+    },
+    {
         "name": APPLY_THREAD,
         "description": (
             "Fusion's thread library, and putting a thread on one face. Actions:\n"
@@ -1865,11 +1916,17 @@ TOOL_DEFINITIONS = [
             "the tool to go to next. A profile picks the rules and their severity: general, assembly (positions "
             "and links; skips sketches, parameters and the per-face scan) or export-ready (stricter on anything "
             "that would leave the file wrong). Narrow with 'checks' or 'groups', not both. Result: ok, summary "
-            "by severity and group, findings (capped at max_findings), then skipped. ok needs no errors or "
+            "by severity and group, first_issues, findings (capped at max_findings), then skipped. Repeats of a "
+            "check fold into one row with count and a short sample (where reads 'N places'); detail: true, or "
+            "naming the check in 'checks', lists each one. The summary always counts every finding. first_issues "
+            "lists broken timeline items in step order, joints included, the earliest to fix first: at most 20 "
+            "(max_findings with detail), first_issues_total counts them, and null means the timeline was not "
+            "read. unused_user_parameter is off in general and assembly. ok needs no errors or "
             "warnings AND complete: true; gathering stops at time_budget_s and skipped says what was not read, "
             "so a clean report on half a design is not ok. Interference is not run: use check_solids.\n"
             "Every run returns a baseline_token (session-only); pass it to a later run on the same file for "
-            "changes (new, resolved, unchanged) and a 'change' on each finding. Only checks that ran in full "
+            "changes (new, resolved, unchanged) and a 'change' on each finding (a folded row has the most "
+            "notable one and change_counts); items are compared one by one. Only checks that ran in full "
             "both times are compared; the rest are not_compared, never resolved.\n"
             "extra_findings merges findings from another tool, in the same shape, past any filter. They keep "
             "their own severity. Pass [] for 'looked, found nothing' so a baseline can call earlier ones resolved."
@@ -1880,15 +1937,18 @@ TOOL_DEFINITIONS = [
                 "profile": {"type": "string", "enum": ["general", "assembly", "export-ready"],
                             "description": "Default general."},
                 "checks": {"type": "array", "items": {"type": "string"},
-                           "description": "Only these checks, by name (an unknown name is refused and the "
-                                          "names listed). One the profile switches off is listed under skipped."},
+                           "description": "Only these checks, by name, listed item by item (an unknown name is "
+                                          "refused and the names listed). One the profile switches off is "
+                                          "listed under skipped."},
                 "groups": {"type": "array",
                            "items": {"type": "string", "enum": ["file", "timeline", "links", "bodies", "joints",
                                                                 "sketches", "parameters"]},
                            "description": "Only these groups."},
                 "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
                 "max_findings": {"type": "integer", "minimum": 1, "maximum": 1000,
-                                 "description": "Findings listed; the summary always counts all. Default 100."},
+                                 "description": "Rows listed; the summary always counts all. Default 100."},
+                "detail": {"type": "boolean", "description": "List every finding instead of folding repeats. "
+                                                            "Default false."},
                 "baseline_token": {"type": "string", "description": "Token from an earlier audit_design run."},
                 "time_budget_s": {"type": "number", "minimum": 1, "maximum": 110,
                                   "description": "Stop gathering after this long. Default 90."},
@@ -1970,6 +2030,7 @@ def build_tool_handlers(
     timeline_insert,
     compare_files,
     compare_bodies,
+    symmetry_report,
     audit_design,
     combine_bodies,
     edge_treatment,
@@ -2032,6 +2093,7 @@ def build_tool_handlers(
         TIMELINE_INSERT: timeline_insert,
         COMPARE_FILES: compare_files,
         COMPARE_BODIES: compare_bodies,
+        SYMMETRY_REPORT: symmetry_report,
         AUDIT_DESIGN: audit_design,
         COMBINE_BODIES: combine_bodies,
         EDGE_TREATMENT: edge_treatment,

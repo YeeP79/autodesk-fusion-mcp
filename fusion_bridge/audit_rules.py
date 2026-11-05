@@ -19,6 +19,10 @@ through ``extra_findings`` in the same shape, without this repo knowing about it
     fix_tool  the tool to go to next (may be null)
     source    extra findings only: who supplied it (default "extra_findings")
 
+Every finding is judged and compared one by one. Only the report folds repeats of
+a check into a single row (``collapse``), so what a baseline stores and matches
+is always the individual ``check`` and ``where``.
+
 A run may cover less than was asked (time budget, a read that failed). Each
 section records that, and a baseline compares only checks that ran in full on
 both runs: a finding that was not looked for is not a finding that was resolved.
@@ -31,6 +35,8 @@ from collections import Counter, OrderedDict, namedtuple
 
 from . import parameter_graph as graph
 from . import solid_check as sc
+from .common.api import plain_text
+from .common.bodies import is_under
 from .document_lifecycle import OUT_OF_DATE, STALE_NOT_FLAGGED, UNKNOWN
 from .documents import flag_duplicates
 
@@ -54,6 +60,8 @@ MAX_FINDINGS_LIMIT = 1000
 MAX_EXTRA_FINDINGS = 1000
 BASELINE_STORE_LIMIT = 20
 MAX_MESSAGE_CHARS = 300
+COLLAPSE_SAMPLE_SIZE = 3
+FIRST_ISSUES_LIMIT = 20
 EXTRA_SOURCE = "extra_findings"
 EXTRA_KEYS = {"check", "group", "severity", "where", "message", "why", "fix_tool", "source"}
 
@@ -96,7 +104,8 @@ SEVERITY_TABLE = {
     "unheld_occurrence":        (INFO, INFO, INFO),
     "under_constrained_sketch": (INFO, OFF, INFO),
     "open_profile":             (INFO, OFF, INFO),
-    "unused_user_parameter":    (INFO, OFF, INFO),
+    # Off by default: parameters are often kept as measured facts that scripts read.
+    "unused_user_parameter":    (OFF, OFF, INFO),
 }
 
 
@@ -147,12 +156,6 @@ def hit(where, message):
 def _short(text):
     text = " ".join(str(text).split())
     return text if len(text) <= MAX_MESSAGE_CHARS else text[:MAX_MESSAGE_CHARS - 3] + "..."
-
-
-def is_under(path, paths):
-    """True when occurrence *path* sits below one of *paths* ('A:1' holds 'A:1+B:1')."""
-    parts = path.split("+")
-    return any("+".join(parts[:depth]) in paths for depth in range(1, len(parts)))
 
 
 def group_instances(entries):
@@ -228,8 +231,12 @@ def _timeline_rows(facts, context, health, joint_check):
             and not (owned and row.get("entity_type") in JOINT_ENTITY_TYPES)]
 
 
+def _timeline_message(row):
+    return plain_text(row["message"]) or "no message from Fusion"
+
+
 def _timeline_hit(row):
-    return hit(f"timeline: {row['name']}", f"step {row['index']}: {row['message'] or 'no message from Fusion'}")
+    return hit(f"timeline: {row['name']}", f"step {row['index']}: {_timeline_message(row)}")
 
 
 def timeline_errors(facts, context):
@@ -384,7 +391,7 @@ def generic_body_name(facts, context):
 
 
 def _joint_rows(facts, health):
-    return [hit(f"joint: {row['component']}/{row['name']}", row["message"] or f"Fusion reports a {health}")
+    return [hit(f"joint: {row['component']}/{row['name']}", plain_text(row["message"]) or f"Fusion reports a {health}")
             for row in facts["joints"]["joints"] if row["health"] == health and not row["suppressed"]]
 
 
@@ -692,6 +699,57 @@ def sort_findings(findings):
                                            _group_rank(f["group"]), f["group"], f["check"], f["where"]))
 
 
+def _collapsed_row(group):
+    """One row for the findings of *group*, already in report order."""
+    first, count = group[0], len(group)
+    messages = {finding["message"] for finding in group}
+    row = {**first, "count": count, "where": f"{count} places",
+           "message": first["message"] if len(messages) == 1 else f"{count} findings; the sample shows some"}
+    row["sample"] = [{key: finding[key] for key in ("where", "message", "change") if key in finding}
+                     for finding in group[:COLLAPSE_SAMPLE_SIZE]]
+    changes = Counter(finding["change"] for finding in group if "change" in finding)
+    if changes:
+        row["change_counts"] = dict(sorted(changes.items()))
+    return row
+
+
+def collapse(findings, expanded=(), detail=False):
+    """Fold repeats of a check into one row with a count and a short sample.
+
+    *findings* are in report order, so a row sits where its worst member would
+    and its sample leads with what is new. Rows for a check named in *expanded*,
+    or all of them under *detail*, stay individual, and so does a lone finding.
+    """
+    if detail:
+        return list(findings)
+    groups = OrderedDict()
+    for position, finding in enumerate(findings):
+        key = (position,) if finding["check"] in expanded else (
+            finding["check"], finding["group"], finding["severity"], finding.get("source"))
+        groups.setdefault(key, []).append(finding)
+    return [group[0] if len(group) == 1 else _collapsed_row(group) for group in groups.values()]
+
+
+def first_issues(facts, limit):
+    """Broken timeline items in step order, since a repair starts at the earliest.
+
+    Straight from the timeline, so a broken joint the joint checks report is still
+    in its place. Returns ``(rows, total)``; both None when the timeline was not
+    read, which is not the same as a timeline with nothing wrong.
+    """
+    timeline = facts.get("timeline")
+    if timeline is None:
+        return None, None
+    rows, step = [], -1
+    for row in timeline["items"]:
+        step = step if row.get("index") is None else row["index"]  # inside a collapsed group: no slot of its own
+        if row["health"] in (ERROR, WARNING) and not row["suppressed"]:
+            rows.append({"step": step, "name": row["name"], "severity": row["health"],
+                         "component": row.get("component"), "message": _short(_timeline_message(row))})
+    rows.sort(key=lambda row: row["step"])
+    return rows[:limit], len(rows)
+
+
 def summarize(findings):
     by_severity = {severity: 0 for severity in SEVERITIES}
     by_group, by_check = OrderedDict(), Counter()
@@ -703,9 +761,11 @@ def summarize(findings):
             "by_check": dict(sorted(by_check.items()))}
 
 
-def changes_report(token, baseline, labeled, resolved, not_compared, max_findings, now=None):
+def changes_report(token, baseline, labeled, resolved, not_compared, max_findings, now=None, show=list):
+    """What changed since *baseline*. *show* turns ordered findings into report rows."""
     new = sort_findings([f for f in labeled if f["change"] == "new"])
     resolved = sort_findings(resolved)
+    new_rows, resolved_rows = show(new), show(resolved)
     return {
         "baseline_token": token,
         "baseline_profile": baseline["profile"],
@@ -715,21 +775,23 @@ def changes_report(token, baseline, labeled, resolved, not_compared, max_finding
         "unchanged": sum(1 for f in labeled if f["change"] == "unchanged"),
         "not_compared": sum(1 for f in labeled if f["change"] == "not_compared"),
         "not_compared_checks": not_compared,
-        "new_findings": new[:max_findings],
-        "resolved_findings": resolved[:max_findings],
-        "truncated": len(new) > max_findings or len(resolved) > max_findings,
+        "new_findings": new_rows[:max_findings],
+        "resolved_findings": resolved_rows[:max_findings],
+        "truncated": len(new_rows) > max_findings or len(resolved_rows) > max_findings,
     }
 
 
 def build_report(findings, *, document, profile, units, token, complete, checks_run, elapsed_s,
-                 skipped, max_findings, changes=None):
+                 skipped, max_findings, changes=None, issues=(None, None), show=list):
     """The result: verdict and summary first, then findings, then what was skipped.
 
     ``ok`` needs nothing worse than info AND full coverage: a clean report on half
-    a design is not a healthy design.
+    a design is not a healthy design. The summary counts every finding; *show*
+    turns the ordered findings into rows, and ``max_findings`` caps the rows.
+    *issues* is what ``first_issues`` returned.
     """
     summary = summarize(findings)
-    ordered = sort_findings(findings)
+    rows = show(sort_findings(findings))
     report = {
         "ok": complete and not summary["by_severity"][ERROR] and not summary["by_severity"][WARNING],
         "summary": summary,
@@ -743,7 +805,8 @@ def build_report(findings, *, document, profile, units, token, complete, checks_
     }
     if changes is not None:
         report["changes"] = changes
-    report["findings"] = ordered[:max_findings]
-    report["findings_truncated"] = len(ordered) > max_findings
+    report["first_issues"], report["first_issues_total"] = issues
+    report["findings"] = rows[:max_findings]
+    report["findings_truncated"] = len(rows) > max_findings
     report["skipped"] = skipped
     return report

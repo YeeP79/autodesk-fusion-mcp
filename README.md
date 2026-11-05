@@ -71,7 +71,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 |---|---|
 | `call_autodesk_api` | Execute a generic Fusion API call via dotted path |
 | `execute_python` | Run Python code inside the live Fusion session |
-| `capture_viewport` | PNG capture with temporary views, transparency, solid backgrounds, cropping and a clean view that hides sketches/construction/joints |
+| `capture_viewport` | PNG capture with temporary views, transparency, solid backgrounds, cropping and a clean view that hides sketches/construction/joints, leaving linked components alone and reporting any document it marked modified |
 | `get_viewport` | Read camera state and viewport dimensions |
 | `set_viewport` | Standard views, projection, orbit, pan, zoom, fit and camera restoration |
 | `get_active_selection` | Get objects currently selected in the viewport |
@@ -122,6 +122,7 @@ coordinates) or a `model_view` that frames the visible bodies with a chosen
 | `timeline_insert` | Run Python with the marker rolled back before a named timeline item, then always restore it and report what changed (dry run by default) |
 | `compare_files` | Compare two design files by occurrences, bodies, volume, component names and timeline length, closing only what it opened |
 | `compare_bodies` | Read-only: are two bodies the same solid, and where do they differ, by booleans on temporary copies with a sampled fallback; `unknown` rather than a false `same` |
+| `symmetry_report` | Read-only: how far the two sides of the design are from a true mirror. Pairs bodies across a plane by measured geometry, never names, worst first with deviations; closest pairs confirmed by reflected temporary copies; unmatched bodies by side |
 | `combine_bodies` | Join, cut or intersect existing bodies with `keep_tools` stated every time, a temporary-copy preview compared with what was built, and fresh references to every resulting body |
 | `edge_treatment` | Chamfer or fillet edges named by reference or by any point on them: one feature per body, then narrower retries on refusal, then the inset or radius measured, with a swapped two-distance chamfer rebuilt flipped; what would not build is reported as `partial` with Fusion's words |
 | `construction_plane` | Make an offset, three-point, angled or point-and-normal plane and report where it really is, normal sign included; anchors are named, listed and hidden, never deleted |
@@ -143,6 +144,10 @@ Every finding has this shape, and `extra_findings` takes the same one, so anothe
 | `why` | Why it matters (may be null) |
 | `fix_tool` | The tool to go to next (may be null) |
 | `source` | Extra findings only: who supplied it |
+
+The report folds repeats of a check into one row: `count`, `where` reading `N places`, and a `sample` of the first few (with `change_counts` beside a baseline). A lone finding stays as it is. `detail: true` lists everything, and naming a check in `checks` lists that check. Baselines always compare item by item, whatever the report shows.
+
+`first_issues` lists the broken timeline items in step order, joints included, because repairs start at the earliest: `step`, `name`, `severity`, `component`, `message`. It is null when the timeline was not read. Fusion's message markup is stripped.
 
 Checks say what they found, never how much it matters: `SEVERITY_TABLE` in `audit_rules.py` sets each check's severity per profile, and a check off there does not run. To add a check, write a function over the gathered facts, add it to `CHECKS`, and give it a row.
 
@@ -333,15 +338,15 @@ New tools must use `fusion_bridge/common/` instead of private copies of its help
 | Module | Holds |
 | --- | --- |
 | `results.py` | `ok_result`, `error_result`, `tool_result` |
-| `args.py` | Typed argument checks, unknown-key rejection, `error_pair` |
-| `api.py` | `safe`, `present`, `attempt` reads; `items` (skips what it cannot read) and `strict_items` (raises); both handle count/item collections and Fusion vectors |
+| `args.py` | Typed argument checks, `vector_arg`, unknown-key rejection, `error_pair` |
+| `api.py` | `safe`, `present`, `attempt` reads; `plain_text` for Fusion's message markup; `items` (skips what it cannot read) and `strict_items` (raises); both handle count/item collections and Fusion vectors |
 | `geometry.py` | Vector math, unit conversion |
 | `bodies.py` | Body enumeration, `find_occurrence`, `occurrence_frame`, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy`, face records, snapshots, diffs and the baseline store |
 | `timeline.py` | Timeline health, `read_rows`, `find_row`, marker and broken-feature refusals, the rolled-back window flag |
 | `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `in_context`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
 | `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `add_feature`, `snapshot`, `baseline`, `undo`, `body_changes`, `lost_outside`, `grew_outside`, `envelope` |
-| `geometry.py` | Vector math, `perpendicular_pair`, `rotate_about`, `collinear`, `same_plane`, unit conversion |
-| `bodies.py` | Body enumeration, `find_occurrence`, `occurrence_frame`, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy`, `volume_of`, face records, snapshots, diffs and the baseline store |
+| `geometry.py` | Vector math, `mirror_point`, `perpendicular_pair`, `rotate_about`, `collinear`, `same_plane`, unit conversion |
+| `bodies.py` | Body enumeration, `is_under`, `find_occurrence`, `occurrence_frame`, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy`, `volume_of`, face records, snapshots, diffs and the baseline store |
 | `timeline.py` | Timeline health, `read_rows`, `find_row`, marker and broken-feature refusals, the rolled-back window flag |
 | `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `owner_entry`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
 | `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `anchor_points`, `add_feature`, `snapshot`, `baseline`, `undo`, `body_changes`, `envelope` |

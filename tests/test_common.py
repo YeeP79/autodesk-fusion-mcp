@@ -145,6 +145,24 @@ class SafeTests(unittest.TestCase):
         self.assertIsNone(api.attempt(lambda: None.anything))
 
 
+class PlainTextTests(unittest.TestCase):
+    def test_tags_become_spaces(self):
+        self.assertEqual(api.plain_text("Body 1 missing<b>1 Failure</b><br/>Lost"), "Body 1 missing 1 Failure Lost")
+
+    def test_tags_with_attributes_and_entities(self):
+        self.assertEqual(api.plain_text('<font color="red">a &amp; b</font>'), "a & b")
+
+    def test_no_space_is_left_before_punctuation(self):
+        self.assertEqual(api.plain_text("<b>Failed</b>, try again<br/>."), "Failed, try again.")
+
+    def test_comparisons_are_not_tags(self):
+        self.assertEqual(api.plain_text("x < 5 and y > 3"), "x < 5 and y > 3")
+
+    def test_empty_and_only_markup(self):
+        self.assertEqual(api.plain_text(""), "")
+        self.assertEqual(api.plain_text("<br/>"), "")
+
+
 class ItemsTests(unittest.TestCase):
     def test_collection_vector_and_list(self):
         for source in (Indexed([1, 2]), Vector([1, 2]), [1, 2], (1, 2)):
