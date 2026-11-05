@@ -232,5 +232,7 @@ def stop():
             _server.stop()
             _server = None
 
+    python_exec.clear_sessions()
+
     log("MCP Integration stopped")
     drain_logs()
