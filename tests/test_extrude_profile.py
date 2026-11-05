@@ -1209,6 +1209,64 @@ class Occurrences(FusionStubs):
         self.assertEqual(roles, {"Sub:1": "target", "Sub:2": "other_instance"})
         self.assertTrue(any("other instances" in w for w in result["warnings"]))
 
+    def refuse_through_all(self):
+        original = self.world.on_add
+
+        def on_add(made, component):
+            if made.extent[1].value is None:  # a through-all definition is built with no value
+                raise RuntimeError("3 : Could not complete Through All Extrude, body not found to extrude through.")
+            return original(made, component)
+
+        self.world.on_add = on_add
+
+    def through_args(self, **extent):
+        return {"occurrence_path": "Sub:1", "operation": "cut", "target_bodies": [self.sub_ref],
+                "extent": {"type": "through_all", **extent}}
+
+    def test_a_refused_through_all_in_a_sub_component_runs_a_measured_distance(self):
+        self.sketch_in_sub()
+        self.refuse_through_all()
+        self.world.effects = {"SubBlock": 10.0}
+        result = self.world.run(direction=[0, 0, 1], **self.through_args())
+        self.assertEqual(result["status"], "built", result)
+        self.assertEqual(result["extrude"]["through_all_route"], "measured")
+        self.assertEqual(self.sub.extrudes.inputs[-1].extent[0], "one")
+        self.assertEqual(self.sub.extrudes.inputs[-1].extent[1].value.text.split()[1], "in")
+        self.assertEqual(len(self.sub.extrudes.inputs), 2)
+        self.assertTrue(any("measured distance" in w for w in result["warnings"]))
+
+    def test_both_sides_becomes_two_measured_distances(self):
+        self.sketch_in_sub()
+        self.refuse_through_all()
+        self.world.effects = {"SubBlock": 10.0}
+        result = self.world.run(direction=None, **self.through_args(both_sides=True))
+        self.assertEqual(result["status"], "built", result)
+        self.assertEqual(result["extrude"]["side_used"], "both")
+        made = self.sub.extrudes.inputs[-1]
+        self.assertEqual(made.extent[0], "two")
+        self.assertIsNotNone(made.extent[1].value)
+
+    def test_through_all_that_works_stays_through_all(self):
+        self.sketch_in_sub()
+        self.world.effects = {"SubBlock": 10.0}
+        result = self.world.run(direction=[0, 0, 1], **self.through_args())
+        self.assertEqual(result["extrude"]["through_all_route"], "fusion")
+        self.assertEqual(self.world.adds, 1)
+
+    def test_another_refusal_is_not_retried(self):
+        self.sketch_in_sub()
+        self.world.refusal = "something else"
+        result = self.world.run(direction=[0, 0, 1], **self.through_args())
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(self.world.adds, 1)
+
+    def test_a_root_through_all_that_finds_nothing_stays_refused(self):
+        self.world.body("Root block", low=(0, 0, 0), high=(5, 5, 2))
+        self.world.refusal = "3 : body not found to extrude through."
+        result = self.world.run(direction=[0, 0, 1], **cut_args("Root block", extent={"type": "through_all"}))
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(self.world.adds, 1)
+
     def test_a_root_sketch_needs_no_occurrence(self):
         result = self.world.run(occurrence_path="Sub:1")
         self.assertIn("this sketch is in root", result["refusals"][0])
