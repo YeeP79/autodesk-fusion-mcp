@@ -663,5 +663,21 @@ class HandlerTests(unittest.TestCase):
         self.assertIn("'tools' is required", result["content"][0]["text"])
 
 
+class KeptToolResultTests(unittest.TestCase):
+    """Fusion lists a kept tool among the feature's bodies; a sum of them read as a wrong result (seen live)."""
+
+    class _Body:
+        def __init__(self, name):
+            self.name = name
+
+    def test_kept_tool_is_not_a_result(self):
+        plate, tube = self._Body("Plate"), self._Body("Tube")
+        self.assertEqual(cb._without_kept_tools([plate, tube], [{"body": tube}], True), [plate])
+
+    def test_nothing_is_dropped_when_tools_are_consumed(self):
+        plate = self._Body("Plate")
+        self.assertEqual(cb._without_kept_tools([plate], [{"body": self._Body("Tube")}], False), [plate])
+
+
 if __name__ == "__main__":
     unittest.main()

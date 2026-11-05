@@ -240,6 +240,14 @@ def _plan(target, tools, opts, shown):
 # -- After the add --------------------------------------------------------------
 
 
+def _without_kept_tools(bodies, tools, keep_tools):
+    """The feature's result bodies: a kept tool is not a result."""
+    if not keep_tools:
+        return bodies
+    names = {safe(tool["body"], "name") for tool in tools}
+    return [body for body in bodies if safe(body, "name") not in names]
+
+
 def _entry_of(body, entries, path):
     return next((e for e in entries if e["occurrence_path"] == path
                  and same_entity(native(body), native(e["_body"]))), None)
@@ -321,7 +329,8 @@ def finish(design, session, outcome, job, warnings):
                            warnings=warnings + [f"bodies nobody named lost volume or went: {lost}"]
                            + undone["warnings"])
 
-    bodies = strict_items(safe(feature, "bodies"))
+    # With keep_tools, Fusion lists the kept tool among the feature's bodies (seen live).
+    bodies = _without_kept_tools(strict_items(safe(feature, "bodies")), tools, opts["keep_tools"])
     problems = [f"bodies nobody named lost volume or went: {lost}"] if lost else []
     if not bodies:
         problems.append("the feature reports no bodies")
