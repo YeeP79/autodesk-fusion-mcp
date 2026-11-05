@@ -177,7 +177,7 @@ def same_body(body, entry):
     """Is *body* the one in *entry*? ``==`` first, then path and name unless the name repeats."""
     if body is None:
         return False
-    if _same(body, entry["_body"]):
+    if same_entity(body, entry["_body"]):
         return True
     named_uniquely = entry.get("key") == f"{entry['occurrence_path']}/{entry['body']}"
     return named_uniquely and path_of(body) == entry["occurrence_path"] and safe(body, "name") == entry["body"]
@@ -200,7 +200,7 @@ def _in_context(entity, entry):
     return entity if mapped is None else mapped
 
 
-def _same(a, b):
+def same_entity(a, b):
     """``==`` on two wrappers; a stale one raises, and is not the same entity."""
     try:
         return a == b
@@ -208,10 +208,10 @@ def _same(a, b):
         return False
 
 
-def _unique(entities):
+def unique_entities(entities):
     kept = []
     for entity in entities:
-        if not any(_same(entity, other) for other in kept):
+        if not any(same_entity(entity, other) for other in kept):
             kept.append(entity)
     return kept
 
@@ -248,7 +248,7 @@ def resolve(scene, ref, tolerance_cm=REF_TOLERANCE_CM):
     found = [_in_context(e, entry) for e in scene.by_token(token)] if token else []
     if kind is not None:
         found = [e for e in found if entity_kind(e) == kind]
-    found = _unique(found)
+    found = unique_entities(found)
 
     if point is None:
         if len(found) > 1:
@@ -272,8 +272,8 @@ def resolve(scene, ref, tolerance_cm=REF_TOLERANCE_CM):
     search_kind = kind or (entity_kind(found[0]) if found else None)
     hits = []
     if search_kind is not None:
-        hits = _unique(h for h in (_in_context(h, entry) for h in scene.at_point(point, search_kind, tolerance_cm))
-                       if _on_body(h, entry))
+        mapped = (_in_context(hit, entry) for hit in scene.at_point(point, search_kind, tolerance_cm))
+        hits = unique_entities(hit for hit in mapped if _on_body(hit, entry))
     if len(hits) == 1:
         return Resolution(hits[0], search_kind, "point", [], None)
     if len(hits) > 1:
@@ -415,11 +415,11 @@ def split_siblings(face):
     mine = _cylinder_of(face)
     if mine is None:
         return 0
-    neighbors = _unique(other for edge in items(safe(face, "edges")) for other in items(safe(edge, "faces")))
+    neighbors = unique_entities(other for edge in items(safe(face, "edges")) for other in items(safe(edge, "faces")))
     siblings = 0
     for other in neighbors:
         theirs = _cylinder_of(other)
-        if not _same(other, face) and theirs is not None and same_cylinder(mine, theirs):
+        if not same_entity(other, face) and theirs is not None and same_cylinder(mine, theirs):
             siblings += 1
     return siblings
 
@@ -470,7 +470,7 @@ def edge_samples(edge):
 
 def adjacent_refs(edge, units, entry=None):
     """EntityRefs of the faces meeting at an edge; a seam meets one face twice."""
-    return [make_ref(face, "face", units, entry) for face in _unique(items(safe(edge, "faces")))]
+    return [make_ref(face, "face", units, entry) for face in unique_entities(items(safe(edge, "faces")))]
 
 
 def describe_edge(edge, units, entry=None, adjacent=True, samples=True):
@@ -660,7 +660,7 @@ def _normal_at(face, point):
 def read_edge_convexity(edge, entry, scene):
     """Classify one edge of a solid; ``entry`` is its body."""
     point = safe(edge, "pointOnEdge")
-    faces = _unique(items(safe(edge, "faces")))
+    faces = unique_entities(items(safe(edge, "faces")))
     if point is None or not faces:
         return None
     if len(faces) == 1:

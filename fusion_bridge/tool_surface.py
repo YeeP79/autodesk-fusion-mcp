@@ -50,6 +50,7 @@ DIRECT_TOOL_NAMES = frozenset({FUSION_DIALOGS, TAIL_LOG, FUSION_STATUS})
 CLOSE_DOCUMENT = "close_document"
 UPDATE_REFERENCES = "update_references"
 PROBE_GEOMETRY = "probe_geometry"
+FIND_ENTITIES = "find_entities"
 TIMELINE_INSERT = "timeline_insert"
 COMPARE_FILES = "compare_files"
 
@@ -110,6 +111,27 @@ _COORD_SCHEMA = {"type": "array", "items": {"type": "number"},
                  "description": "[x, y] in sketch space or [x, y, z] in model space."}
 
 NUMBERS_SCHEMA = {"type": "array", "items": {"type": "number"}}
+
+INDEXED_BODY_REF_SCHEMA = {
+    "type": "object",
+    "properties": {**BODY_REF_SCHEMA["properties"],
+                   "body_index": {"type": "integer", "minimum": 0,
+                                  "description": "Position in its occurrence, only when names repeat."}},
+    "required": ["occurrence_path", "body_name"], "additionalProperties": False,
+}
+# token or point may be left out, not both; a point alone also needs kind (checked by the handler).
+ENTITY_REF_SCHEMA = {
+    "type": "object",
+    "properties": {"token": {"type": "string"},
+                   "kind": {"type": "string", "enum": ["face", "edge", "vertex"]},
+                   "point": {**NUMBERS_SCHEMA, "description": "World [x, y, z] on the entity."},
+                   "body": INDEXED_BODY_REF_SCHEMA},
+    "additionalProperties": False,
+}
+_RANGE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {"min": {"type": "number"}, "max": {"type": "number"}},
+}
 
 # Each tool: {"name", "description", "inputSchema"}
 TOOL_DEFINITIONS = [
@@ -1267,6 +1289,98 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": FIND_ENTITIES,
+        "description": (
+            "Read-only: find faces or edges of the active design by geometry, and get EntityRefs the build tools "
+            "accept. Points, lengths and bboxes in and out are world coordinates in 'units' (default in). Scans "
+            "visible solids unless 'bodies' names others or include_hidden is set. Filters combine with AND, and "
+            "ranges are inclusive with 'min', 'max' or both; a filter on a value the type lacks excludes it, so a "
+            "plane has no diameter. 'normal' on a face is the outward normal of a plane; on an edge, a circle's "
+            "normal. 'axis' on a face is a cylinder, cone or torus axis; on an edge, a circle's normal or a line's "
+            "direction. 'length' on a face is a cylinder's length along its axis. Fillets are cylinders too: for a "
+            "bore use concavity concave with sweep_deg min 300. 'in_box' needs the whole entity inside. 'of_face' "
+            "gives that face's edges, or with entity face its neighbors; 'of_feature' gives what a feature made, "
+            "and misses faces a later Combine consumed. Refs do not survive a rollback: find inside the "
+            "timeline_insert window. Rows sort by label, or by sort_by (nearest for distance, otherwise largest "
+            "first). Result: bodies_scanned, scanned, matched, returned, truncated, scan_capped (stopped at about "
+            "90 s; matches are missing), entities [{ref, label, type, ...}], warnings. A cylinder row has diameter, "
+            "axis_origin, axis_direction, concavity, sweep_deg, length_along_axis and split_siblings (coaxial "
+            "faces sharing an edge: a split shaft). An edge row has length, closed, start, end, faces (EntityRefs), "
+            "and center, radius, diameter and normal on circles and arcs; convexity only when asked for."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "entity": {"type": "string", "enum": ["face", "edge"], "description": "What to find."},
+                "bodies": {"type": "array", "items": INDEXED_BODY_REF_SCHEMA,
+                           "description": "Bodies to scan, hidden or not. Default: visible solids."},
+                "include_hidden": {"type": "boolean", "description": "Also scan hidden solids. Default false."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "surface_types": {"type": "array", "description": "Faces only.",
+                                  "items": {"type": "string", "enum": ["plane", "cylinder", "cone", "sphere", "torus",
+                                                                       "elliptical_cylinder", "elliptical_cone",
+                                                                       "nurbs"]}},
+                "curve_types": {"type": "array", "description": "Edges only.",
+                                "items": {"type": "string", "enum": ["line", "circle", "arc", "ellipse", "spline"]}},
+                "normal": {
+                    "type": "object", "additionalProperties": False, "required": ["direction"],
+                    "properties": {
+                        "direction": {**NUMBERS_SCHEMA, "description": "[x, y, z], any length."},
+                        "tolerance_deg": {"type": "number", "description": "Default 1."},
+                        "signed": {"type": "boolean",
+                                   "description": "Default true: outward only. False also takes the reverse."},
+                    },
+                },
+                "axis": {
+                    "type": "object", "additionalProperties": False, "required": ["direction"],
+                    "properties": {
+                        "direction": {**NUMBERS_SCHEMA, "description": "[x, y, z], any length."},
+                        "tolerance_deg": {"type": "number", "description": "Default 1."},
+                        "signed": {"type": "boolean",
+                                   "description": "Default false: a surface's axis sense means little."},
+                        "through": {**NUMBERS_SCHEMA, "description": "A point the axis line must pass through."},
+                        "through_tolerance": {"type": "number", "description": "Default 0.001 in."},
+                    },
+                },
+                "diameter": _RANGE_SCHEMA,
+                "area": {**_RANGE_SCHEMA, "description": "Faces only; in units^2."},
+                "length": _RANGE_SCHEMA,
+                "sweep_deg": {**_RANGE_SCHEMA, "description": "Cylinder faces, arcs and circles, degrees."},
+                "concavity": {"type": "string", "enum": ["concave", "convex"],
+                              "description": "Cylinder faces: concave is a bore or inner fillet."},
+                "edge_convexity": {"type": "string", "enum": ["convex", "concave", "tangent"],
+                                   "description": "Edges only. Adds a containment test per candidate."},
+                "near": {
+                    "type": "object", "additionalProperties": False, "required": ["point", "within"],
+                    "properties": {
+                        "point": {**NUMBERS_SCHEMA, "description": "[x, y, z]."},
+                        "within": {"type": "number", "description": "Largest distance to the entity."},
+                    },
+                },
+                "on_plane": {
+                    "type": "object", "additionalProperties": False, "required": ["point", "normal"],
+                    "properties": {
+                        "point": {**NUMBERS_SCHEMA, "description": "A point on the plane."},
+                        "normal": {**NUMBERS_SCHEMA, "description": "The plane's normal; either sense."},
+                        "tolerance": {"type": "number", "description": "Default 0.001 in."},
+                    },
+                },
+                "in_box": {
+                    "type": "object", "additionalProperties": False, "required": ["min", "max"],
+                    "properties": {"min": NUMBERS_SCHEMA, "max": NUMBERS_SCHEMA},
+                },
+                "of_face": {**ENTITY_REF_SCHEMA, "description": "EntityRef of a face: its edges, or neighbor faces."},
+                "of_feature": {"type": "string", "description": "Exact timeline name of a feature."},
+                "include_created_by": {"type": "boolean",
+                                       "description": "Fill created_by on returned faces. Default false."},
+                "sort_by": {"type": "string", "enum": ["distance", "area", "length", "diameter"],
+                            "description": "distance needs 'near'; area is for faces."},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Default 50."},
+            },
+            "required": ["entity"],
+        },
+    },
+    {
         "name": TIMELINE_INSERT,
         "description": (
             "Run Python with the timeline marker rolled back before a named item, then restore it, so new "
@@ -1364,6 +1478,7 @@ def build_tool_handlers(
     close_document,
     update_references,
     probe_geometry,
+    find_entities,
     timeline_insert,
     compare_files,
 ):
@@ -1417,6 +1532,7 @@ def build_tool_handlers(
         CLOSE_DOCUMENT: close_document,
         UPDATE_REFERENCES: update_references,
         PROBE_GEOMETRY: probe_geometry,
+        FIND_ENTITIES: find_entities,
         TIMELINE_INSERT: timeline_insert,
         COMPARE_FILES: compare_files,
     }

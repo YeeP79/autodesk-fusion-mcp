@@ -309,7 +309,8 @@ def undo(design, feature, before):
     differ = sorted(k for k in set(before) | set(after)
                     if k not in before or k not in after or volume_changed(before[k]["volume"], after[k]["volume"]))
     if differ:
-        return {"undone": False, "warnings": [f"the feature was deleted but these bodies did not return: {differ[:20]}"]}
+        return {"undone": False,
+                "warnings": [f"the feature was deleted but these bodies did not return: {differ[:20]}"]}
     return {"undone": True, "warnings": []}
 
 

@@ -1,13 +1,17 @@
 """EntityRef parsing, resolution, description and the pure filters, on fakes."""
 
 import ast
+import json
 import math
 import os
 import unittest
+from unittest import mock
 
 import _fusion_test_bootstrap  # noqa: F401
+import adsk.core
+import adsk.fusion
+from fusion_bridge.common import bodies
 from fusion_bridge.common import entity_refs as er
-from fusion_bridge.common.bodies import assign_keys
 
 
 class P:
@@ -59,7 +63,7 @@ class Scene:
     def __init__(self, tokens=(), hits=(), entries=()):
         self.tokens = list(tokens)
         self.hits = list(hits)
-        self._entries = assign_keys([dict(e) for e in entries])
+        self._entries = bodies.assign_keys([dict(e) for e in entries])
         self.searches = []
 
     def entries(self):
@@ -299,7 +303,7 @@ class RowTests(unittest.TestCase):
         self.assertEqual(er.resolved_row(got, "of_face")["role"], "of_face")
 
     def test_body_ref_gives_an_index_only_for_repeated_names(self):
-        keyed = assign_keys([entry(Body()), entry(Body(), name="Twin", index=1), entry(Body(), name="Twin", index=2)])
+        keyed = bodies.assign_keys([entry(Body()), entry(Body(), name="Twin", index=1), entry(Body(), name="Twin", index=2)])
         self.assertEqual(er.body_ref(keyed[0]), {"occurrence_path": "root", "body_name": "Plate"})
         self.assertEqual(er.body_ref(keyed[2])["body_index"], 2)
 
@@ -364,6 +368,13 @@ class DescribeFaceTests(unittest.TestCase):
         rec = er.describe_face(face, "in", {"occurrence_path": "root", "body": "B", "index": 0, "key": "root/B"})
         self.assertEqual(rec["ref"], {"kind": "face", "token": "tok", "point": [1.0, 0.0, 0.0],
                                       "body": {"occurrence_path": "root", "body_name": "B"}})
+
+    def test_a_described_ref_parses_back(self):
+        keyed = bodies.assign_keys([entry(Body())])[0]
+        rec = er.describe_face(Face(plane(), point=(2.54, 0.0, 0.0)), "in", keyed)
+        parsed = er.parse_ref(json.loads(json.dumps(rec["ref"])), "in")
+        self.assertEqual(parsed, {"token": "tok", "kind": "face", "point": (2.54, 0.0, 0.0),
+                                  "body": ("root", "Plate", None)})
 
     def test_cylinder_fields(self):
         face = Face(cylinder(), area=math.pi * 2.0, normal=(1.0, 0.0, 0.0), point=(1.5, 1.0, 0.5),
@@ -705,6 +716,61 @@ class ConvexityTests(unittest.TestCase):
         bad = Face(plane())
         bad.evaluator = None
         self.assertIsNone(er.read_edge_convexity(Edge(Curve(0), faces=[bad, Face(plane())]), {}, None))
+
+
+class FusionSceneTests(unittest.TestCase):
+    """The only code asking Fusion: right calls, right arguments, and failures read as nothing."""
+
+    class Types:
+        BRepFaceEntityType, BRepEdgeEntityType, BRepVertexEntityType = 1, 2, 3
+
+    def setUp(self):
+        self.root = mock.Mock(allOccurrences=[], bRepBodies=[])
+        self.design = mock.Mock(rootComponent=self.root)
+        self.manager = mock.Mock()
+        app = mock.Mock(measureManager=self.manager)
+        for target, name, value in ((adsk.fusion, "BRepEntityTypes", self.Types),
+                                    (adsk.core.Point3D, "create", lambda *p: p),
+                                    (adsk.core.Application, "get", lambda: app)):
+            patcher = mock.patch.object(target, name, value, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.scene = er.FusionScene(self.design)
+
+    def test_by_token(self):
+        self.design.findEntityByToken.return_value = ["a", "b"]
+        self.assertEqual(self.scene.by_token("t"), ["a", "b"])
+
+    def test_rejected_token_names_nothing(self):
+        self.design.findEntityByToken.side_effect = RuntimeError("bad token")
+        self.assertEqual(self.scene.by_token("t"), [])
+
+    def test_at_point_searches_hidden_bodies_too(self):
+        self.root.findBRepUsingPoint.return_value = ["hit"]
+        self.assertEqual(self.scene.at_point((1.0, 2.0, 3.0), "edge", 0.01), ["hit"])
+        self.root.findBRepUsingPoint.assert_called_once_with((1.0, 2.0, 3.0), 2, 0.01, False)
+
+    def test_distance(self):
+        self.manager.measureMinimumDistance.return_value = mock.Mock(value=0.5)
+        self.assertEqual(self.scene.distance("face", (0.0, 0.0, 0.0)), 0.5)
+        self.manager.measureMinimumDistance.assert_called_once_with((0.0, 0.0, 0.0), "face")
+
+    def test_unmeasurable_distance_is_none(self):
+        self.manager.measureMinimumDistance.side_effect = RuntimeError("no")
+        self.assertIsNone(self.scene.distance("face", (0.0, 0.0, 0.0)))
+
+    def test_contains(self):
+        body = mock.Mock()
+        for value, name in ((0, "inside"), (1, "on"), (2, "outside"), (3, "unknown")):
+            body.pointContainment.return_value = value
+            self.assertEqual(self.scene.contains({"_body": body}, (0.0, 0.0, 0.0)), name)
+
+    def test_entries_are_keyed_and_read_once(self):
+        self.root.bRepBodies = [mock.Mock(isVisible=True, isSolid=True, boundingBox=None)]
+        self.root.bRepBodies[0].name = "A"
+        first = self.scene.entries()
+        self.assertEqual(first[0]["key"], "root/A")
+        self.assertIs(self.scene.entries(), first)
 
 
 class LayerTests(unittest.TestCase):

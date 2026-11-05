@@ -58,6 +58,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "close_document",
         "update_references",
         "probe_geometry",
+        "find_entities",
         "timeline_insert",
         "compare_files",
     }
