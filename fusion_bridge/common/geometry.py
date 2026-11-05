@@ -46,6 +46,13 @@ def unit(v):
     return tuple(c / n for c in v) if n > 1e-12 else None
 
 
+def to_local(point, frame):
+    """A point in the coordinates of *frame*: ``(origin, x, y, z)``, orthonormal axes."""
+    origin, *axes = frame
+    offset = sub(point, origin)
+    return tuple(dot(offset, axis) for axis in axes)
+
+
 # -- Units ---------------------------------------------------------------------
 
 

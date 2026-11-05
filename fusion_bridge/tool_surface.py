@@ -53,6 +53,8 @@ PROBE_GEOMETRY = "probe_geometry"
 FIND_ENTITIES = "find_entities"
 TIMELINE_INSERT = "timeline_insert"
 COMPARE_FILES = "compare_files"
+COMPARE_BODIES = "compare_bodies"
+APPLY_THREAD = "apply_thread"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -107,8 +109,15 @@ BODY_REF_SCHEMA = {
     "required": ["occurrence_path", "body_name"], "additionalProperties": False,
 }
 
+INDEXED_BODY_REF_SCHEMA = {
+    **BODY_REF_SCHEMA,
+    "properties": {**BODY_REF_SCHEMA["properties"],
+                   "body_index": {"type": "integer", "minimum": 0,
+                                  "description": "Index within the occurrence; required when names repeat."}},
+}
+
 _COORD_SCHEMA = {"type": "array", "items": {"type": "number"},
-                 "description": "[x, y] in sketch space or [x, y, z] in model space."}
+                 "description": "[x, y] in sketch space or [x, y, z] in model or world space."}
 
 NUMBERS_SCHEMA = {"type": "array", "items": {"type": "number"}}
 
@@ -885,33 +894,50 @@ TOOL_DEFINITIONS = [
         "name": SKETCH_PROFILE,
         "description": (
             "Build a closed sketch outline safely, or inspect a sketch's profiles. "
-            "closed_polyline: new sketch on sketch_plane (xy|xz|yz of the component) or plane_entity_token; "
-            "points are [x,y] in sketch space or, with space 'model', [x,y,z] in the component's model space "
-            "(mapped with Sketch.modelToSketchSpace; on XZ, sketch y is model -z). The loop closes itself; "
+            "closed_polyline: on a new sketch on sketch_plane (xy|xz|yz of the component) or plane_entity_token, or "
+            "added to the existing sketch at sketch_entity_token, so an outline and its holes share a sketch; "
+            "points are [x,y] in sketch space, or [x,y,z] with space 'model' (the component's own frame, mapped with "
+            "Sketch.modelToSketchSpace; on XZ, sketch y is model -z) or space 'world' (the root assembly's frame). "
+            "Under a moved occurrence model is not world: world in a sub-component needs occurrence_path, the "
+            "instance to go through, and the result's world_points are read back from Fusion and refused if they "
+            "are not where asked. The loop closes itself; "
             "every curve shares SketchPoints with its neighbors, so moving a vertex keeps the profile closed. "
             "arcs replace segment i (points i -> i+1) with a 3-point arc via mid_point, or bulge "
             "(DXF tan(sweep/4), + = counterclockwise about the sketch normal, 1 = semicircle). "
             "The outline is refused before anything is created if it self-intersects, repeats a point, "
-            "has a zero-length segment, doubles back, encloses no area or (model space) leaves the plane. "
+            "has a zero-length segment, doubles back, encloses no area or (model or world space) leaves the plane. "
             "Returns sketch and profile entity tokens, warns when more than one profile results, and stores "
             "$sketch_profile_sketch / $sketch_profile_profile for follow-up calls. "
-            "profiles: for a sketch by name (in component) or sketch_entity_token, list every profile with "
+            "circles: each circle in circles as one entity (never two arcs, whose extruded wall is two faces "
+            "and cannot be threaded), on the same three targets. center is [x,y] in sketch space or [x,y,z] "
+            "on the plane with space 'model' or 'world'; world_center reads it back. Refused if two circles "
+            "repeat, cross or touch; nested circles are fine. Each entry of the result's circles has whole: true when a profile uses the "
+            "circle uncut, false when other sketch curves cut it, null when it bounds no profile. "
+            "Adding to a sketch: name and component are refused, added_to_existing and profile_count_before "
+            "are reported, a failed build removes only what it drew, and a feature that already uses the "
+            "sketch recomputes against its new profiles. "
+            "profiles: for a sketch by name (in component or occurrence_path) or sketch_entity_token, list every profile with "
             "area, centroid (sketch space) and loop counts, the largest_profile, and with point the "
             "profile_containing it. Areas are in units squared. Profile tokens change when the sketch recomputes."
         ),
         "inputSchema": {
             "type": "object", "additionalProperties": False,
             "properties": {
-                "action": {"type": "string", "enum": ["closed_polyline", "profiles"]},
+                "action": {"type": "string", "enum": ["closed_polyline", "circles", "profiles"]},
                 "units": {"type": "string", "enum": ["in", "cm", "mm"],
                           "description": "Units of every coordinate in and out."},
-                "space": {"type": "string", "enum": ["sketch", "model"],
-                          "description": "Coordinate space of points/mid_point/point (default sketch)."},
+                "space": {"type": "string", "enum": ["sketch", "model", "world"],
+                          "description": "Coordinate space of points/mid_point/center/point (default sketch). "
+                                         "model is the component's frame; world the root assembly's."},
                 "sketch_plane": {"type": "string", "enum": ["xy", "xz", "yz"],
-                                 "description": "closed_polyline: construction plane of the component."},
+                                 "description": "closed_polyline, circles: construction plane of the component."},
                 "plane_entity_token": {"type": "string",
-                                       "description": "closed_polyline: construction plane or planar face token."},
+                                       "description": "closed_polyline, circles: construction plane or planar face token."},
                 "component": {"type": "string", "description": "Component name (default root)."},
+                "occurrence_path": {"type": "string",
+                                    "description": "Instance of the component, as list_bodies names it "
+                                                   "(e.g. 'Sub:1'); sets the component. Required for space world "
+                                                   "in a sub-component."},
                 "points": {"type": "array", "items": _COORD_SCHEMA,
                            "description": "closed_polyline: 2-500 outline vertices; the loop closes itself."},
                 "arcs": {
@@ -926,9 +952,22 @@ TOOL_DEFINITIONS = [
                         "required": ["index"],
                     },
                 },
+                "circles": {
+                    "type": "array",
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {
+                            "center": _COORD_SCHEMA,
+                            "diameter": {"type": "number", "description": "Above zero."},
+                        },
+                        "required": ["center", "diameter"],
+                    },
+                    "description": "circles: 1-500 circles, drawn into one sketch.",
+                },
                 "name": {"type": "string",
-                         "description": "closed_polyline: new sketch name (must be unused). profiles: sketch to inspect."},
-                "sketch_entity_token": {"type": "string", "description": "profiles: sketch to inspect."},
+                         "description": "closed_polyline, circles: new sketch name (must be unused). profiles: sketch to inspect."},
+                "sketch_entity_token": {"type": "string",
+                                        "description": "closed_polyline, circles: sketch to add to. profiles: sketch to inspect."},
                 "point": {**_COORD_SCHEMA, "description": "profiles: report which profile contains this point."},
             },
             "required": ["action", "units"],
@@ -1427,6 +1466,64 @@ TOOL_DEFINITIONS = [
             "required": ["file_a", "file_b"],
         },
     },
+    {
+        "name": COMPARE_BODIES,
+        "description": (
+            "Are two bodies of the active design the same solid, and where do they differ? Read-only: three "
+            "booleans (overlap, a-b, b-a) on temporary copies, nothing enters the timeline. Linked and hidden "
+            "bodies are allowed; surface bodies are refused. verdict 'same' needs the symmetric difference within "
+            "volume_tolerance and the box shift within length_tolerance; equal volume alone proves nothing. Lumps "
+            "of each difference say where. Failed or inconsistent booleans fall back to a containment grid "
+            "(method 'sampled', error bar in warnings, 'same' only if the whole bar fits the tolerance); when "
+            "neither can be trusted the verdict is 'unknown', never 'same'. Volumes in the caller's units; "
+            "b's bbox is reported at its translated position."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "a": {**INDEXED_BODY_REF_SCHEMA, "description": "First body."},
+                "b": {**INDEXED_BODY_REF_SCHEMA, "description": "Second body; must differ from a."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "volume_tolerance": {"type": "number", "minimum": 0,
+                                     "description": "In units^3. Default the equivalent of 0.0001 in^3."},
+                "length_tolerance": {"type": "number", "minimum": 0,
+                                     "description": "In units. Default the equivalent of 0.001 in."},
+                "max_lumps": {"type": "integer", "minimum": 0, "maximum": 500,
+                              "description": "Lumps listed per difference, largest first. Default 20."},
+                "sample_fallback": {"type": "boolean", "description": "Sample when the booleans fail. Default true."},
+                "translate_b": {"type": "array", "items": {"type": "number"},
+                                "description": "[x, y, z] to move b by first, to compare against a copy sitting elsewhere."},
+            },
+            "required": ["a", "b"],
+        },
+    },
+    {
+        "name": APPLY_THREAD,
+        "description": (
+            "Read Fusion's thread library (read-only for now; applying a thread is not available yet). Actions:\n"
+            "- catalog: narrows by what is given. Nothing: families. family: sizes. family + size: designations. "
+            "family + designation: classes with major, minor and pitch in 'units', for the 'internal' side; "
+            "diameters depend on the class, and default_class is the one applying would use. Sizes take the "
+            "dialog's spellings too ('1/4', '#10', '6 mm'); the reply uses the API's ('0.25', '0.19(#10)', '6.0').\n"
+            "- recommend: Fusion's nearest thread to 'diameter'. This is the nearest size, not what the part is. "
+            "family defaults to the inch or metric default by 'units'.\n"
+            "Unknown names are refused with near_matches; tapered families are refused by name."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "action": {"type": "string", "enum": ["catalog", "recommend"]},
+                "family": {"type": "string", "description": "Thread type, e.g. 'ANSI Unified Screw Threads'."},
+                "size": {"type": "string", "description": "catalog: e.g. '0.25', '1/4', '#10', '6 mm'."},
+                "designation": {"type": "string", "description": "catalog: e.g. '1/4-20 UNC'."},
+                "thread_class": {"type": "string", "description": "catalog: report only this class, e.g. '2A'."},
+                "internal": {"type": "boolean", "description": "Internal thread. Default false."},
+                "diameter": {"type": "number", "description": "recommend: cylinder diameter in 'units'."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -1481,6 +1578,8 @@ def build_tool_handlers(
     find_entities,
     timeline_insert,
     compare_files,
+    compare_bodies,
+    apply_thread,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -1535,6 +1634,8 @@ def build_tool_handlers(
         FIND_ENTITIES: find_entities,
         TIMELINE_INSERT: timeline_insert,
         COMPARE_FILES: compare_files,
+        COMPARE_BODIES: compare_bodies,
+        APPLY_THREAD: apply_thread,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")

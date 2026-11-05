@@ -61,6 +61,8 @@ class ToolSurfaceTests(unittest.TestCase):
         "find_entities",
         "timeline_insert",
         "compare_files",
+        "compare_bodies",
+        "apply_thread",
     }
 
     def test_all_expected_tools_present(self):

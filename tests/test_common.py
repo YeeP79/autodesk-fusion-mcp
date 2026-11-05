@@ -252,6 +252,12 @@ class VectorTests(unittest.TestCase):
     def test_cross_is_right_handed(self):
         self.assertEqual(geometry.cross((1, 0, 0), (0, 1, 0)), (0, 0, 1))
 
+    def test_to_local_undoes_a_moved_and_turned_frame(self):
+        frame = ((10, 0, 0), (0, 1, 0), (-1, 0, 0), (0, 0, 1))  # A quarter turn about z, then +10 in x.
+        self.assertEqual(geometry.to_local((10, 2, 5), frame), (2, 0, 5))
+        self.assertEqual(geometry.to_local((9, 0, 0), frame), (0, 1, 0))
+        self.assertEqual(geometry.to_local((10, 0, 0), frame), (0, 0, 0))
+
     def test_unit(self):
         self.assertEqual(geometry.unit((0.0, 3.0, 4.0)), (0.0, 0.6, 0.8))
         self.assertIsNone(geometry.unit((0.0, 0.0, 0.0)))
@@ -514,6 +520,76 @@ class BodyEntryTests(unittest.TestCase):
 
         target = Falsy()
         self.assertIs(bodies.native(Fake(nativeObject=target)), target)
+
+    def test_bbox_shift(self):
+        box = ((0, 0, 0), (1, 1, 1))
+        self.assertEqual(bodies.bbox_shift(box, box), 0)
+        self.assertEqual(bodies.bbox_shift(box, ((0, 0, 0), (1, 3, 1))), 2)
+        self.assertIsNone(bodies.bbox_shift(None, box))
+
+    def test_parse_body_ref(self):
+        self.assertEqual(bodies.parse_body_ref({"occurrence_path": "root", "body_name": "B"}, "'a'"), ("root", "B", None))
+        self.assertEqual(bodies.parse_body_ref({"occurrence_path": "root", "body_name": "B", "body_index": 2}, "'a'"),
+                         ("root", "B", 2))
+
+    def test_parse_body_ref_refusals(self):
+        for value in ("B", {"occurrence_path": "root"}, {"occurrence_path": " ", "body_name": "B"},
+                      {"occurrence_path": "root", "body_name": "B", "extra": 1},
+                      {"occurrence_path": "root", "body_name": "B", "body_index": -1},
+                      {"occurrence_path": "root", "body_name": "B", "body_index": True}):
+            with self.assertRaises(ValueError):
+                bodies.parse_body_ref(value, "'a'")
+
+
+def box_of(low, high):
+    return Fake(minPoint=Fake(x=low[0], y=low[1], z=low[2]), maxPoint=Fake(x=high[0], y=high[1], z=high[2]))
+
+
+class TempCopyTests(unittest.TestCase):
+    """The copy of a proxy may land in component space (live check CM-2)."""
+
+    class Manager:
+        def __init__(self, copy, moved_to=None):
+            self.result, self.moved_to, self.transforms = copy, moved_to, []
+
+        def copy(self, body):
+            return self.result
+
+        def transform(self, body, matrix):
+            self.transforms.append(matrix)
+            if self.moved_to is None:
+                return False
+            body.boundingBox = self.moved_to
+            return True
+
+    def world(self, context=None):
+        return Fake(name="B", boundingBox=box_of((10, 0, 0), (11, 1, 1)), assemblyContext=context)
+
+    def test_a_copy_already_in_place_is_left_alone(self):
+        copy = Fake(boundingBox=box_of((10, 0, 0), (11, 1, 1)))
+        manager = self.Manager(copy)
+        self.assertIs(bodies.temp_copy(manager, self.world()), copy)
+        self.assertEqual(manager.transforms, [])
+
+    def test_a_copy_in_component_space_is_moved_by_the_occurrence(self):
+        copy = Fake(boundingBox=box_of((0, 0, 0), (1, 1, 1)))
+        manager = self.Manager(copy, moved_to=box_of((10, 0, 0), (11, 1, 1)))
+        body = self.world(Fake(transform2="matrix"))
+        self.assertIs(bodies.temp_copy(manager, body), copy)
+        self.assertEqual(manager.transforms, ["matrix"])
+
+    def test_a_copy_that_cannot_be_placed_raises(self):
+        misplaced = box_of((0, 0, 0), (1, 1, 1))
+        for manager, body in ((self.Manager(Fake(boundingBox=misplaced)), self.world()),
+                              (self.Manager(Fake(boundingBox=misplaced)), self.world(Fake(transform2="m"))),
+                              (self.Manager(Fake(boundingBox=misplaced), moved_to=misplaced),
+                               self.world(Fake(transform2="m")))):
+            with self.assertRaises(RuntimeError):
+                bodies.temp_copy(manager, body)
+
+    def test_no_copy_raises(self):
+        with self.assertRaises(RuntimeError):
+            bodies.temp_copy(self.Manager(None), self.world())
 
 
 def fake_file(name, file_id, extension="f3d", version=1):

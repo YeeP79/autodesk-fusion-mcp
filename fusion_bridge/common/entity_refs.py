@@ -35,7 +35,7 @@ from .bodies import (
     face_record,
     native,
     object_type,
-    parse_body_refs,
+    parse_body_ref,
     path_of,
     resolve_targets,
     vertex_points,
@@ -106,7 +106,7 @@ def parse_ref(value, units, where="ref"):
     if token is None and kind is None:
         raise ValueError(f"'{where}' with only a point needs 'kind'")
     return {"token": token, "kind": kind, "point": point,
-            "body": None if body is None else parse_body_refs([body], f"{where}.body")[0]}
+            "body": None if body is None else parse_body_ref(body, f"'{where}.body'")}
 
 
 # -- Resolving a ref ------------------------------------------------------------

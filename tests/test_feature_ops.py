@@ -1,4 +1,4 @@
-"""feature_ops: preflight, values, add, snapshots, undo, temp copies and the envelope, on fakes."""
+"""feature_ops: preflight, values, add, snapshots, undo and the envelope, on fakes."""
 
 import json
 import unittest
@@ -404,51 +404,6 @@ class UndoTests(unittest.TestCase):
                 outcome = self.run_undo(Feature(delete=delete), {}, {})
                 self.assertFalse(outcome["undone"])
                 self.assertIn("could not be deleted", outcome["warnings"][0])
-
-
-class Brep:
-    def __init__(self, low, high, occurrence=None):
-        self.boundingBox = Box(low, high)
-        self.assemblyContext = occurrence
-        self.name = "B"
-
-
-class Manager:
-    def __init__(self, copy):
-        self._copy = copy
-        self.moved = []
-
-    def copy(self, body):
-        return self._copy
-
-    def transform(self, body, matrix):
-        self.moved.append((body, matrix))
-        return True
-
-
-class TempCopyTests(unittest.TestCase):
-    def test_root_body_is_left_alone(self):
-        copy = Brep((0, 0, 0), (1, 1, 1))
-        manager = Manager(copy)
-        self.assertIs(fo.temp_copy(Brep((0, 0, 0), (1, 1, 1)), manager), copy)
-        self.assertEqual(manager.moved, [])
-
-    def test_world_copy_of_a_proxy_is_left_alone(self):
-        occurrence = type("O", (), {"transform2": "matrix"})()
-        manager = Manager(Brep((10, 0, 0), (11, 1, 1)))
-        fo.temp_copy(Brep((10, 0, 0), (11, 1, 1), occurrence), manager)
-        self.assertEqual(manager.moved, [])
-
-    def test_component_space_copy_is_moved_to_world(self):
-        occurrence = type("O", (), {"transform2": "matrix"})()
-        copy = Brep((0, 0, 0), (1, 1, 1))
-        manager = Manager(copy)
-        fo.temp_copy(Brep((10, 0, 0), (11, 1, 1), occurrence), manager)
-        self.assertEqual(manager.moved, [(copy, "matrix")])
-
-    def test_no_copy_raises(self):
-        with self.assertRaises(RuntimeError):
-            fo.temp_copy(Brep((0, 0, 0), (1, 1, 1)), Manager(None))
 
 
 class EnvelopeTests(unittest.TestCase):

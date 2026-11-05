@@ -25,7 +25,7 @@ import adsk.fusion
 
 from .common.api import safe
 from .common.args import is_finite_number, is_int
-from .common.bodies import ROOT_PATH, body_entries, body_label as label, parse_body_refs, resolve_targets
+from .common.bodies import ROOT_PATH, body_entries, label, parse_body_refs, resolve_targets
 from .common.geometry import CM_PER_UNIT, along, cross, dot, from_cm, scaled, unit, xyz
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log

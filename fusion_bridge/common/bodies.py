@@ -12,9 +12,12 @@ import uuid
 from collections import OrderedDict
 
 from .api import safe, strict_items
+from .args import is_int
 from .geometry import display_direction, display_point, dot, sub, to_units, unit, xyz
 
 ROOT_PATH = "root"
+# How far a temporary copy's box may sit from its source's and still be the same place.
+PLACEMENT_TOLERANCE_CM = 1e-3
 
 # adsk.core.SurfaceTypes values (Plane=0 ... NURBS=7).
 SURFACE_TYPES = {
@@ -67,6 +70,12 @@ def iter_body_entries(root):
             }
 
 
+def find_occurrence(root, path):
+    """The occurrence whose ``fullPathName`` is *path*, or None."""
+    return next((occ for occ in strict_items(safe(root, "allOccurrences"))
+                 if safe(occ, "fullPathName") == path), None)
+
+
 def is_hidden(entry):
     """Hidden if the body is hidden or its owning occurrence is."""
     return entry["visible"] is False or entry["occurrence_visible"] is False
@@ -82,6 +91,21 @@ def native(entity):
     """The native object behind a proxy; *entity* itself when it is not one."""
     found = safe(entity, "nativeObject")
     return found if found is not None else entity
+
+
+def bbox_overlap(a, b, tol=0.0):
+    """True when two (min, max) boxes overlap (or touch within tol)."""
+    if a is None or b is None:
+        return True
+    (amin, amax), (bmin, bmax) = a, b
+    return all(amin[i] <= bmax[i] + tol and bmin[i] <= amax[i] + tol for i in range(3))
+
+
+def bbox_shift(before, after):
+    """Largest movement of any box coordinate; None when a box is missing."""
+    if before is None or after is None:
+        return None
+    return max(abs(a - b) for pb, pa in zip(before, after) for b, a in zip(pb, pa))
 
 
 def path_of(entity):
@@ -111,7 +135,7 @@ def body_entries(root):
         }
 
 
-def body_label(target):
+def label(target):
     return f"{target['occurrence_path']}/{target['body']}"
 
 
@@ -126,24 +150,27 @@ def assign_keys(entries):
     return entries
 
 
-def parse_body_refs(value, key="bodies"):
-    """Check a list of BodyRefs; returns [(occurrence_path, body_name, body_index)].
+def parse_body_ref(value, where):
+    """A BodyRef object as ``(occurrence_path, body_name, body_index)``; raises ValueError."""
+    if not isinstance(value, dict) or set(value) - {"occurrence_path", "body_name", "body_index"}:
+        raise ValueError(f"{where} takes occurrence_path, body_name and optional body_index")
+    path, name, index = value.get("occurrence_path"), value.get("body_name"), value.get("body_index")
+    if not isinstance(path, str) or not path.strip() or not isinstance(name, str) or not name.strip():
+        raise ValueError(f"{where} needs a non-empty occurrence_path and body_name")
+    if index is not None and (not is_int(index) or index < 0):
+        raise ValueError("'body_index' must be a non-negative integer")
+    return path, name, index
 
-    Raises ValueError. Repeated refs are dropped; ``body_index`` may be None.
-    """
+
+def parse_body_refs(value, key="bodies"):
+    """A list of BodyRefs as ``parse_body_ref`` tuples, repeats dropped; raises ValueError."""
     if not isinstance(value, list) or not value:
         raise ValueError(f"'{key}' must be a non-empty array; omit it for all visible solids")
     wanted = []
     for item in value:
-        if not isinstance(item, dict) or set(item) - {"occurrence_path", "body_name", "body_index"}:
-            raise ValueError(f"each '{key}' entry takes occurrence_path, body_name and optional body_index")
-        path, name, index = item.get("occurrence_path"), item.get("body_name"), item.get("body_index")
-        if not isinstance(path, str) or not path.strip() or not isinstance(name, str) or not name.strip():
-            raise ValueError(f"each '{key}' entry needs a non-empty occurrence_path and body_name")
-        if index is not None and (not isinstance(index, int) or isinstance(index, bool) or index < 0):
-            raise ValueError("'body_index' must be a non-negative integer")
-        if (path, name, index) not in wanted:
-            wanted.append((path, name, index))
+        ref = parse_body_ref(item, f"each '{key}' entry")
+        if ref not in wanted:
+            wanted.append(ref)
     return wanted
 
 
@@ -179,8 +206,32 @@ def resolve_targets(entries, wanted):
         if target not in targets:
             targets.append(target)
         if not target["solid"]:
-            warnings.append(f"{body_label(target)} is not solid: containment and intervals are not meaningful for it")
+            warnings.append(f"{label(target)} is not solid: containment and intervals are not meaningful for it")
     return targets, warnings, None
+
+
+def temp_copy(manager, body):
+    """A temporary copy of *body* sitting where *body* sits, in world coordinates.
+
+    *manager* is the ``TemporaryBRepManager``. The copy of an occurrence proxy
+    may come back in component space, so it is compared with the proxy's box and
+    moved by the occurrence's transform when it landed elsewhere. Raises
+    RuntimeError when no copy can be placed: a misplaced copy would compare
+    wrongly without looking wrong.
+    """
+    def placed(copy):
+        shift = bbox_shift(bbox(copy), bbox(body))
+        return shift is not None and shift <= PLACEMENT_TOLERANCE_CM
+
+    copy = manager.copy(body)
+    if copy is None:
+        raise RuntimeError(f"no temporary copy of {safe(body, 'name')}")
+    if placed(copy):
+        return copy
+    occurrence = safe(body, "assemblyContext")
+    if occurrence is not None and manager.transform(copy, occurrence.transform2) and placed(copy):
+        return copy
+    raise RuntimeError(f"the temporary copy of {safe(body, 'name')} did not land on the body")
 
 
 # -- Faces --------------------------------------------------------------------
@@ -391,12 +442,6 @@ def volume_changed(before, after):
     return abs(after - before) > max(VOLUME_ABS_TOLERANCE_CM3, VOLUME_REL_TOLERANCE * abs(before))
 
 
-def _bbox_shift(before, after):
-    if before is None or after is None:
-        return None
-    return max(abs(a - b) for pb, pa in zip(before, after) for b, a in zip(pb, pa))
-
-
 def _report_units(value_cm, units, power=1):
     return to_units(value_cm, units, power, SNAPSHOT_DIGITS)
 
@@ -441,7 +486,7 @@ def diff_snapshots(before, after, edited_component, units):
                              delta=_report_units(delta, units, 3), percent=pct))
         if b["faces"] != a["faces"]:
             rows.append(base("face_count_changed", key, a, severity(a, False), before=b["faces"], after=a["faces"]))
-        shift = _bbox_shift(b["bbox"], a["bbox"])
+        shift = bbox_shift(b["bbox"], a["bbox"])
         if shift is not None and shift > MOVE_TOLERANCE_CM and not volume_changed(b["volume"], a["volume"]):
             rows.append(base("body_moved", key, a, "info", max_bbox_shift=_report_units(shift, units)))
     return rows

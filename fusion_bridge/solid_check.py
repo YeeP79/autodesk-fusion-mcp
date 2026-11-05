@@ -27,6 +27,7 @@ from .common.bodies import (
     VOLUME_ABS_TOLERANCE_CM3,
     _BASELINES,  # noqa: F401 (re-exported)
     assign_keys,
+    bbox_overlap,
     diff_snapshots,
     get_baseline,
     in_component,  # noqa: F401 (re-exported)
@@ -318,14 +319,6 @@ def lump_problems(metrics):
 
 
 # -- Interference (pure parts) -------------------------------------------------
-
-
-def bbox_overlap(a, b, tol=0.0):
-    """True when two (min, max) boxes overlap (or touch within tol)."""
-    if a is None or b is None:
-        return True
-    (amin, amax), (bmin, bmax) = a, b
-    return all(amin[i] <= bmax[i] + tol and bmin[i] <= amax[i] + tol for i in range(3))
 
 
 def resolve_pairs(selected, pairs, entries):

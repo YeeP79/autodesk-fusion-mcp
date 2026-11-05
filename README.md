@@ -93,7 +93,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `rename_folder` | Rename a cloud folder, refusing case-insensitive sibling clashes; case-only renames go via a temp name |
 | `rename_file` | Rename a cloud file (dry run by default), refusing clashes and open files, with a link check |
 | `remove_empty_folders` | List truly empty cloud folders and delete them children-first (dry run by default) |
-| `sketch_profile` | Build validated, connected closed sketch outlines (lines + arcs); list a sketch's profiles |
+| `sketch_profile` | Build validated, connected closed sketch outlines (lines + arcs) and single-entity circles, in a new or existing sketch, with world coordinates through an occurrence; list a sketch's profiles |
 | `check_solids` | Post-feature sanity check: slivers, tiny faces, lumps, non-solids, interference, volume changes vs a baseline |
 | `tail_log` | Read Fusion's own app log (filter by substring, level, time; `save`/`errors` presets); runs off the main thread |
 | `save_document` | Save with a version comment and verify a new cloud version actually landed (diagnoses stalled saves) |
@@ -120,6 +120,8 @@ coordinates) or a `model_view` that frames the visible bodies with a chosen
 `up_axis`, and warns when the image looks blank.
 | `timeline_insert` | Run Python with the marker rolled back before a named timeline item, then always restore it and report what changed (dry run by default) |
 | `compare_files` | Compare two design files by occurrences, bodies, volume, component names and timeline length, closing only what it opened |
+| `compare_bodies` | Read-only: are two bodies the same solid, and where do they differ, by booleans on temporary copies with a sampled fallback; `unknown` rather than a false `same` |
+| `apply_thread` | Read Fusion's thread library: narrow by family, size and designation to per-class diameters, or get the nearest thread to a diameter (applying a thread is not available yet) |
 
 ### Generic API example
 
@@ -311,10 +313,10 @@ New tools must use `fusion_bridge/common/` instead of private copies of its help
 | `args.py` | Typed argument checks, unknown-key rejection, `error_pair` |
 | `api.py` | `safe`, `present`, `attempt` reads; `items` (skips what it cannot read) and `strict_items` (raises); both handle count/item collections and Fusion vectors |
 | `geometry.py` | Vector math, unit conversion |
-| `bodies.py` | Body enumeration, `bbox`, `native`, BodyRefs and `resolve_targets`, face records, snapshots, diffs and the baseline store |
+| `bodies.py` | Body enumeration, `find_occurrence`, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy`, face records, snapshots, diffs and the baseline store |
 | `timeline.py` | Timeline health, `read_rows`, `find_row`, marker and broken-feature refusals, the rolled-back window flag |
 | `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
-| `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `add_feature`, `snapshot`, `baseline`, `undo`, `temp_copy`, `body_changes`, `envelope` |
+| `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `add_feature`, `snapshot`, `baseline`, `undo`, `body_changes`, `envelope` |
 | `documents.py` | Open documents, instances of a file, the event pump |
 | `cloud.py` | Cloud paths, projects, folders, files, the project tree walk |
 | `app_log.py` | Locating and scanning Fusion's log, the server's reason for a failed cloud write |

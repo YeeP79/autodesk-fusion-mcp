@@ -2,9 +2,9 @@
 
 ``preflight`` before anything changes, ``read_value`` and ``value_input`` for
 dimensions, ``add_feature`` for the add itself, ``snapshot`` and ``baseline`` to
-measure, ``undo`` to take a feature back, ``temp_copy`` for off-timeline booleans,
-and ``body_changes`` and ``envelope`` for the result. The checks are written over
-duck-typed objects so fakes can drive them.
+measure, ``undo`` to take a feature back, and ``body_changes`` and ``envelope``
+for the result. The checks are written over duck-typed objects so fakes can
+drive them. Off-timeline booleans use ``common.bodies.temp_copy``.
 
 ``add_feature`` keeps a refused feature from costing a macro its earlier work:
 Fusion's refusal comes back as a value. A ``TypeError`` still raises, because it
@@ -14,14 +14,12 @@ means our call is wrong and a retry would repeat it.
 import re
 
 import adsk.core
-import adsk.fusion
 
 from ..document_guard import read_only_state
 from .api import safe, strict_items
 from .args import is_finite_number
 from .bodies import (
     assign_keys,
-    bbox,
     iter_body_entries,
     measure_summary,
     snapshot_records,
@@ -50,8 +48,6 @@ READ_ONLY_WARNING = "the document is read-only: edits apply in this session but 
 # "e" is a parameter name.
 _EXPONENT = re.compile(r"(?<=[\d.])[eE][+-]?\d+")
 _BARE_NUMBER = re.compile(r"[\d\s.+\-*/^()]+")
-# A copy this far off the proxy's box came back in component space.
-_FRAME_TOLERANCE_CM = 1e-6
 
 
 # -- Preflight ------------------------------------------------------------------
@@ -312,34 +308,6 @@ def undo(design, feature, before):
         return {"undone": False,
                 "warnings": [f"the feature was deleted but these bodies did not return: {differ[:20]}"]}
     return {"undone": True, "warnings": []}
-
-
-# -- Temporary bodies -----------------------------------------------------------
-
-
-def _box_gap(a, b):
-    if a is None or b is None:
-        return 0.0
-    return max(abs(x - y) for pa, pb in zip(a, b) for x, y in zip(pa, pb))
-
-
-def temp_copy(body, manager=None):
-    """A temporary copy of *body* in world coordinates, never in the design.
-
-    ``booleanOperation`` modifies its target, so take a fresh copy per operation.
-    A copy of a proxy may come back in component space (CM-2): its box is
-    compared with the proxy's and ``transform2`` applied if they differ. A body
-    whose transform maps its box onto itself cannot be told apart this way.
-    Raises RuntimeError when Fusion gives no copy.
-    """
-    manager = manager or adsk.fusion.TemporaryBRepManager.get()
-    copy = manager.copy(body)
-    if copy is None:
-        raise RuntimeError(f"TemporaryBRepManager.copy returned nothing for {safe(body, 'name')!r}")
-    occurrence = safe(body, "assemblyContext")
-    if occurrence is not None and _box_gap(bbox(copy), bbox(body)) > _FRAME_TOLERANCE_CM:
-        manager.transform(copy, occurrence.transform2)
-    return copy
 
 
 # -- The result -----------------------------------------------------------------
