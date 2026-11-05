@@ -315,8 +315,9 @@ def _frame_model(low, high, name, up_axis, aspect):
     up = _screen_up(back, up)
     right = _cross(up, back)
     half_width, half_height = (sum(abs(a) * h for a, h in zip(axis, half)) for axis in (right, up))
-    # viewExtents is the radius of a sphere that fits the window's smaller side.
-    extents = MODEL_VIEW_MARGIN * max(half_width / max(aspect, 1), half_height * min(aspect, 1))
+    # viewExtents is the full span of the window's smaller side (measured live:
+    # 12.7 gave a 12.7 cm tall image at 400x300), not a radius.
+    extents = 2 * MODEL_VIEW_MARGIN * max(half_width / max(aspect, 1), half_height * min(aspect, 1))
     target = _scale(_add(low, high), 0.5)
     # Keep the eye outside the bounding sphere so nothing sits behind it.
     return {"eye": _add(target, _scale(back, 3 * radius)), "target": target, "up": up,

@@ -260,13 +260,13 @@ class CaptureCameraMathTests(unittest.TestCase):
         low, high = (0,0,0), (40,10,20)  # half sizes 20, 5, 10
         margin = viewport.MODEL_VIEW_MARGIN
         square = viewport._frame_model(low, high, 'front', 'z', 1)['extents']
-        self.assertAlmostEqual(square, 20 * margin)
-        # Wide images fit the 40-wide model at a smaller radius; height then limits.
-        self.assertAlmostEqual(viewport._frame_model(low, high, 'front', 'z', 4)['extents'], 10 * margin)
+        self.assertAlmostEqual(square, 40 * margin)
+        # Wide images fit the 40-wide model in a shorter window; height then limits.
+        self.assertAlmostEqual(viewport._frame_model(low, high, 'front', 'z', 4)['extents'], 20 * margin)
         # Portrait images: the smaller side is the width.
-        self.assertAlmostEqual(viewport._frame_model(low, high, 'front', 'z', .5)['extents'], 20 * margin)
+        self.assertAlmostEqual(viewport._frame_model(low, high, 'front', 'z', .5)['extents'], 40 * margin)
         # Looking down X sees 10 wide, 20 tall.
-        self.assertAlmostEqual(viewport._frame_model(low, high, 'right', 'z', 1)['extents'], 10 * margin)
+        self.assertAlmostEqual(viewport._frame_model(low, high, 'right', 'z', 1)['extents'], 20 * margin)
 
     def test_iso_looks_from_front_right_top_with_perpendicular_up(self):
         pose = viewport._frame_model((-1,-1,-1), (1,1,1), 'iso', 'z', 1)
@@ -475,7 +475,7 @@ class ViewportTests(unittest.TestCase):
         self.assertEqual((camera.target.x,camera.target.y,camera.target.z),(10,5,2))
         self.assertLess(camera.eye.y,0)
         self.assertEqual(camera.upVector.z,1)
-        self.assertAlmostEqual(camera.viewExtents,10*viewport.MODEL_VIEW_MARGIN)
+        self.assertAlmostEqual(camera.viewExtents,20*viewport.MODEL_VIEW_MARGIN)
         self.assertEqual(camera.cameraType,0)
         self.assertEqual(notes['model_view'],{'view':'front','up_axis':'z','visible_bodies':1,'hidden_bodies_skipped':1})
         self.assertEqual(self.result(viewport.get_viewport({})),before)
