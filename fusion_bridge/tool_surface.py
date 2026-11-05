@@ -53,6 +53,7 @@ PROBE_GEOMETRY = "probe_geometry"
 TIMELINE_INSERT = "timeline_insert"
 COMPARE_FILES = "compare_files"
 COMPARE_BODIES = "compare_bodies"
+APPLY_THREAD = "apply_thread"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -1352,6 +1353,33 @@ TOOL_DEFINITIONS = [
             "required": ["a", "b"],
         },
     },
+    {
+        "name": APPLY_THREAD,
+        "description": (
+            "Read Fusion's thread library (read-only for now; applying a thread is not available yet). Actions:\n"
+            "- catalog: narrows by what is given. Nothing: families. family: sizes. family + size: designations. "
+            "family + designation: classes with major, minor and pitch in 'units', for the 'internal' side; "
+            "diameters depend on the class, and default_class is the one applying would use. Sizes take the "
+            "dialog's spellings too ('1/4', '#10', '6 mm'); the reply uses the API's ('0.25', '0.19(#10)', '6.0').\n"
+            "- recommend: Fusion's nearest thread to 'diameter'. This is the nearest size, not what the part is. "
+            "family defaults to the inch or metric default by 'units'.\n"
+            "Unknown names are refused with near_matches; tapered families are refused by name."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "action": {"type": "string", "enum": ["catalog", "recommend"]},
+                "family": {"type": "string", "description": "Thread type, e.g. 'ANSI Unified Screw Threads'."},
+                "size": {"type": "string", "description": "catalog: e.g. '0.25', '1/4', '#10', '6 mm'."},
+                "designation": {"type": "string", "description": "catalog: e.g. '1/4-20 UNC'."},
+                "thread_class": {"type": "string", "description": "catalog: report only this class, e.g. '2A'."},
+                "internal": {"type": "boolean", "description": "Internal thread. Default false."},
+                "diameter": {"type": "number", "description": "recommend: cylinder diameter in 'units'."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -1406,6 +1434,7 @@ def build_tool_handlers(
     timeline_insert,
     compare_files,
     compare_bodies,
+    apply_thread,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -1460,6 +1489,7 @@ def build_tool_handlers(
         TIMELINE_INSERT: timeline_insert,
         COMPARE_FILES: compare_files,
         COMPARE_BODIES: compare_bodies,
+        APPLY_THREAD: apply_thread,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
