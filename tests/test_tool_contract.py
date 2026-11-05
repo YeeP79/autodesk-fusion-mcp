@@ -50,6 +50,8 @@ class ToolSurfaceTests(unittest.TestCase):
         "bridge_info",
         "reload_addin",
         "tail_log",
+        "save_document",
+        "open_document",
     }
 
     def test_all_expected_tools_present(self):

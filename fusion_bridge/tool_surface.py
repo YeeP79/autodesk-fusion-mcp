@@ -42,6 +42,8 @@ TAIL_LOG = "tail_log"
 # main thread. Only for handlers that never call the Fusion API: they must
 # keep working while a modal dialog blocks the main thread.
 DIRECT_TOOL_NAMES = frozenset({FUSION_DIALOGS, TAIL_LOG})
+SAVE_DOCUMENT = "save_document"
+OPEN_DOCUMENT = "open_document"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -969,6 +971,53 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "name": SAVE_DOCUMENT,
+        "description": (
+            "Save a document as a new cloud version with a version comment, and VERIFY it landed: "
+            "Document.save() can return True while nothing uploads. Polls until the document is no "
+            "longer modified AND the DataFile's latest version number has gone up (bounded by "
+            "timeout_seconds). Targets the active document unless name or data_file_id is given. "
+            "Refuses up front, without saving, a read-only document or an instance that is not the "
+            "newest loaded version of a file open more than once. On failure reports the open "
+            "instances of the file (name, visibility, loaded version, modified), any '(1)' title "
+            "suffix, the read-only flag and the matching lines from Fusion's app log, plus the fix. "
+            "Never closes documents."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "description": {"type": "string",
+                                "description": "Version comment recorded with the new version."},
+                "name": {"type": "string", "description": "Open document name ('Frame v3') or DataFile name ('Frame')."},
+                "data_file_id": {"type": "string", "description": "DataFile id of an open document."},
+                "timeout_seconds": {"type": "number", "minimum": 1, "maximum": 110,
+                                    "description": "How long to wait for the new version (default 60, max 110)."},
+            },
+            "required": ["description"],
+        },
+    },
+    {
+        "name": OPEN_DOCUMENT,
+        "description": (
+            "Open a cloud file and make it active, reusing an open instance instead of loading a "
+            "second copy (a duplicate in-memory instance makes saves silently stall). Give "
+            "data_file_id, or project (name or id) plus path ('Folder/Sub/File name'). Optional "
+            "version opens that version; default is the latest. If an open document already has "
+            "that file at that version it is activated (reused: true). If only another version is "
+            "open, the requested one is opened and a warning says two instances now exist. Returns "
+            "the resulting document's status and every open instance of the file."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "data_file_id": {"type": "string", "description": "DataFile id (lineage id)."},
+                "project": {"type": "string", "description": "Project name or id (with path)."},
+                "path": {"type": "string", "description": "Folder path and file name inside the project, e.g. 'Chassis/Front/Knuckle'."},
+                "version": {"type": "integer", "minimum": 1, "description": "Version number to open (default latest)."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -1012,6 +1061,8 @@ def build_tool_handlers(
     bridge_info,
     reload_addin,
     tail_log,
+    save_document,
+    open_document,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -1055,6 +1106,8 @@ def build_tool_handlers(
         BRIDGE_INFO: bridge_info,
         RELOAD_ADDIN: reload_addin,
         TAIL_LOG: tail_log,
+        SAVE_DOCUMENT: save_document,
+        OPEN_DOCUMENT: open_document,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
