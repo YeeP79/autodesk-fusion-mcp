@@ -6,6 +6,8 @@ from unittest import mock
 
 import _fusion_test_bootstrap  # noqa: F401
 
+from fusion_bridge import combine_bodies as cb
+from fusion_bridge import primitives
 from fusion_bridge import timeline_insert as ti
 from fusion_bridge import tool_surface
 from fusion_bridge.common import timeline
@@ -712,6 +714,123 @@ class RealRunnerTests(Harness):
         self.assertFalse(is_error)
         self.assertEqual(report["python"]["stdout"], "done\n")
         self.assertEqual(report["items_added"][0]["index"], 2)
+
+
+class EmptyScene:
+    """combine_bodies' Fusion layer with no bodies: every call stops at its refusals."""
+
+    def __init__(self, _design):
+        pass
+
+    def entries(self):
+        return []
+
+    def by_token(self, _token):
+        return None
+
+
+class MarkerRuleTests(Harness):
+    """The real combine_bodies handler and preflight, reached through ``primitives``."""
+
+    COMBINE = ("result = primitives.combine_bodies(target={'occurrence_path': 'root', 'body_name': 'A'}, "
+               "tools=[{'occurrence_path': 'root', 'body_name': 'B'}], operation='cut', keep_tools=True)\n"
+               "seen.append((result, in_window()))\n")
+
+    def setUp(self):
+        super().setUp()
+        self.design.designType = timeline.PARAMETRIC_DESIGN
+        self.design.activeEditObject = None
+        self.design.rootComponent = mock.Mock(allOccurrences=[])
+        self.seen = []
+        app = mock.Mock(activeProduct=self.design, activeDocument=None)
+        for patcher in (mock.patch.object(cb, "get_app", lambda: app),
+                        mock.patch.object(cb, "FusionCombine", EmptyScene),
+                        mock.patch.object(cb, "log", lambda *a, **k: None),
+                        mock.patch.object(cb.adsk.fusion, "Design", mock.Mock(cast=lambda p: p), create=True),
+                        mock.patch.object(ti.python_exec, "_build_runtime_globals", self.scope)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def scope(self):
+        return {"primitives": primitives.Primitives(), "seen": self.seen,
+                "in_window": timeline.in_rolled_back_window}
+
+    def insert(self, code):
+        result = ti.timeline_insert({"before": "Mirror1", "code": code, "dry_run": False})
+        return json.loads(result["content"][0]["text"])
+
+    def execute(self, code):
+        return json.loads(ti.python_exec.run_python({"code": code, "persistent": False})["content"][0]["text"])
+
+    def combine_outside(self):
+        """The same call with the marker short of the end and no window open."""
+        self.timeline.markerPosition = 1
+        self.seen.clear()
+        self.assertTrue(self.execute(self.COMBINE)["success"])
+        return self.seen[-1]
+
+    def assert_rule_is_on(self):
+        self.assertFalse(timeline.in_rolled_back_window())
+        payload, in_window = self.combine_outside()
+        self.assertFalse(in_window)
+        self.assertEqual(payload["status"], "refused")
+        self.assertTrue(any("timeline marker" in text for text in payload["refusals"]), payload["refusals"])
+
+    def test_the_rule_holds_with_no_window(self):
+        self.assert_rule_is_on()
+
+    def test_the_rule_relaxes_for_the_code(self):
+        self.assertEqual(self.insert(self.COMBINE)["python"]["success"], True)
+        payload, in_window = self.seen[-1]
+        self.assertTrue(in_window)
+        self.assertEqual(payload["status"], "refused")
+        self.assertTrue(payload["refusals"], "the missing bodies still refuse")
+        self.assertFalse(any("timeline marker" in text for text in payload["refusals"]), payload["refusals"])
+
+    def test_the_rule_returns_after_the_code(self):
+        self.insert(self.COMBINE)
+        self.assert_rule_is_on()
+
+    def test_the_rule_returns_after_the_code_raises(self):
+        report = self.insert(self.COMBINE + "raise ValueError('bad input')")
+        self.assertEqual(report["status"], "code_failed")
+        self.assertTrue(self.seen[-1][1])
+        self.assert_rule_is_on()
+
+    def test_the_rule_returns_after_system_exit(self):
+        report = self.insert("raise SystemExit(3)")
+        self.assertIn("SystemExit", report["exception"])
+        self.assert_rule_is_on()
+
+    def test_the_rule_returns_when_the_runner_itself_raises(self):
+        with mock.patch.object(ti, "_run_code", side_effect=RuntimeError("no runner")):
+            report = self.insert("x = 1")
+        self.assertIn("no runner", report["exception"])
+        self.assert_rule_is_on()
+
+    def test_a_failed_roll_opens_no_window(self):
+        self.timeline.named("Mirror1").roll_result = False
+        with mock.patch.object(ti, "rolled_back_window") as window:
+            report = self.insert(self.COMBINE)
+        self.assertEqual(report["status"], "roll_failed")
+        window.assert_not_called()
+
+    def test_the_marker_is_restored_outside_the_window(self):
+        during = []
+        move = self.timeline.moveToEnd
+
+        def recording_move():
+            during.append(timeline.in_rolled_back_window())
+            return move()
+
+        self.timeline.moveToEnd = recording_move
+        self.insert("x = 1")
+        self.assertEqual(during, [False])
+
+    def test_a_refused_primitive_is_not_a_failed_script_but_is_flagged(self):
+        report = self.insert(self.COMBINE)
+        self.assertEqual(report["status"], "ok")
+        self.assertIn("The code ran but added no timeline items.", report["warnings"])
 
 
 if __name__ == "__main__":

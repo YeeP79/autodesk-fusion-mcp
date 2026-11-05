@@ -151,6 +151,44 @@ The report folds repeats of a check into one row: `count`, `where` reading `N pl
 
 Checks say what they found, never how much it matters: `SEVERITY_TABLE` in `audit_rules.py` sets each check's severity per profile, and a check off there does not run. To add a check, write a function over the gathered facts, add it to `CHECKS`, and give it a row.
 
+### Primitives in scripts
+
+`execute_python` and `timeline_insert(code=...)` code gets `primitives`, one
+method per feature tool: `find_entities`, `sketch_profile`, `extrude_profile`,
+`edge_treatment`, `pattern_features`, `combine_bodies`, `construction_plane`,
+`apply_thread`, `compare_bodies` and `check_solids`. Each takes the tool's
+arguments as keywords, runs the tool's own handler, and returns its payload as a
+dict. A key that is a Python keyword takes a trailing underscore (`from_="xy"`),
+and a key the tool's schema does not list is refused.
+
+```python
+plane = primitives.construction_plane(mode="offset", from_="xy", offset=1.0, name="Boss plane")
+if not plane["ok"]:
+    raise RuntimeError(plane)
+```
+
+A refused tool does not raise, so a failed step cannot cost a script what it
+already built; the script decides whether to stop. Every payload has `status`
+and `ok`:
+
+| `status` | Meaning |
+| --- | --- |
+| `built`, `planned`, `partial`, `suspect`, `undone`, `refused` | A write's envelope, as the tool returns it; `ok` only for `built` and `planned` |
+| `done` | A tool with no status of its own answered |
+| `refused` | Also a tool with no status of its own declining, with `error` saying why |
+| `failed` | The handler raised, so what it changed is unknown; `error` and `traceback` say where |
+
+`check_solids` keeps its own `ok`: false with `status: done` is a finished check
+that found problems. A script that ignores a refusal still succeeds, so a
+`timeline_insert` whose only write was refused reports `status: ok` with the
+warning that no timeline items were added.
+
+Preflight refuses a write while the marker is short of the end. Only code running
+under `timeline_insert` is exempt, so a primitive there lands at the rolled-back
+marker. The exemption ends with the code, whether it finished or raised, and the
+other preflight refusals still apply inside it. `sketch_profile` has no preflight,
+so it writes wherever the marker is.
+
 ### Generic API example
 
 ```json
@@ -324,6 +362,7 @@ fusion_bridge/operations.py -- per-tool routing
   |
 fusion_bridge/selection.py  -- viewport selection reader
 fusion_bridge/python_exec.py -- Python execution
+fusion_bridge/primitives.py -- feature tools as calls inside that Python
 fusion_bridge/viewport.py   -- camera controls and viewport capture
 fusion_bridge/doc_lookup.py -- API docs introspection
 fusion_bridge/script_store.py -- script CRUD
