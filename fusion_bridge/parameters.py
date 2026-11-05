@@ -19,6 +19,7 @@ from . import parameter_graph as graph
 from .common.api import attempt
 from .common.args import bool_arg, int_arg, require_object, text_arg
 from .common.results import error_result, tool_result
+from .common.timeline import health_counts
 from .dispatch import get_app, log
 
 ACTIONS = ("list", "set")
@@ -442,23 +443,6 @@ def apply_updates(objects, infos, updates, units_manager):
     return results, failed
 
 
-def timeline_health(design):
-    """Count timeline items by health state; name the ones in error."""
-    states = adsk.fusion.FeatureHealthStates
-    counts = {"healthy": 0, "warning": 0, "error": 0}
-    errors = []
-    for item in design.timeline:
-        state = item.healthState
-        if state == states.ErrorFeatureHealthState:
-            counts["error"] += 1
-            errors.append(item.name)
-        elif state == states.HealthyFeatureHealthState:
-            counts["healthy"] += 1
-        else:
-            counts["warning"] += 1
-    return counts, errors
-
-
 # -- Tool handler ------------------------------------------------------------
 
 
@@ -498,7 +482,7 @@ def parameters(arguments):
                             "note": "Nothing was changed. Pass dry_run: false to apply, in this order."})
 
         results, failed = apply_updates(objects, infos, args["updates"], units_manager)
-        counts, errors = timeline_health(design)
+        counts, errors = health_counts(design)
         applied = [r["name"] for r in results if r["status"] == "applied"]
         payload = {
             **meta,

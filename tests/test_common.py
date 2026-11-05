@@ -8,7 +8,7 @@ from datetime import datetime
 from unittest import mock
 
 import _fusion_test_bootstrap  # noqa: F401
-from fusion_bridge.common import api, app_log, args, geometry, results
+from fusion_bridge.common import api, app_log, args, geometry, results, timeline
 
 
 class ResultsTests(unittest.TestCase):
@@ -409,6 +409,49 @@ class LogParsingTests(unittest.TestCase):
         self.assertIsNone(log.mark())
         self.assertEqual(log.since(None), "")
         self.assertIsNone(log.reason(None, "urn:a:b"))
+
+
+class FakeItem:
+    def __init__(self, name, state):
+        self.name = name
+        self.healthState = state
+
+
+class Enum:
+    HealthyFeatureHealthState = 10
+    WarningFeatureHealthState = 11
+    ErrorFeatureHealthState = 12
+    UnknownFeatureHealthState = 13
+
+
+class TimelineTests(unittest.TestCase):
+    def enum(self):
+        return mock.patch.object(timeline.adsk.fusion, "FeatureHealthStates", Enum, create=True)
+
+    def test_health_states_read_the_enum(self):
+        with self.enum():
+            self.assertEqual(timeline.health_states(), {"healthy": 10, "warning": 11, "error": 12, "unknown": 13})
+
+    def test_health_states_fall_back_without_the_enum(self):
+        self.assertEqual(timeline.health_states(), timeline.DEFAULT_STATES)
+
+    def test_state_name(self):
+        self.assertEqual(timeline.state_name(2), "error")
+        self.assertEqual(timeline.state_name(12, {"error": 12}), "error")
+        self.assertEqual(timeline.state_name(99), "unknown")
+        self.assertEqual(timeline.state_name(None), "unknown")
+
+    def test_health_of(self):
+        with self.enum():
+            self.assertEqual(timeline.health_of(FakeItem("a", 11)), "warning")
+            self.assertEqual(timeline.health_of(Raises()), "unknown")
+
+    def test_health_counts(self):
+        design = type("D", (), {"timeline": [FakeItem("a", 10), FakeItem("b", 11), FakeItem("c", 12),
+                                             FakeItem("d", 13)]})()
+        with self.enum():
+            self.assertEqual(timeline.health_counts(design),
+                             ({"healthy": 1, "warning": 2, "error": 1}, ["c"]))
 
 
 if __name__ == "__main__":

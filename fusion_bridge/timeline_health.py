@@ -19,10 +19,9 @@ import adsk.fusion
 
 from .common.api import attempt
 from .common.results import error_result, ok_result
+from .common.timeline import health_states, state_name
 from .dispatch import get_app, log
 
-# Fallback enum values, used when adsk.fusion.FeatureHealthStates is unavailable.
-_DEFAULT_STATES = {"healthy": 0, "warning": 1, "error": 2, "unknown": 3}
 MAX_ORIGINAL_CHARS = 2000
 
 # One failed-feature line: "<name> / <reason> // <CODE> - <detail>". The first
@@ -76,14 +75,6 @@ def format_rollback_summary(count, earliest_name, earliest_index):
     )
 
 
-def state_name(value, states=None):
-    """Map a FeatureHealthStates value to 'healthy' / 'warning' / 'error' / 'unknown'."""
-    for name, enum_value in (states or _DEFAULT_STATES).items():
-        if value == enum_value:
-            return name
-    return "unknown"
-
-
 def build_report(marker_position, count, active_component, is_root, items):
     """Assemble the timeline_health result from plain values.
 
@@ -116,18 +107,6 @@ def build_report(marker_position, count, active_component, is_root, items):
 
 
 # -- Fusion access ------------------------------------------------------------
-
-
-def _health_states():
-    enum = getattr(adsk.fusion, "FeatureHealthStates", None)
-    if enum is None:
-        return _DEFAULT_STATES
-    return {
-        "healthy": getattr(enum, "HealthyFeatureHealthState", 0),
-        "warning": getattr(enum, "WarningFeatureHealthState", 1),
-        "error": getattr(enum, "ErrorFeatureHealthState", 2),
-        "unknown": getattr(enum, "UnknownFeatureHealthState", 3),
-    }
 
 
 def _active_design():
@@ -206,7 +185,7 @@ def timeline_health(arguments):
         design = _active_design()
         if design is None:
             return error_result("Error: the active product is not a Fusion design")
-        states = _health_states()
+        states = health_states()
         report, rows = _report(design, states)
         if suppress:
             action = _suppress_broken(rows, states)
@@ -229,7 +208,7 @@ def _live_broken_summary():
         design = _active_design()
         if design is None:
             return None
-        rows = _read_items(design.timeline, _health_states())
+        rows = _read_items(design.timeline, health_states())
         broken = [r for r, _ in rows if r["health"] in ("error", "warning") and not r["suppressed"]]
         if not broken:
             return None

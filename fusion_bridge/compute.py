@@ -14,6 +14,7 @@ import adsk.fusion
 
 from .common.args import is_number
 from .common.results import error_result, tool_result
+from .common.timeline import health_counts
 from .dispatch import get_app, log
 
 COMMAND_IDS = {
@@ -30,23 +31,6 @@ def _active_command_id(ui):
         return ui.activeCommand
     except Exception:
         return None
-
-
-def _timeline_health(design):
-    """Count timeline items by health state; name the ones in error."""
-    states = adsk.fusion.FeatureHealthStates
-    counts = {"healthy": 0, "warning": 0, "error": 0}
-    errors = []
-    for item in design.timeline:
-        state = item.healthState
-        if state == states.ErrorFeatureHealthState:
-            counts["error"] += 1
-            errors.append(item.name)
-        elif state == states.HealthyFeatureHealthState:
-            counts["healthy"] += 1
-        else:
-            counts["warning"] += 1
-    return counts, errors
 
 
 def compute(arguments):
@@ -94,7 +78,7 @@ def compute(arguments):
             time.sleep(0.05)
 
         elapsed = time.monotonic() - started
-        counts, errors = _timeline_health(design)
+        counts, errors = health_counts(design)
         result = {
             "scope": scope,
             "command": command_id,

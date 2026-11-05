@@ -8,6 +8,7 @@ from unittest import mock
 import _fusion_test_bootstrap  # noqa: F401  (installs adsk mock + parent pkg shim)
 
 from fusion_bridge import timeline_health as th
+from fusion_bridge.common import timeline
 from fusion_bridge import tool_surface
 
 # Excerpt of a real dump raised by an API edit on a design with broken features.
@@ -175,7 +176,7 @@ class ValidationTests(unittest.TestCase):
 
 # -- Fakes for the report and suppression logic ------------------------------
 
-S = th._DEFAULT_STATES
+S = timeline.DEFAULT_STATES
 
 
 class FakeItem:
@@ -215,7 +216,7 @@ class FakeDesign:
 class ReportTests(unittest.TestCase):
     def _run(self, design, args=None):
         with mock.patch.object(th, "_active_design", return_value=design), \
-                mock.patch.object(th, "_health_states", return_value=S):
+                mock.patch.object(th, "health_states", return_value=S):
             result = th.timeline_health(args or {})
         self.assertFalse(result["isError"], result["content"][0]["text"])
         return json.loads(result["content"][0]["text"])
@@ -302,7 +303,7 @@ class ReportTests(unittest.TestCase):
             FakeItem(3, "Cut", S["error"]),
         ]
         with mock.patch.object(th, "_active_design", return_value=FakeDesign(items)), \
-                mock.patch.object(th, "_health_states", return_value=S):
+                mock.patch.object(th, "health_states", return_value=S):
             self.assertEqual(th._live_broken_summary(), (2, "Ext", 2))
 
     def test_live_broken_summary_swallows_errors(self):

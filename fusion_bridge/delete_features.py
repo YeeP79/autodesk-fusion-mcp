@@ -51,6 +51,7 @@ import adsk.fusion
 from .common.api import items, safe
 from .common.args import bool_arg, error_pair, require_object, text_arg
 from .common.results import error_result, tool_result
+from .common.timeline import health_of
 from .dispatch import get_app, log
 
 # Feature/sketch/joint properties that hold inputs. Feature.bodies is output.
@@ -494,20 +495,6 @@ def _modifies_only(entity, kind):
     return any(operation == getattr(operations, name, object()) for name in _MODIFY_OPERATIONS)
 
 
-def _health(timeline_object):
-    states = getattr(adsk.fusion, "FeatureHealthStates", None)
-    state = safe(timeline_object, "healthState")
-    if states is None or state is None:
-        return "unknown"
-    if state == getattr(states, "HealthyFeatureHealthState", object()):
-        return "healthy"
-    if state == getattr(states, "WarningFeatureHealthState", object()):
-        return "warning"
-    if state == getattr(states, "ErrorFeatureHealthState", object()):
-        return "error"
-    return "unknown"
-
-
 def _referenced_component_ids(design):
     ids = set()
     for occurrence in items(safe(safe(design, "rootComponent"), "allOccurrences")):
@@ -579,7 +566,7 @@ def snapshot(design, with_links=True):
             "referenced": referenced,
             "in_collapsed_group": collapsed,
             "deletable": deletable if isinstance(deletable, bool) else None,
-            "health": _health(obj),
+            "health": health_of(obj),
             "message": safe(obj, "errorOrWarningMessage") or "",
             "token": safe(entity, "entityToken"),
             "produces": sorted(produces),
