@@ -523,6 +523,12 @@ class ThreadSession:
         self.added = []
         self.tokens = {"bore": [self.face]}
         self.bad_values = set()
+        self.after = None
+        self.reads = 0
+
+    def fresh(self):
+        self.reads += 1
+        return self
 
     def entries(self):
         return bodies.assign_keys(list(bodies.body_entries(self.design.rootComponent)))
@@ -537,7 +543,7 @@ class ThreadSession:
         return []
 
     def describe(self, face, units, entry):
-        return self.record
+        return self.after if self.after is not None and self.added else self.record
 
     def value(self, value):
         if value["text"] in self.bad_values:
@@ -684,6 +690,42 @@ class ApplyCheckTests(unittest.TestCase):
     def test_kernel_noise_on_a_big_body_is_not_a_cosmetic_cut(self):
         self.assertIsNone(at.volume_problem(False, 1600.0, 1600.0 + 1e-4, False))
 
+    def test_resized_row(self):
+        rec = cylinder_record(diameter=0.2)
+        self.assertEqual(at.resized_row(rec, cylinder_record(diameter=0.2015)), {"from": 0.2, "to": 0.2015})
+
+    def test_an_unchanged_face_is_not_resized(self):
+        rec = cylinder_record(diameter=0.2)
+        self.assertIsNone(at.resized_row(rec, cylinder_record(diameter=0.20001)))
+
+    def test_a_face_that_went_is_not_resized(self):
+        rec = cylinder_record()
+        self.assertIsNone(at.resized_row(rec, None))
+        self.assertIsNone(at.resized_row(rec, cylinder_record(kind="nurbs")))
+
+    def test_resize_volume_live_case(self):
+        """0.2 hole to 0.2015 over 0.5 in removed 0.000237 in^3."""
+        found = at.resize_volume({"from": 0.2, "to": 0.2015}, 0.5, "concave")
+        self.assertAlmostEqual(found, -0.000237, places=6)
+
+    def test_a_shaft_grows_and_shrinks_the_other_way(self):
+        self.assertGreater(at.resize_volume({"from": 0.2, "to": 0.21}, 1.0, "convex"), 0)
+        self.assertLess(at.resize_volume({"from": 0.25, "to": 0.2489}, 1.0, "convex"), 0)
+
+    def test_resize_volume_needs_what_it_is_made_from(self):
+        resized = {"from": 0.2, "to": 0.21}
+        self.assertIsNone(at.resize_volume(None, 1.0, "convex"))
+        self.assertIsNone(at.resize_volume(resized, None, "convex"))
+        self.assertIsNone(at.resize_volume(resized, 1.0, None))
+
+    def test_a_cosmetic_delta_the_resize_explains(self):
+        self.assertIsNone(at.volume_problem(False, 10.0, 9.0, False, -1.0))
+        self.assertIsNone(at.volume_problem(False, 10.0, 9.0, False, -1.04))
+
+    def test_a_cosmetic_delta_the_resize_does_not_explain(self):
+        self.assertIn("explains", at.volume_problem(False, 10.0, 9.0, False, -0.5))
+        self.assertIn("explains", at.volume_problem(False, 10.0, 9.0, False, 1.0))
+
     def test_unreadable_volume(self):
         self.assertIn("could not be read", at.volume_problem(True, None, 1.0, True))
 
@@ -792,6 +834,45 @@ class ApplyRunTests(unittest.TestCase):
     def test_cosmetic_that_cut_is_suspect(self):
         payload = apply_run(ThreadSession(change=-1.0))
         self.assertEqual(payload["status"], "suspect")
+
+    def live_hole(self, delta_in3):
+        session = ThreadSession(cylinder_record(diameter=0.2, concavity="concave"), change=delta_in3 * CM ** 3)
+        session.record["length_along_axis"] = 0.5
+        session.after = cylinder_record(diameter=0.2015, concavity="concave")
+        return session
+
+    def test_a_cosmetic_thread_that_resized_the_bore_is_built(self):
+        session = self.live_hole(-0.000237)
+        payload = apply_run(session, internal=True)
+        self.assertEqual(payload["status"], "built", payload)
+        self.assertEqual(payload["resized"], {"from": 0.2, "to": 0.2015})
+        self.assertAlmostEqual(payload["volume_delta"], -0.000237, places=6)
+        self.assertIn("resized the face", " ".join(payload["warnings"]))
+        self.assertEqual(session.reads, 1)
+
+    def test_a_delta_past_the_resize_is_suspect(self):
+        payload = apply_run(self.live_hole(-0.001), internal=True)
+        self.assertEqual(payload["status"], "suspect")
+        self.assertEqual(payload["resized"], {"from": 0.2, "to": 0.2015})
+
+    def test_a_resize_the_wrong_way_is_suspect(self):
+        self.assertEqual(apply_run(self.live_hole(0.000237), internal=True)["status"], "suspect")
+
+    def test_no_resize_reads_null(self):
+        self.assertIsNone(apply_run(ThreadSession())["resized"])
+
+    def test_a_face_gone_after_a_modeled_thread_is_no_failure(self):
+        session = ThreadSession(change=-1.0)
+        session.fresh = mock.Mock(side_effect=RuntimeError("gone"))
+        payload = apply_run(session, modeled=True)
+        self.assertEqual(payload["status"], "built", payload)
+        self.assertIsNone(payload["resized"])
+
+    def test_a_modeled_thread_reports_a_resize_too(self):
+        session = ThreadSession(change=-1.0)
+        session.after = cylinder_record(diameter=0.2489)
+        payload = apply_run(session, modeled=True)
+        self.assertEqual((payload["status"], payload["resized"]), ("built", {"from": 0.25, "to": 0.2489}))
 
     def test_a_split_face_is_refused_either_way(self):
         for modeled in (False, True):
@@ -974,6 +1055,15 @@ class ApplyHandlerTests(unittest.TestCase):
 
 
 class FusionThreadTests(unittest.TestCase):
+    def test_fresh_caches_nothing(self):
+        design = mock.Mock()
+        with mock.patch.object(at.FusionScene, "__init__", return_value=None):
+            session = at.FusionThread(design)
+            session._design = design
+            again = session.fresh()
+        self.assertIsNot(again, session)
+        self.assertIsInstance(again, at.FusionThread)
+
     def build(self, **overrides):
         design = mock.Mock()
         design.unitsManager.isValidExpression.return_value = True

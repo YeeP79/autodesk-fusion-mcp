@@ -123,10 +123,32 @@ class Sketchish:
     name = "Sketch1"
 
 
+class Wall:
+    """A cylinder face around a point."""
+
+    assemblyContext = None
+
+    def __init__(self, at, context=None):
+        self.geometry = type("G", (), {"surfaceType": CYLINDER, "origin": P(*at), "axis": P(0, 0, 1)})()
+        self.assemblyContext = context
+
+
+class Flat:
+    """A plane face with a box."""
+
+    assemblyContext = None
+
+    def __init__(self, low, high):
+        self.geometry = type("G", (), {"surfaceType": PLANE})()
+        self.boundingBox = Box(low, high)
+
+
 class Element:
-    def __init__(self, shift):
-        self.transform = type("M", (), {"asArray": lambda s: [1, 0, 0, shift[0], 0, 1, 0, shift[1],
-                                                              0, 0, 1, shift[2], 0, 0, 0, 1]})()
+    """``at`` is where the element's one cylinder sits. The transform is the wrong answer Fusion gives."""
+
+    def __init__(self, at=None, faces=None):
+        self.faces = faces if faces is not None else [Wall(at)]
+        self.transform = type("M", (), {"asArray": lambda s: 1 / 0})()
 
 
 class Input:
@@ -408,9 +430,19 @@ class HelperTests(unittest.TestCase):
         self.assertFalse(pf.parallel(X, Y))
         self.assertFalse(pf.parallel(X, ORIGIN))
 
-    def test_transformed(self):
-        turn = [0, -1, 0, 5, 1, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 1]
-        self.assertEqual(pf.transformed((1, 0, 0), turn), (5, 1, 2))
+    def test_marker_of_a_lone_cylinder_is_exact(self):
+        self.assertEqual(pf.element_marker([Wall((1, 2, 3))]), ((1, 2, 3), True))
+
+    def test_marker_of_anything_else_is_the_center_of_its_boxes(self):
+        faces = [Flat((0, 0, 0), (1, 1, 1)), Flat((1, 0, 0), (3, 1, 1))]
+        self.assertEqual(pf.element_marker(faces), ((1.5, 0.5, 0.5), False))
+
+    def test_marker_of_nothing(self):
+        self.assertIsNone(pf.element_marker([]))
+        self.assertIsNone(pf.element_marker([object()]))
+
+    def test_measured_positions_hang_off_the_seed(self):
+        close(self, pf.measured_positions((1, 1, 9), [(5, 0, 0), (5, 2, 0)]), [(1, 1, 9), (1, 3, 9)])
 
     def test_same_positions_in_any_order(self):
         self.assertTrue(pf.same_positions([(0, 0, 0), (1, 0, 0)], [(1, 0, 0), (0, 0, 0)]))
@@ -740,15 +772,55 @@ class RunTests(unittest.TestCase):
     def test_no_seed_point_no_positions(self):
         self.assertIsNone(go(self.world, rectangular())["positions"])
 
-    def test_built_positions_come_from_the_elements(self):
+    def test_built_positions_come_from_the_faces(self):
         self.world.effect = lambda e: [Element((0, 0, 0)), Element((2, 0, 0)), Element((4, 0, 0))]
         payload = go(self.world, rectangular(seed_point=[1, 0, 0]))
-        self.assertEqual(payload["positions_basis"], "elements")
+        self.assertEqual(payload["positions_basis"], "faces")
         self.assertEqual(payload["positions"], [[1.0, 0.0, 0.0], [3.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
         self.assertEqual(payload["status"], "built")
 
+    def test_a_bolt_circle_at_the_right_spots_is_built(self):
+        """PF-3 live: six holes in place, with element transforms that would say otherwise."""
+        spots = [(2 * math.cos(math.radians(a)), 2 * math.sin(math.radians(a)), 0) for a in range(0, 360, 60)]
+        self.world.effect = lambda e: [Element(spot) for spot in spots]
+        payload = go(self.world, circular(seed_point=[2, 0, 0]))
+        self.assertEqual(payload["status"], "built", payload)
+        close(self, payload["positions"], spots, places=4)
+
+    def test_a_seed_point_off_the_bore_center_still_checks(self):
+        spots = [(2, 0, 0), (0, 2, 0), (-2, 0, 0), (0, -2, 0)]
+        self.world.effect = lambda e: [Element(spot) for spot in spots]
+        self.assertEqual(go(self.world, circular(count=4, seed_point=[2.5, 0, 1]))["status"], "built")
+
+    def test_a_bolt_circle_missing_a_spot_is_suspect(self):
+        spots = [(2, 0, 0), (0, 2, 0), (-2, 0, 0), (2, 0, 0)]
+        self.world.effect = lambda e: [Element(spot) for spot in spots]
+        self.assertEqual(go(self.world, circular(count=4, seed_point=[2, 0, 0]))["status"], "suspect")
+
+    def test_a_rotated_non_round_seed_only_warns(self):
+        boxes = [Flat((1, 0, 0), (3, 1, 1)), Flat((-1, 1, 0), (0.4, 3, 1))]
+        self.world.effect = lambda e: [Element(faces=[box]) for box in boxes]
+        payload = go(self.world, circular(count=2, total_angle_deg=90, seed_point=[2, .5, .5]))
+        self.assertEqual(payload["status"], "built", payload)
+        self.assertIn("differ from the predicted", " ".join(payload["warnings"]))
+
+    def test_a_grid_of_boxes_is_checked(self):
+        boxes = [Flat((0, 0, 0), (1, 1, 1)), Flat((2, 0, 0), (3, 1, 1)), Flat((9, 0, 0), (10, 1, 1))]
+        self.world.effect = lambda e: [Element(faces=[box]) for box in boxes]
+        self.assertEqual(go(self.world, rectangular(seed_point=[.5, .5, .5]))["status"], "suspect")
+
+    def test_unreadable_faces_leave_the_prediction_unchecked(self):
+        self.world.effect = lambda e: [Element((0, 0, 0)), Element(faces=[]), Element((9, 0, 0))]
+        payload = go(self.world, rectangular(seed_point=[1, 0, 0]))
+        self.assertEqual((payload["status"], payload["positions_basis"]), ("built", "predicted"))
+        self.assertEqual(payload["positions"][2], [5.0, 0.0, 0.0])
+
+    def test_no_seed_point_measures_nothing(self):
+        self.world.effect = lambda e: [Element((0, 0, 0)), Element((1, 1, 1)), Element((9, 0, 0))]
+        self.assertEqual(go(self.world, rectangular())["status"], "built")
+
     def test_built_positions_that_disagree_are_suspect(self):
-        self.world.effect = lambda e: [Element((0, 0, 0)), Element((-2, 0, 0)), Element((-4, 0, 0))]
+        self.world.effect = lambda e: [Element((5, 0, 0)), Element((3, 0, 0)), Element((1, 0, 0))]
         payload = go(self.world, rectangular(seed_point=[5, 0, 0]))
         self.assertEqual(payload["status"], "suspect")
         self.assertEqual(payload["positions"][2], [1.0, 0.0, 0.0])
@@ -910,7 +982,7 @@ class RunTests(unittest.TestCase):
 
     def test_an_untrusted_prediction_is_only_a_warning(self):
         self.world.tokens["f"] = [Face(self.world.block)]
-        self.world.effect = lambda e: [Element((0, 0, 0)), Element((1, 1, 0))]
+        self.world.effect = lambda e: [Element((3, 2, 0)), Element((1, 0, 0))]
         payload = go(self.world, circular(axis={"face": ref("f", "face")}, count=2, total_angle_deg=90,
                                           seed_point=[3, 2, 0]))
         self.assertEqual(payload["status"], "built")
@@ -988,12 +1060,19 @@ class SubComponentTests(unittest.TestCase):
         self.assertEqual(payload["pattern"]["direction_world"], [[0.0, 1.0, 0.0]])
         self.assertEqual(payload["positions"], [[10.0, 1.0, 0.0], [10.0, 3.0, 0.0], [10.0, 5.0, 0.0]])
 
-    def test_element_transforms_go_through_the_frame(self):
-        self.world.effect = lambda e: [Element((0, 0, 0)), Element((2, 0, 0)), Element((4, 0, 0))]
+    def test_native_element_faces_go_through_the_frame(self):
+        self.world.effect = lambda e: [Element((1, 0, 0)), Element((3, 0, 0)), Element((5, 0, 0))]
         payload = go(self.world, self.arguments(seed_point=[10, 1, 0]))
-        self.assertEqual(payload["positions_basis"], "elements")
+        self.assertEqual(payload["positions_basis"], "faces")
         self.assertEqual(payload["positions"], [[10.0, 1.0, 0.0], [10.0, 3.0, 0.0], [10.0, 5.0, 0.0]])
         self.assertEqual(payload["status"], "built", payload)
+
+    def test_proxy_element_faces_are_world_already(self):
+        walls = [Wall(at, self.occurrence) for at in ((10, 1, 0), (10, 3, 0), (10, 5, 0))]
+        self.world.effect = lambda e: [Element(faces=[wall]) for wall in walls]
+        payload = go(self.world, self.arguments(seed_point=[10, 1, 0]))
+        self.assertEqual(payload["status"], "built", payload)
+        self.assertEqual(payload["positions"][2], [10.0, 5.0, 0.0])
 
     def test_a_circular_axis_origin_goes_through_the_frame(self):
         payload = go(self.world, circular(entities=[{"feature": "Pocket"}], count=2, seed_point=[12, 0, 0],
