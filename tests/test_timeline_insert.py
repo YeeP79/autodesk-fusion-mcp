@@ -8,6 +8,7 @@ import _fusion_test_bootstrap  # noqa: F401
 
 from fusion_bridge import timeline_insert as ti
 from fusion_bridge import tool_surface
+from fusion_bridge.common import timeline
 
 HEALTHY, WARNING, ERROR = 0, 1, 2
 
@@ -419,7 +420,7 @@ class ReadRowsTests(unittest.TestCase):
         self.assertIsNone(items[0]["entity_type"])
 
     def test_every_health_state_has_a_name(self):
-        self.assertEqual([ti._health_name(i) for i in range(6)],
+        self.assertEqual([timeline.HEALTH_NAMES[i] for i in range(6)],
                          ["healthy", "warning", "error", "suppressed", "rolled_back", "unknown"])
 
 

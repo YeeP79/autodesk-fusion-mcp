@@ -36,17 +36,14 @@ import adsk.core
 import adsk.fusion
 
 from . import python_exec
-from .common.api import strict_items
 from .common.results import tool_result
+from .common.timeline import broken_refusal, marker_refusal, read_rows, timeline_of as _timeline_of
 from .dispatch import get_app, log
 
 MAX_LISTED = 200
 MAX_ERROR_CHARS = 2000
 RESTORE_ATTEMPTS = 2
 _ARGS = {"before", "code", "session_id", "dry_run"}
-_PARAMETRIC_DESIGN = 1  # adsk.fusion.DesignTypes.ParametricDesignType
-# adsk.fusion.FeatureHealthStates
-_HEALTH_NAMES = {0: "healthy", 1: "warning", 2: "error", 3: "suppressed", 4: "rolled_back", 5: "unknown"}
 
 
 def _attr(obj, name, default=None):
@@ -139,16 +136,8 @@ def resolve_target(rows, name):
 def preflight(rows, marker, count, name):
     """Return (position, refusals). Nothing may run unless refusals is empty."""
     position, problem = resolve_target(rows, name)
-    refusals = [problem] if problem else []
-    if marker != count:
-        refusals.append(f"The timeline marker is at {marker} of {count}, not the end. "
-                        "Move it to the end first, so nothing rolled back is mistaken for this call's work.")
-    broken = [row for row in rows if row["kind"] == "feature" and row["health"] == "error"]
-    if broken:
-        names = ", ".join(repr(row["name"]) for row in broken[:10])
-        refusals.append(f"The timeline already has {len(broken)} item(s) in error ({names}). "
-                        "Fix or suppress them first (timeline_health).")
-    return position, refusals
+    found = [problem, marker_refusal(marker, count), broken_refusal(rows)]
+    return position, [refusal for refusal in found if refusal]
 
 
 def rolled_ok(returned, marker, index, is_rolled_back):
@@ -258,74 +247,8 @@ def overall_status(outcome, changes):
 # -- Fusion reads -------------------------------------------------------------
 
 
-def _health_name(value):
-    return _HEALTH_NAMES.get(value, "unknown")
-
-
-def _row(obj, position_index, group=None, rollable=True):
-    entity = _attr(obj, "entity")
-    object_type = _attr(entity, "objectType") if entity is not None else None
-    participants = _attr(entity, "participantBodies") if entity is not None else None
-    try:
-        participant_count = None if participants is None else len(participants)
-    except TypeError:
-        participant_count = None
-    return {
-        "index": position_index if isinstance(position_index, int) and position_index >= 0 else None,
-        "name": _attr(obj, "name", "") or "",
-        "kind": "feature",
-        "entity_type": object_type.rsplit("::", 1)[-1] if isinstance(object_type, str) else None,
-        "component": _attr(_attr(entity, "parentComponent"), "name") if entity is not None else None,
-        "group": group,
-        "rollable": rollable,
-        "health": _health_name(_attr(obj, "healthState")),
-        "message": _attr(obj, "errorOrWarningMessage", "") or "",
-        "participant_bodies": participant_count,
-    }
-
-
-def read_rows(timeline):
-    """Return (rows, TimelineObjects), in timeline order.
-
-    A collapsed group is one slot whose children have index -1. An expanded
-    group's children hold their own slots, so they appear once, not again under
-    the group.
-    """
-    top = strict_items(timeline)
-    slots = {_attr(obj, "index") for obj in top if not _attr(obj, "isGroup")}
-    rows, objects = [], []
-    for position, obj in enumerate(top):
-        index = _attr(obj, "index", position)
-        if not _attr(obj, "isGroup"):
-            rows.append(_row(obj, index))
-            objects.append(obj)
-            continue
-        group = adsk.fusion.TimelineGroup.cast(obj) if hasattr(adsk.fusion, "TimelineGroup") else obj
-        collapsed = _attr(group, "isCollapsed") is not False
-        name = _attr(group, "name", "") or ""
-        rows.append({"index": index if collapsed else None, "name": name, "kind": "group",
-                     "entity_type": "TimelineGroup", "component": None, "group": None,
-                     "rollable": collapsed, "health": "group", "message": "", "participant_bodies": None})
-        objects.append(group)
-        for child in strict_items(group):
-            child_index = _attr(child, "index", -1)
-            if isinstance(child_index, int) and child_index >= 0 and child_index in slots:
-                continue
-            in_slot = isinstance(child_index, int) and child_index >= 0
-            rows.append(_row(child, child_index, group=name, rollable=in_slot))
-            objects.append(child)
-    return rows, objects
-
-
 def _active_design(app):
     return adsk.fusion.Design.cast(app.activeProduct)
-
-
-def _timeline_of(design):
-    """The design's timeline, or None for a direct design."""
-    if _attr(design, "designType") != _PARAMETRIC_DESIGN:
-        return None
-    return _attr(design, "timeline")
 
 
 # -- The rolled-back window ---------------------------------------------------
