@@ -49,18 +49,24 @@ def package_root(module_name=__name__):
 
 
 def loaded_modules(modules, root, addin_dir):
-    """Sorted ``(name, path relative to the add-in)`` of the add-in's modules."""
+    """Sorted ``(short name, path relative to the add-in)`` of the add-in's modules.
+
+    Names are relative to the package (``fusion_bridge.bodies``, not
+    ``<root>.fusion_bridge.bodies``): Fusion's synthetic root is a long
+    URL-encoded path, reported once as ``package``. The root package itself
+    is left out.
+    """
     if not root:
         return []
     prefix = root + "."
     found = []
     for name, module in list(modules.items()):
-        if name != root and not name.startswith(prefix):
+        if not name.startswith(prefix):
             continue
         path = getattr(module, "__file__", None)
         if path:
             path = os.path.relpath(os.path.abspath(path), addin_dir)
-        found.append((name, path))
+        found.append((name[len(prefix):], path))
     return sorted(found)
 
 

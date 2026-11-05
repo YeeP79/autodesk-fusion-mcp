@@ -330,9 +330,29 @@ class BridgeInfoTests(unittest.TestCase):
     def test_loaded_modules_relative_paths(self):
         modules, _ = _fake_modules([])
         rows = dict(bridge_info.loaded_modules(modules, ROOT, "/addin"))
-        self.assertEqual(rows[f"{ROOT}.fusion_bridge.dispatch"], os.path.join("fusion_bridge", "dispatch.py"))
+        self.assertEqual(rows["fusion_bridge.dispatch"], os.path.join("fusion_bridge", "dispatch.py"))
         self.assertNotIn("json", rows)
+        self.assertNotIn("other", rows)
         self.assertNotIn(f"{ROOT}x.other", rows)
+        self.assertFalse(any(name.startswith(ROOT) for name in rows))
+        self.assertNotIn("", rows)  # the root package is reported as `package`, not here
+
+    def test_loaded_modules_short_names_from_synthetic_root(self):
+        root = "__main__%2FUsers%2Fme%2FAutodeskFusionMCP"
+        modules = {
+            root: types.SimpleNamespace(__file__="/addin/__init__.py"),
+            f"{root}.fusion_bridge": types.SimpleNamespace(__file__="/addin/fusion_bridge/__init__.py"),
+            f"{root}.fusion_bridge.bodies": types.SimpleNamespace(__file__="/addin/fusion_bridge/bodies.py"),
+            f"{root}.lib.mcp_server": types.SimpleNamespace(),
+        }
+        self.assertEqual(bridge_info.loaded_modules(modules, root, "/addin"), [
+            ("fusion_bridge", os.path.join("fusion_bridge", "__init__.py")),
+            ("fusion_bridge.bodies", os.path.join("fusion_bridge", "bodies.py")),
+            ("lib.mcp_server", None),
+        ])
+        info = bridge_info.collect(modules=modules, addin_dir="/addin", root=root)
+        self.assertEqual(info["package"], root)
+        self.assertIn("fusion_bridge.bodies", info["modules"])
         self.assertEqual(bridge_info.loaded_modules(modules, "", "/addin"), [])
 
     def test_changed_sources_since_load(self):
@@ -361,6 +381,10 @@ class BridgeInfoTests(unittest.TestCase):
         payload = json.loads(result["content"][0]["text"])
         self.assertIn("running", payload)
         self.assertIn("modules", payload)
+
+    def test_reload_next_step_says_to_relist_tools(self):
+        self.assertIn("re-list tools", reloader.NEXT_STEP)
+        self.assertIn("notifications/tools/list_changed", reloader.NEXT_STEP)
 
 
 class ServerIdleTests(unittest.TestCase):

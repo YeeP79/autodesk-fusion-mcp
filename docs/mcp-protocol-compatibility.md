@@ -49,8 +49,14 @@ curl http://127.0.0.1:8765/mcp \
 
 Discovery, tool/resource listings, resource-template listings, and resource
 reads return conservative cache hints: `ttlMs: 0`, `cacheScope: private`.
-The add-in has static tool and resource lists, so `subscriptions/listen`
-acknowledges an empty supported filter. It sends no fabricated change events.
+Within one server instance the tool and resource lists are static, so
+`subscriptions/listen` acknowledges an empty supported filter and sends no
+fabricated change events; with `ttlMs: 0` a stateless client re-lists anyway.
+The list can change across instances (Fusion restart or `reload_addin`), so
+legacy `initialize` advertises `tools.listChanged` and every new legacy
+`GET /mcp` stream starts with `notifications/tools/list_changed`: the server
+cannot know what a reconnecting client cached. A stopped server's streams are
+closed, so a client that opens no stream on the new server must re-list itself.
 Its stream stays open until disconnection or server shutdown; graceful
 shutdown sends a complete result.
 

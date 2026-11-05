@@ -151,6 +151,7 @@ class ProtocolHTTPTests(HTTPFixture, unittest.TestCase):
                 session = response.getheader("Mcp-Session-Id")
                 result = json.loads(response.read())["result"]
                 self.assertEqual(result["protocolVersion"], version)
+                self.assertEqual(result["capabilities"], {"tools": {"listChanged": True}, "resources": {}})
                 self.assertNotIn("resultType", result)
                 headers["Mcp-Session-Id"] = session
                 response = self.send({"jsonrpc": "2.0", "method": "notifications/initialized"}, headers)
@@ -193,8 +194,34 @@ class ProtocolHTTPTests(HTTPFixture, unittest.TestCase):
         self.connection.request("GET", "/mcp", headers={"Accept": "text/event-stream", "Mcp-Session-Id": "legacy"})
         response = self.connection.getresponse()
         self.assertEqual(response.status, 200)
+        self.assertEqual(response.readline(), b"event: message\n")
+        self.assertEqual(json.loads(response.readline()[6:]),
+                         {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+        self.assertEqual(response.readline(), b"\n")
         self.assertEqual(response.readline(), b": keepalive\n")
         response.close()
+
+    def test_every_new_legacy_stream_announces_tools_list_changed(self):
+        # Once per stream, including after a restart on the same port: the
+        # server cannot know what tool list a reconnecting client cached.
+        for _ in range(2):
+            conn = self.connect()
+            conn.request("GET", "/mcp", headers={"Accept": "text/event-stream"})
+            response = conn.getresponse()
+            self.assertEqual(sse_message(response)["method"], "notifications/tools/list_changed")
+            response.close()
+        port = self.port
+        self.server.stop()
+        self.start_server(port=port)
+        conn = self.connect()
+        conn.request("GET", "/mcp", headers={"Accept": "text/event-stream"})
+        response = conn.getresponse()
+        self.assertEqual(sse_message(response)["method"], "notifications/tools/list_changed")
+        response.close()
+
+    def test_modern_discovery_advertises_no_list_changed(self):
+        result = json.loads(self.rpc("server/discover").read())["result"]
+        self.assertEqual(result["capabilities"]["tools"], {})
 
     def test_header_validation_and_metadata_cannot_downgrade(self):
         for header in ("MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"):

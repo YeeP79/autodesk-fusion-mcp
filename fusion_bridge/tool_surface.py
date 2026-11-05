@@ -928,7 +928,8 @@ TOOL_DEFINITIONS = [
         "description": (
             "Report which add-in code is running versus what is on disk: running commit, load time, "
             "reload generation and last reload outcome; disk commit and source files changed since load "
-            "(up_to_date is false when a reload would pick up new code); loaded module file paths. "
+            "(up_to_date is false when a reload would pick up new code); loaded modules by name relative "
+            "to the add-in package (e.g. fusion_bridge.bodies) with file paths. "
             "Read-only; use after reload_addin to confirm the new code is live."
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -940,8 +941,10 @@ TOOL_DEFINITIONS = [
             "Utilities > Add-Ins. Replies immediately, then stops the server, re-imports the add-in's "
             "modules and starts it again; the connection drops for a few seconds. Afterwards call "
             "bridge_info: generation is one higher and last_reload.status is 'reloaded'. If the new code "
-            "fails, the previous code is started again (status 'restored', error included). Resets "
-            "session state: stored $objects, execute_python sessions and annotations."
+            "fails, the previous code is started again (status 'restored', error included). Re-list tools "
+            "afterwards: the server announces tools/list_changed on new GET /mcp streams, but clients "
+            "may keep a cached list. Resets session state: stored $objects, execute_python sessions and "
+            "annotations."
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },

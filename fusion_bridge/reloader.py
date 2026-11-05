@@ -37,6 +37,15 @@ GENERATION = 1
 LAST_RELOAD = None
 
 RECONNECT_AFTER_SECONDS = 5
+NEXT_STEP = (
+    "The connection drops while the add-in restarts. Wait, then call bridge_info: "
+    "running.generation should be one higher and running.last_reload.status 'reloaded'. "
+    "'restored' means the new code failed and the previous code is running again; "
+    "the error is in last_reload and the Fusion Text Commands window. Then re-list tools: "
+    "the new server sends notifications/tools/list_changed on each new GET /mcp stream "
+    "(legacy sessions), but a client that keeps its cached list, or opens no stream, still "
+    "shows the old tool set until it lists again (Claude Code: /mcp, reconnect)."
+)
 _IDLE_TIMEOUT = 10.0
 _MAIN_THREAD_TIMEOUT = 120.0
 _BIND_TIMEOUT = 60.0
@@ -425,12 +434,7 @@ def reload_addin(arguments):
     return _text({
         "status": "reload scheduled",
         "reconnect_after_seconds": RECONNECT_AFTER_SECONDS,
-        "next_step": (
-            "The connection drops while the add-in restarts. Wait, then call bridge_info: "
-            "running.generation should be one higher and running.last_reload.status 'reloaded'. "
-            "'restored' means the new code failed and the previous code is running again; "
-            "the error is in last_reload and the Fusion Text Commands window."
-        ),
+        "next_step": NEXT_STEP,
         "note": "Session state is reset: stored $objects, execute_python sessions and annotations.",
         "before": {
             "running": before["running"],
