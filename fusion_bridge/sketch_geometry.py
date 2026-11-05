@@ -7,6 +7,10 @@ these functions before it creates anything in the design.
 Outline model: ``points`` are the vertices of a closed loop; segment ``i``
 runs from point ``i`` to point ``(i + 1) % n``. An arc replaces segment ``i``
 with a three-point arc through an interior point (``mid``).
+
+Circle model: each circle is ``{"center": point, "radius": r}``, drawn as one
+entity. Two arcs make the same outline but extrude to two wall faces, and a wall
+of two faces cannot be threaded.
 """
 
 import math
@@ -132,6 +136,36 @@ def parse_arcs(arcs, segment_count, dims, factor):
                 result[index] = {"mid": parse_point(arc["mid_point"], dims, f"{label}.mid_point", factor)}
             except GeometryError as exc:
                 problems.extend(exc.problems)
+    if problems:
+        raise GeometryError(problems)
+    return result
+
+
+def parse_circles(circles, dims, factor):
+    """Validate the circle list; return [{"center": cm point, "radius": cm}]."""
+    if not isinstance(circles, list) or not circles:
+        raise GeometryError(["'circles' must be a non-empty list"])
+    if len(circles) > MAX_POINTS:
+        raise GeometryError([f"'circles' has {len(circles)} entries; the limit is {MAX_POINTS}"])
+    result, problems = [], []
+    for k, circle in enumerate(circles):
+        label = f"circles[{k}]"
+        if not isinstance(circle, dict):
+            problems.append(f"{label} must be an object")
+            continue
+        unknown = set(circle) - {"center", "diameter"}
+        if unknown:
+            problems.append(f"{label} has unknown fields {sorted(unknown)}")
+        diameter = circle.get("diameter")
+        if not is_finite_number(diameter) or diameter * factor <= LENGTH_TOL_CM:
+            problems.append(f"{label}.diameter must be a finite number above zero")
+            continue
+        try:
+            center = parse_point(circle.get("center"), dims, f"{label}.center", factor)
+        except GeometryError as exc:
+            problems.extend(exc.problems)
+            continue
+        result.append({"center": center, "radius": diameter * factor / 2.0})
     if problems:
         raise GeometryError(problems)
     return result
@@ -352,6 +386,26 @@ def validate_outline(points2d, arcs):
     return mids, warnings
 
 
+def validate_circles(circles):
+    """Refuse circles that repeat, cross or touch one another. Centers are 2D cm.
+
+    Nested circles are legal: that is a tube wall. Circles that cross are not:
+    each wall would come out in pieces, which is what a circle is drawn to avoid.
+    """
+    problems = []
+    for i, a in enumerate(circles):
+        for j in range(i + 1, len(circles)):
+            b = circles[j]
+            apart = distance(a["center"], b["center"])
+            nested = abs(a["radius"] - b["radius"])
+            if apart <= LENGTH_TOL_CM and nested <= LENGTH_TOL_CM:
+                problems.append(f"circles {i} and {j} are the same circle")
+            elif nested - LENGTH_TOL_CM <= apart <= a["radius"] + b["radius"] + LENGTH_TOL_CM:
+                problems.append(f"circles {i} and {j} cross or touch")
+    if problems:
+        raise GeometryError(problems)
+
+
 # -- Model space -----------------------------------------------------------------
 
 
@@ -397,6 +451,14 @@ def check_on_plane(off, labels, tol=PLANE_TOL_CM, factor=1.0, units="cm"):
                 for label, d in zip(labels, off) if d > tol]
     if problems:
         raise GeometryError(problems)
+
+
+def flatten_circles(circles, plane, factor=1.0, units="cm"):
+    """Project model-space circles onto root plane *plane*; refuse off-plane centers."""
+    u, v = ROOT_PLANE_FRAMES[plane]
+    flat, off = project_to_frame([c["center"] for c in circles], (0.0, 0.0, 0.0), u, v)
+    check_on_plane(off, [f"circles[{i}].center" for i in range(len(circles))], factor=factor, units=units)
+    return [{"center": center, "radius": c["radius"]} for center, c in zip(flat, circles)]
 
 
 def flatten_model_input(points3d, arcs, plane, factor=1.0, units="cm"):

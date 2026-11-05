@@ -6,9 +6,19 @@ ends swapped, a self-intersecting outline yields several profiles (and
 ``profiles.item(0)`` may be a sliver), and model coordinates do not equal sketch
 coordinates on non-XY planes. ``closed_polyline`` validates the outline first
 (see sketch_geometry), then draws every curve through shared SketchPoints and
-reports the profiles it produced. ``profiles`` describes an existing sketch.
+reports the profiles it produced. ``circles`` draws each circle as one entity,
+so its extruded wall is one face and can be threaded. Both build a new sketch or
+add to an existing one, so a plate outline and its holes can share a sketch.
+``profiles`` describes an existing sketch.
+
+Spaces: ``sketch`` is the sketch's own 2D frame and ``model`` is its component's
+3D frame. Under a moved occurrence neither is ``world``, the root assembly's
+frame: sketches are native, and a native sketch's model space is the component's,
+so world points go through the occurrence's transform first.
 """
 
+from collections import namedtuple
+from contextlib import contextmanager
 import traceback
 
 import adsk.core
@@ -16,17 +26,29 @@ import adsk.fusion
 
 from . import sketch_geometry as geo
 from . import value_builders
-from .common.geometry import xyz
+from .common.api import attempt, items, present, safe
+from .common.bodies import ROOT_PATH, find_occurrence, native
+from .common.geometry import to_local, xyz
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
-ACTIONS = ("closed_polyline", "profiles")
-SPACES = ("sketch", "model")
+ACTIONS = ("closed_polyline", "circles", "profiles")
+SPACES = ("sketch", "model", "world")
 STROKE_TOL_CM = 1e-3
 SKETCH_KEY = "sketch_profile_sketch"
 PROFILE_KEY = "sketch_profile_profile"
 _ROOT_PLANE_ATTRS = {"xy": "xYConstructionPlane", "xz": "xZConstructionPlane", "yz": "yZConstructionPlane"}
 _PLANE_TYPES = ("adsk::fusion::ConstructionPlane", "adsk::fusion::BRepFace")
+# Arguments that belong to some actions only.
+_BUILDERS = ("closed_polyline", "circles")
+_NEEDS_OCCURRENCE = ("space 'world' in sub-component {!r} needs 'occurrence_path': "
+                     "each instance of a component sits somewhere else")
+_ACTION_KEYS = {"sketch_plane": _BUILDERS, "plane_entity_token": _BUILDERS, "points": ("closed_polyline",),
+                "arcs": ("closed_polyline",), "circles": ("circles",), "point": ("profiles",)}
+# The sketch a build draws into. *existing* is the sketch the caller named, which
+# must outlive a failed build; a new one is deleted. *occurrence* is the instance
+# world coordinates pass through, None in root, and *frame* is its transform.
+Target = namedtuple("Target", "sketch component occurrence frame existing profiles_before")
 
 
 # -- Argument parsing (Fusion-free) ------------------------------------------------
@@ -39,12 +61,68 @@ def _optional_string(arguments, key):
     return value
 
 
+def _occurrence_path(arguments):
+    """The named occurrence's path; None for root, which needs no transform."""
+    path = _optional_string(arguments, "occurrence_path")
+    return None if path == ROOT_PATH else path
+
+
+def _parse_target(arguments, request):
+    plane = arguments.get("sketch_plane")
+    token = _optional_string(arguments, "plane_entity_token")
+    sketch_token = _optional_string(arguments, "sketch_entity_token")
+    if sum(value is not None for value in (plane, token, sketch_token)) != 1:
+        raise geo.GeometryError([f"{request['action']} needs exactly one of 'sketch_plane', "
+                                 "'plane_entity_token' or 'sketch_entity_token'"])
+    if plane is not None and plane not in _ROOT_PLANE_ATTRS:
+        raise geo.GeometryError([f"'sketch_plane' must be one of {sorted(_ROOT_PLANE_ATTRS)}, got {plane!r}"])
+    if sketch_token is not None:
+        for key in ("name", "component"):
+            if request[key] is not None:
+                raise geo.GeometryError([f"'{key}' cannot be used with 'sketch_entity_token': "
+                                         "that sketch already has its name and component"])
+    request.update(sketch_plane=plane, plane_entity_token=token, sketch_entity_token=sketch_token)
+
+
+def _known_plane(request):
+    """The root plane key input can be checked against before Fusion is asked.
+
+    A component's XY is not world XY under an occurrence, which may be moved.
+    """
+    return None if request["space"] == "world" and request["occurrence_path"] else request["sketch_plane"]
+
+
+def _parse_outline(arguments, request, dims):
+    factor, units, plane = request["factor"], request["units"], _known_plane(request)
+    points, warnings = geo.parse_points(arguments.get("points"), dims, factor)
+    arcs = geo.parse_arcs(arguments.get("arcs"), len(points), dims, factor)
+    request["warnings"] += warnings
+    request.update(points=points, arcs=arcs)
+    if request["space"] == "sketch":
+        request["mids"], outline_warnings = geo.validate_outline(points, arcs)
+        request["warnings"] += outline_warnings
+    elif plane is not None or geo.newell_normal(points) is not None:
+        # Early refusal; re-run on real sketch coordinates. With no root plane the
+        # vertices give the normal, and a D of two points and an arc gives none.
+        flat, flat_arcs = geo.flatten_model_input(points, arcs, plane, factor, units)
+        geo.validate_outline(flat, flat_arcs)
+
+
+def _parse_circles(arguments, request, dims):
+    circles = geo.parse_circles(arguments.get("circles"), dims, request["factor"])
+    request["circles"] = circles
+    if request["space"] == "sketch":
+        geo.validate_circles(circles)
+    elif _known_plane(request):
+        geo.validate_circles(geo.flatten_circles(circles, _known_plane(request), request["factor"], request["units"]))
+
+
 def parse_request(arguments):
     """Validate tool arguments without touching Fusion.
 
-    For closed_polyline in sketch space this runs the full outline validation;
-    model-space outlines are checked against the plane here (root planes) and
-    re-validated in true sketch coordinates once the sketch exists.
+    In sketch space this runs the full outline or circle validation; model-space
+    input is checked against the plane here (root planes) and re-validated in
+    true sketch coordinates once the sketch exists.
     """
     if not isinstance(arguments, dict):
         raise geo.GeometryError(["arguments must be an object"])
@@ -59,12 +137,15 @@ def parse_request(arguments):
     dims = 2 if space == "sketch" else 3
     request = {"action": action, "units": units, "factor": factor, "space": space,
                "component": _optional_string(arguments, "component"),
+               "occurrence_path": _occurrence_path(arguments),
                "name": _optional_string(arguments, "name"), "warnings": []}
+    if space == "world" and request["occurrence_path"] is None and request["component"] not in (None, ROOT_PATH):
+        raise geo.GeometryError([_NEEDS_OCCURRENCE.format(request["component"])])
+    for key, users in _ACTION_KEYS.items():
+        if key in arguments and action not in users:
+            raise geo.GeometryError([f"'{key}' is only used by {' and '.join(users)}"])
 
     if action == "profiles":
-        for key in ("sketch_plane", "plane_entity_token", "points", "arcs"):
-            if key in arguments:
-                raise geo.GeometryError([f"'{key}' is only used by closed_polyline"])
         request["sketch_entity_token"] = _optional_string(arguments, "sketch_entity_token")
         if (request["name"] is None) == (request["sketch_entity_token"] is None):
             raise geo.GeometryError(["profiles needs exactly one of 'name' or 'sketch_entity_token'"])
@@ -72,27 +153,11 @@ def parse_request(arguments):
         request["point"] = None if point is None else geo.parse_point(point, dims, "point", factor)
         return request
 
-    for key in ("sketch_entity_token", "point"):
-        if key in arguments:
-            raise geo.GeometryError([f"'{key}' is only used by profiles"])
-    plane = arguments.get("sketch_plane")
-    token = _optional_string(arguments, "plane_entity_token")
-    if (plane is None) == (token is None):
-        raise geo.GeometryError(["closed_polyline needs exactly one of 'sketch_plane' or 'plane_entity_token'"])
-    if plane is not None and plane not in _ROOT_PLANE_ATTRS:
-        raise geo.GeometryError([f"'sketch_plane' must be one of {sorted(_ROOT_PLANE_ATTRS)}, got {plane!r}"])
-    request.update(sketch_plane=plane, plane_entity_token=token)
-
-    points, warnings = geo.parse_points(arguments.get("points"), dims, factor)
-    arcs = geo.parse_arcs(arguments.get("arcs"), len(points), dims, factor)
-    request["warnings"] += warnings
-    request.update(points=points, arcs=arcs)
-    if space == "sketch":
-        request["mids"], outline_warnings = geo.validate_outline(points, arcs)
-        request["warnings"] += outline_warnings
+    _parse_target(arguments, request)
+    if action == "circles":
+        _parse_circles(arguments, request, dims)
     else:
-        flat, flat_arcs = geo.flatten_model_input(points, arcs, plane, factor, units)
-        geo.validate_outline(flat, flat_arcs)  # Early refusal; re-run on real sketch coordinates.
+        _parse_outline(arguments, request, dims)
     return request
 
 
@@ -120,6 +185,24 @@ def _component(design, name):
     return component
 
 
+def _occurrence(design, path):
+    if path is None:
+        return None
+    root = design.rootComponent
+    occurrence = find_occurrence(root, path)
+    if occurrence is None:
+        paths = [safe(o, "fullPathName") for o in items(safe(root, "allOccurrences"), limit=20)]
+        raise geo.GeometryError([f"no occurrence at {path!r}; occurrences include {paths}"])
+    return occurrence
+
+
+def _frame(occurrence):
+    """The occurrence's (origin, x, y, z) in world coordinates, or None in root."""
+    if occurrence is None:
+        return None
+    return tuple(xyz(part) for part in occurrence.transform2.getAsCoordinateSystem())
+
+
 def _plane(design, component, request):
     if request["sketch_plane"]:
         return getattr(component, _ROOT_PLANE_ATTRS[request["sketch_plane"]])
@@ -133,10 +216,16 @@ def _plane(design, component, request):
     return entity
 
 
-def _sketch_coordinates(sketch, request):
+def _model_point(point, request, frame):
+    """A model- or world-space input point in the sketch's component space."""
+    return to_local(point, frame) if request["space"] == "world" and frame is not None else point
+
+
+def _sketch_coordinates(target, request):
     """Outline points and arc mids in sketch-space 2D cm, validated."""
     if request["space"] == "sketch":
         return request["points"], request["mids"], []
+    sketch = target.sketch
     labels, model = [], []
     for i, p in enumerate(request["points"]):
         labels.append(f"points[{i}]")
@@ -145,7 +234,7 @@ def _sketch_coordinates(sketch, request):
     for i in mid_keys:
         labels.append(f"arc on segment {i} mid_point")
         model.append(request["arcs"][i]["mid"])
-    mapped = [xyz(sketch.modelToSketchSpace(_point3d(*p))) for p in model]
+    mapped = [xyz(sketch.modelToSketchSpace(_point3d(*_model_point(p, request, target.frame)))) for p in model]
     geo.check_on_plane([abs(p[2]) for p in mapped], labels, factor=request["factor"], units=request["units"])
     n = len(request["points"])
     points2d = [p[:2] for p in mapped[:n]]
@@ -156,19 +245,36 @@ def _sketch_coordinates(sketch, request):
     return points2d, mids, warnings
 
 
-def build_loop(sketch, points2d, mids, point3d=_point3d):
+def _circle_coordinates(target, request):
+    """The circles with sketch-space 2D centers in cm, validated."""
+    circles = request["circles"]
+    if request["space"] != "sketch":
+        mapped = [xyz(target.sketch.modelToSketchSpace(_point3d(*_model_point(c["center"], request, target.frame))))
+                  for c in circles]
+        # Sketch z is the distance off the plane: refused here, then dropped, so a
+        # curve is never drawn out of its own sketch.
+        geo.check_on_plane([abs(p[2]) for p in mapped], [f"circles[{i}].center" for i in range(len(mapped))],
+                           factor=request["factor"], units=request["units"])
+        circles = [{"center": p[:2], "radius": c["radius"]} for p, c in zip(mapped, circles)]
+    geo.validate_circles(circles)
+    return circles
+
+
+def build_loop(sketch, points2d, mids, point3d=_point3d, drawn=None):
     """Draw the closed loop so neighboring curves share one SketchPoint per vertex.
 
     Lines are drawn from the previous curve's SketchPoint, never from a fresh
     Point3D. Arcs are always created counterclockwise, so their ends are matched
     to vertices by position and merged into the shared point when needed.
-    Returns (curves, vertex SketchPoints, warnings).
+    Returns (curves, vertex SketchPoints, warnings); *drawn*, when given, is the
+    curves list, so a caller still has them if a later segment fails.
     """
     lines = sketch.sketchCurves.sketchLines
     arcs = sketch.sketchCurves.sketchArcs
     n = len(points2d)
     vertices = [None] * n
-    curves, warnings = [], []
+    curves = drawn if drawn is not None else []
+    warnings = []
     for i in range(n):
         j = (i + 1) % n
         start = vertices[i] if vertices[i] is not None else point3d(*points2d[i])
@@ -179,6 +285,7 @@ def build_loop(sketch, points2d, mids, point3d=_point3d):
             curve = lines.addByTwoPoints(start, end)
         if curve is None:
             raise RuntimeError(f"Fusion did not create segment {i}")
+        curves.append(curve)
         ends = [curve.startSketchPoint, curve.endSketchPoint]
         if geo.distance(xyz(ends[0].geometry)[:2], points2d[i]) > geo.distance(xyz(ends[1].geometry)[:2], points2d[i]):
             ends.reverse()
@@ -188,8 +295,35 @@ def build_loop(sketch, points2d, mids, point3d=_point3d):
             elif vertices[k] != end_point and not vertices[k].merge(end_point):
                 sketch.geometricConstraints.addCoincident(end_point, vertices[k])
                 warnings.append(f"vertex {k} could not be merged; a coincident constraint joins it instead")
-        curves.append(curve)
     return curves, vertices, warnings
+
+
+def build_circles(sketch, circles, point3d=_point3d, drawn=None):
+    """Draw each circle as one entity at sketch z 0; returns the SketchCircles."""
+    add = sketch.sketchCurves.sketchCircles.addByCenterRadius
+    curves = drawn if drawn is not None else []
+    for i, circle in enumerate(circles):
+        curve = add(point3d(*circle["center"]), circle["radius"])
+        if curve is None:
+            raise RuntimeError(f"Fusion did not create circle {i}")
+        curves.append(curve)
+    return curves
+
+
+def erase_curves(curves):
+    """Delete curves this call drew, then any of their points left unconnected.
+
+    Returns how many curves could not be deleted. Drawing always starts from
+    fresh points, so an unconnected point here is never the caller's.
+    """
+    points = [point for curve in curves
+              for point in (safe(curve, name) for name in ("startSketchPoint", "endSketchPoint", "centerSketchPoint"))
+              if point is not None]
+    left = sum(1 for curve in reversed(curves) if not attempt(curve.deleteMe, False))
+    for point in points:
+        if attempt(lambda: point.isValid and point.connectedEntities.count == 0, False):
+            attempt(point.deleteMe)
+    return left
 
 
 def _accuracy():
@@ -261,6 +395,32 @@ def choose_profile(described):
     return largest, containing
 
 
+def _circle_curve_type():
+    types = getattr(adsk.core, "Curve3DTypes", None)
+    return getattr(types, "Circle3DCurveType", 2)
+
+
+def circle_states(sketch, circles):
+    """Per circle: True if a profile uses it whole, False if cut, None if in no profile.
+
+    Curves that cross a circle leave it one sketch entity, but its profile
+    curves become arcs and its extruded wall comes out in pieces.
+    """
+    pieces = []
+    for i in range(sketch.profiles.count):
+        loops = sketch.profiles.item(i).profileLoops
+        for k in range(loops.count):
+            curves = loops.item(k).profileCurves
+            for c in range(curves.count):
+                curve = curves.item(c)
+                pieces.append((curve.sketchEntity, curve.geometryType == _circle_curve_type()))
+    states = []
+    for circle in circles:
+        whole = [is_circle for entity, is_circle in pieces if entity == circle]
+        states.append(all(whole) if whole else None)
+    return states
+
+
 def _store(sketch, profile):
     value_builders.OBJECT_STORE[SKETCH_KEY] = sketch
     if profile is not None:
@@ -272,23 +432,181 @@ def _store(sketch, profile):
 # -- Actions --------------------------------------------------------------------------
 
 
-def _closed_polyline(request):
-    design = _design()
-    component = _component(design, request["component"])
+def _sketch_by_token(design, token):
+    found = [e for e in (design.findEntityByToken(token) or [])
+             if getattr(e, "objectType", None) == "adsk::fusion::Sketch"]
+    if not found:
+        raise geo.GeometryError(["'sketch_entity_token' does not match a sketch in the active design"])
+    return found[0]
+
+
+def add_sketch(component, plane, occurrence):
+    """Add a sketch to *component* on *plane*.
+
+    With no occurrence named this is the plain call. A plane seen through an
+    instance of this component is drawn on natively; a plane from any other
+    component needs the creation occurrence.
+    """
+    sketches = component.sketches
+    if occurrence is None:
+        return sketches.add(plane)
+    context = safe(plane, "assemblyContext")
+    owner = (safe(context, "component") if context is not None
+             else present(safe(plane, "body"), "parentComponent", safe(plane, "component")))
+    return sketches.add(native(plane)) if owner is None or owner == component else sketches.add(plane, occurrence)
+
+
+def _new_sketch(design, component, occurrence, request):
     if request["name"] and component.sketches.itemByName(request["name"]) is not None:
         raise geo.GeometryError([f"a sketch named {request['name']!r} already exists in {component.name!r}"])
-    plane = _plane(design, component, request)
-    sketch = component.sketches.add(plane)
+    sketch = add_sketch(component, _plane(design, component, request), occurrence)
     if sketch is None:
         raise RuntimeError("Fusion did not create the sketch")
+    return sketch
+
+
+def _sketch_occurrence(design, sketch, request):
+    """The instance *sketch* is placed by: the one named, else the proxy's own context."""
+    occurrence = _occurrence(design, request["occurrence_path"]) or safe(sketch, "assemblyContext")
+    component = native(sketch).parentComponent
+    if occurrence is not None and occurrence.component != component:
+        raise geo.GeometryError([f"occurrence {occurrence.fullPathName!r} is not an instance of {component.name!r}, "
+                                 "the component holding this sketch"])
+    _require_placement(request, component, occurrence, design)
+    return occurrence
+
+
+def _require_placement(request, component, occurrence, design):
+    if request["space"] == "world" and occurrence is None and component != design.rootComponent:
+        raise geo.GeometryError([_NEEDS_OCCURRENCE.format(component.name)])
+
+
+def _refuse_linked(occurrence):
+    if occurrence is not None and safe(occurrence, "isReferencedComponent"):
+        raise geo.GeometryError([f"occurrence {occurrence.fullPathName!r} is linked; "
+                                 "edit its source design instead"])
+
+
+def _named_component(design, request):
+    """(component, occurrence) for a new sketch; they must agree when both are named."""
+    occurrence = _occurrence(design, request["occurrence_path"])
+    component = _component(design, request["component"])
+    if occurrence is None:
+        return component, None
+    if request["component"] is not None and component != occurrence.component:
+        raise geo.GeometryError([f"occurrence {occurrence.fullPathName!r} is not an instance of {component.name!r}"])
+    return occurrence.component, occurrence
+
+
+def _open_target(design, request):
+    if request["sketch_entity_token"]:
+        found = _sketch_by_token(design, request["sketch_entity_token"])
+        occurrence = _sketch_occurrence(design, found, request)
+        _refuse_linked(occurrence)
+        sketch = native(found)  # Geometry is drawn on the native.
+        return Target(sketch, sketch.parentComponent, occurrence, _frame(occurrence), True, sketch.profiles.count)
+    component, occurrence = _named_component(design, request)
+    _refuse_linked(occurrence)
+    frame = _frame(occurrence)
+    return Target(_new_sketch(design, component, occurrence, request), component, occurrence, frame, False, 0)
+
+
+@contextmanager
+def _undo_on_failure(target):
+    """Yield the list of drawn curves; on failure leave the design as it was found."""
+    drawn = []
     try:
-        points2d, mids, warnings = _sketch_coordinates(sketch, request)
+        yield drawn
+    except Exception as exc:
+        if not target.existing:
+            target.sketch.deleteMe()  # Never leave a half-built sketch behind.
+            raise
+        left = erase_curves(drawn)
+        if left:  # Not a refusal: something was left behind.
+            raise RuntimeError(f"{exc}; {left} drawn curve(s) could not be removed from "
+                               f"{target.sketch.name!r}") from exc
+        raise
+
+
+@contextmanager
+def _deferred_compute(target):
+    """Defer the sketch compute, but never on an existing sketch.
+
+    Fusion documents that deferring while editing a sketch features depend on
+    can produce a bad model in those features.
+    """
+    if target.existing:
+        yield
+        return
+    target.sketch.isComputeDeferred = True
+    try:
+        yield
+    finally:
+        target.sketch.isComputeDeferred = False
+
+
+def _common_result(target, described, request):
+    """Store the largest profile and return the keys every build reports."""
+    sketch = target.sketch
+    largest, _ = choose_profile(described)
+    profile = sketch.profiles.item(largest)
+    _store(sketch, profile)
+    return {
+        "sketch": {"name": sketch.name, "entity_token": sketch.entityToken, "component": target.component.name,
+                   "stored_as": SKETCH_KEY},
+        "profile": {"index": largest, "entity_token": getattr(profile, "entityToken", None),
+                    "area": described[largest]["area"], "stored_as": PROFILE_KEY},
+        "occurrence": safe(target.occurrence, "fullPathName"),
+        "space": request["space"],
+        "units": request["units"],
+        "profile_count": len(described),
+        "added_to_existing": target.existing,
+        "profile_count_before": target.profiles_before,
+    }
+
+
+def world_positions(target, design, points, wanted, factor):
+    """Where Fusion says drawn SketchPoints sit in world coordinates, in user units.
+
+    Read through a proxy of each point, so it does not rest on the math that
+    placed them: when *wanted* (world cm) is given, a point that landed elsewhere
+    is refused. Returns (positions, warnings); positions is None in a
+    sub-component with no named instance, whose world position is not one place.
+    """
+    if target.occurrence is None and target.component != design.rootComponent:
+        return None, []
+
+    def read(point):
+        placed = point if target.occurrence is None else point.createForAssemblyContext(target.occurrence)
+        return xyz(placed.worldGeometry)
+
+    positions = [attempt(lambda: read(point)) for point in points]
+    if any(p is None for p in positions):
+        return None, ["world positions could not be read back, so placement is unverified"]
+    if wanted is not None:
+        off = [f"point {i} landed {geo.distance(p, w) / factor:.6g} away from where it was asked to go"
+               for i, (p, w) in enumerate(zip(positions, wanted)) if geo.distance(p, w) > geo.PLANE_TOL_CM]
+        if off:
+            raise geo.GeometryError(off)
+    return [[c / factor for c in p] for p in positions], []
+
+
+def _no_new_region_warnings(target, described):
+    if target.existing and len(described) <= target.profiles_before:
+        return [f"the sketch had {target.profiles_before} profile(s) and now has {len(described)}; "
+                "the new curves did not add a region"]
+    return []
+
+
+def _closed_polyline(request):
+    design = _design()
+    target = _open_target(design, request)
+    sketch = target.sketch
+    with _undo_on_failure(target) as drawn:
+        points2d, mids, warnings = _sketch_coordinates(target, request)
         warnings = request["warnings"] + warnings
-        sketch.isComputeDeferred = True
-        try:
-            curves, vertices, build_warnings = build_loop(sketch, points2d, mids)
-        finally:
-            sketch.isComputeDeferred = False
+        with _deferred_compute(target):
+            curves, vertices, build_warnings = build_loop(sketch, points2d, mids, drawn=drawn)
         warnings += build_warnings
         if request["name"]:
             sketch.name = request["name"]
@@ -296,54 +614,90 @@ def _closed_polyline(request):
         described = describe_profiles(sketch, request["factor"])
         if not described:
             raise RuntimeError(f"the outline produced no profile (unconnected vertices: {unconnected})")
-    except Exception:
-        sketch.deleteMe()  # Never leave a half-built sketch behind.
-        raise
+        wanted = request["points"] if request["space"] == "world" else None
+        world_points, world_warnings = world_positions(target, design, vertices, wanted, request["factor"])
+    warnings += world_warnings
     if unconnected:
         warnings.append(f"vertices {unconnected} are not shared by two curves; the loop may not be closed")
-    largest, _ = choose_profile(described)
-    if len(described) > 1:
-        warnings.append(f"the outline produced {len(described)} profiles; the largest (index {largest}) was chosen")
-    profile = sketch.profiles.item(largest)
-    _store(sketch, profile)
+    result = _common_result(target, described, request)
+    if len(described) > 1 and not target.existing:
+        warnings.append(f"the outline produced {len(described)} profiles; "
+                        f"the largest (index {result['profile']['index']}) was chosen")
+    warnings += _no_new_region_warnings(target, described)
     factor = request["factor"]
     return {
-        "sketch": {"name": sketch.name, "entity_token": sketch.entityToken, "component": component.name,
-                   "stored_as": SKETCH_KEY},
-        "profile": {"index": largest, "entity_token": getattr(profile, "entityToken", None),
-                    "area": described[largest]["area"], "stored_as": PROFILE_KEY},
-        "units": request["units"],
-        "profile_count": len(described),
+        **result,
         "curve_count": len(curves),
         "arc_segments": sorted(mids),
         "sketch_points": [[c / factor for c in p] for p in points2d],
+        "world_points": world_points,
         "unconnected_vertices": unconnected,
         "profiles": described,
         "warnings": warnings,
     }
 
 
+def _circle_warnings(states):
+    warnings = []
+    for i, whole in enumerate(states):
+        if whole is False:
+            warnings.append(f"circle {i} is cut by other sketch curves; its wall would come out as several "
+                            "faces, which cannot be threaded")
+        elif whole is None:
+            warnings.append(f"circle {i} bounds no profile")
+    return warnings
+
+
+def _circles(request):
+    design = _design()
+    target = _open_target(design, request)
+    sketch = target.sketch
+    with _undo_on_failure(target) as drawn:
+        circles = _circle_coordinates(target, request)
+        with _deferred_compute(target):
+            curves = build_circles(sketch, circles, drawn=drawn)
+        if request["name"]:
+            sketch.name = request["name"]
+        described = describe_profiles(sketch, request["factor"])
+        if not described:
+            raise RuntimeError("the circles produced no profile")
+        wanted = [c["center"] for c in request["circles"]] if request["space"] == "world" else None
+        centers = [curve.centerSketchPoint for curve in curves]
+        world_centers, world_warnings = world_positions(target, design, centers, wanted, request["factor"])
+    states = circle_states(sketch, curves)
+    factor = request["factor"]
+    return {
+        **_common_result(target, described, request),
+        "curve_count": len(curves),
+        "circles": [{"index": i, "center": [c / factor for c in circle["center"]],
+                     "diameter": 2.0 * circle["radius"] / factor, "entity_token": safe(curve, "entityToken"),
+                     "world_center": world_centers[i] if world_centers else None, "whole": state}
+                    for i, (circle, curve, state) in enumerate(zip(circles, curves, states))],
+        "profiles": described,
+        "warnings": world_warnings + _circle_warnings(states) + _no_new_region_warnings(target, described),
+    }
+
+
 def _profiles(request):
     design = _design()
     if request["sketch_entity_token"]:
-        found = [e for e in (design.findEntityByToken(request["sketch_entity_token"]) or [])
-                 if getattr(e, "objectType", None) == "adsk::fusion::Sketch"]
-        if not found:
-            raise geo.GeometryError(["'sketch_entity_token' does not match a sketch in the active design"])
-        sketch = found[0]
+        sketch = _sketch_by_token(design, request["sketch_entity_token"])
     else:
-        component = _component(design, request["component"])
+        component, _ = _named_component(design, request)
         sketch = component.sketches.itemByName(request["name"])
         if sketch is None:
             raise geo.GeometryError([f"no sketch named {request['name']!r} in {component.name!r}"])
     query, warnings = None, []
     if request["point"] is not None:
         p = request["point"]
-        if request["space"] == "model":
+        if request["space"] == "world":
+            frame = _frame(_sketch_occurrence(design, sketch, request))
+            p = xyz(native(sketch).modelToSketchSpace(_point3d(*_model_point(p, request, frame))))
+        elif request["space"] == "model":
             p = xyz(sketch.modelToSketchSpace(_point3d(*p)))
-            if abs(p[2]) > geo.PLANE_TOL_CM:
-                warnings.append(f"point is {p[2] / request['factor']:.6g} {request['units']} off the sketch plane; "
-                                "containment uses its projection")
+        if request["space"] != "sketch" and abs(p[2]) > geo.PLANE_TOL_CM:
+            warnings.append(f"point is {p[2] / request['factor']:.6g} {request['units']} off the sketch plane; "
+                            "containment uses its projection")
         query = tuple(p[:2])
     described = describe_profiles(sketch, request["factor"], query)
     largest, containing = choose_profile(described)
@@ -363,6 +717,9 @@ def _profiles(request):
     }
 
 
+_ACTION_HANDLERS = {"closed_polyline": _closed_polyline, "circles": _circles, "profiles": _profiles}
+
+
 def sketch_profile(arguments):
     """MCP boundary: validate, then build or inspect on Fusion's main thread."""
     try:
@@ -370,11 +727,11 @@ def sketch_profile(arguments):
     except geo.GeometryError as exc:
         return tool_result({"error": "invalid input; nothing was created", "problems": exc.problems}, True)
     try:
-        payload = _closed_polyline(request) if request["action"] == "closed_polyline" else _profiles(request)
+        payload = _ACTION_HANDLERS[request["action"]](request)
         log(f"[MCP] sketch_profile {request['action']}: {payload['profile_count']} profile(s)")
         return tool_result(payload)
     except geo.GeometryError as exc:
-        note = "refused; nothing was created" if request["action"] == "closed_polyline" else "refused"
+        note = "refused; nothing was created" if request["action"] in _BUILDERS else "refused"
         return tool_result({"error": note, "problems": exc.problems}, True)
     except Exception as exc:
         log(f"[MCP] sketch_profile failed: {exc}")

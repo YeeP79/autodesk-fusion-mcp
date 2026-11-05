@@ -93,7 +93,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `rename_folder` | Rename a cloud folder, refusing case-insensitive sibling clashes; case-only renames go via a temp name |
 | `rename_file` | Rename a cloud file (dry run by default), refusing clashes and open files, with a link check |
 | `remove_empty_folders` | List truly empty cloud folders and delete them children-first (dry run by default) |
-| `sketch_profile` | Build validated, connected closed sketch outlines (lines + arcs); list a sketch's profiles |
+| `sketch_profile` | Build validated, connected closed sketch outlines (lines + arcs) and single-entity circles, in a new or existing sketch, with world coordinates through an occurrence; list a sketch's profiles |
 | `check_solids` | Post-feature sanity check: slivers, tiny faces, lumps, non-solids, interference, volume changes vs a baseline |
 | `tail_log` | Read Fusion's own app log (filter by substring, level, time; `save`/`errors` presets); runs off the main thread |
 | `save_document` | Save with a version comment and verify a new cloud version actually landed (diagnoses stalled saves) |
@@ -313,6 +313,7 @@ New tools must use `fusion_bridge/common/` instead of private copies of its help
 | `api.py` | `safe`, `present`, `attempt` reads; `items` (skips what it cannot read) and `strict_items` (raises); both handle count/item collections and Fusion vectors |
 | `geometry.py` | Vector math, unit conversion |
 | `bodies.py` | Body enumeration, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy` |
+| `bodies.py` | Body enumeration, `find_occurrence`, `bbox`, `native` |
 | `timeline.py` | Timeline health |
 | `documents.py` | Open documents, instances of a file, the event pump |
 | `cloud.py` | Cloud paths, projects, folders, files, the project tree walk |
