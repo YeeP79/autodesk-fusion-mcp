@@ -15,6 +15,7 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+SET_EDITABLE_STATE = "set_editable_state"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -370,6 +371,35 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": SET_EDITABLE_STATE,
+        "description": (
+            "Make cloud files read-only or editable, the API having no setter: runs Fusion's Make Read-Only / "
+            "Make Editable command on each file in turn. dry_run defaults to true and only reports the plan. "
+            "Per file: skip if already there, reuse an open instance or open it, wait for Fusion to go quiet, run "
+            "the command, verify through a fresh DataFile lookup, close the document only if this call opened it. "
+            "The starting document is re-activated at the end. Refuses a document with unsaved changes (never "
+            "discards) and, for 'editable', files beyond the free Personal Use slots. Stops at the first failure. "
+            "Each file gets about 25 s and the call stays under 120 s; files not reached come back as "
+            "'not_attempted' (ids in remaining_files) so you can call again. Per-file status: changed, already, "
+            "skipped, failed, not_attempted. On a timeout the command may still run later, so the target stays "
+            "active (command_pending); Make Editable may have opened a dialog: check fusion_dialogs. If this call "
+            "itself times out, a dialog is the likely cause too."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "files": {"type": "array", "items": {"type": "string"},
+                          "description": "1 to 10 files: DataFile ids ('urn:...'), or paths inside 'project' "
+                                         "('Folder/Sub/Name')."},
+                "project": {"type": "string",
+                            "description": "Project (name or id) the paths are in. Required for paths."},
+                "state": {"type": "string", "enum": ["read_only", "editable"], "description": "State to set."},
+                "dry_run": {"type": "boolean", "description": "Only report the plan (default true)."},
+            },
+            "required": ["files", "state"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +421,7 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    set_editable_state,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +443,7 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        SET_EDITABLE_STATE: set_editable_state,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
