@@ -109,6 +109,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `bridge_info` | Running vs on-disk add-in code: commits, load time, changed files, modules |
 | `reload_addin` | Restart the add-in in place to pick up code changed on disk; re-list tools afterwards (new GET /mcp streams get `tools/list_changed`) |
 | `delete_files` | Permanently delete cloud files, parents first; dry run by default, refuses open or outside-linked files, reports the server's reason per file |
+| `fusion_status` | Check from outside the main thread whether Fusion is responsive, what is running or queued, and why it looks busy; optionally wait until it is idle |
 
 ### Generic API example
 

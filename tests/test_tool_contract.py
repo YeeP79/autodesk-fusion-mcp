@@ -54,6 +54,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "open_document",
         "delete_files",
         "set_editable_state",
+        "fusion_status",
     }
 
     def test_all_expected_tools_present(self):

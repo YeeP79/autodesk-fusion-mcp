@@ -24,6 +24,7 @@ from . import (
     project_tree,
     document_io,
     editable_state,
+    fusion_status,
     python_exec,
     reloader,
     script_store,
@@ -160,6 +161,17 @@ def _wrap_doc(fn):
     return wrapper
 
 
+def _wrap_cancellable(fn):
+    """Wrap a handler that also takes the request's cancel event, if any."""
+
+    def wrapper(call_data):
+        params = call_data.get("params", {})
+        arguments = params.get("arguments", {})
+        return fn(arguments, call_data.get("_cancel_event"))
+
+    return wrapper
+
+
 # -- Handler registry -------------------------------------------------------
 
 TOOL_HANDLERS = tool_surface.build_tool_handlers(
@@ -177,6 +189,7 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     delete_script=_wrap(script_store.delete_script),
     get_active_selection=_wrap(selection.get_active_selection),
     manage_annotations=_wrap(annotations.manage_annotations),
+    fusion_status=_wrap_cancellable(fusion_status.fusion_status),
     set_editable_state=_wrap(editable_state.set_editable_state),
     delete_files=_wrap(delete_files.delete_files),
     save_document=_wrap(document_io.save_document),
