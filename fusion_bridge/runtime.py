@@ -58,6 +58,21 @@ def handle_any_tool(call_data):
         log(f"[MCP] {tool_name} {status} in {format_duration(elapsed_ms)}")
 
 
+def server_tool_handlers(tool_names):
+    """Map each tool to how the HTTP server runs it.
+
+    Tools in ``tool_surface.DIRECT_TOOL_NAMES`` run inline on the HTTP
+    server thread (they never touch the Fusion API and must work while the
+    main thread is blocked); every other tool is dispatched to the main
+    thread.
+    """
+    return {
+        name: handle_any_tool if name in tool_surface.DIRECT_TOOL_NAMES
+        else dispatch_to_main_thread
+        for name in tool_names
+    }
+
+
 def create_server():
     from . import operations
 
@@ -66,9 +81,7 @@ def create_server():
     server = mcp_server_module.MCPServer(
         port=settings.MCP_SERVER_PORT,
         tools=tool_surface.TOOL_DEFINITIONS,
-        tool_handlers={
-            name: dispatch_to_main_thread for name in operations.TOOL_HANDLERS
-        },
+        tool_handlers=server_tool_handlers(operations.TOOL_HANDLERS),
         log_callback=log,
     )
 

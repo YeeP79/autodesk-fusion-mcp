@@ -76,6 +76,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `set_viewport` | Standard views, projection, orbit, pan, zoom, fit and camera restoration |
 | `get_active_selection` | Get objects currently selected in the viewport |
 | `manage_annotations` | List, claim, complete or release session-only selection annotations |
+| `tail_log` | Read Fusion's own app log (filter by substring, level, time; `save`/`errors` presets); runs off the main thread |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |
