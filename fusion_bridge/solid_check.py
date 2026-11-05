@@ -15,8 +15,6 @@ fakes; the Fusion layer only gathers numbers.
 import math
 import time
 import traceback
-import uuid
-from collections import OrderedDict
 
 import adsk.core
 import adsk.fusion
@@ -24,7 +22,20 @@ import adsk.fusion
 from .common.api import safe, strict_items
 from .common.args import is_finite_number, is_int
 from .common import geometry
-from .common.bodies import ROOT_PATH, bbox, iter_body_entries
+from .common.bodies import (
+    BASELINE_STORE_LIMIT,
+    VOLUME_ABS_TOLERANCE_CM3,
+    _BASELINES,  # noqa: F401 (re-exported)
+    assign_keys,
+    diff_snapshots,
+    get_baseline,
+    in_component,  # noqa: F401 (re-exported)
+    iter_body_entries,
+    measure_summary,
+    path_of as _entity_path,
+    snapshot_records,
+    store_baseline,
+)
 from .common.geometry import UNIT_FACTORS, to_cm, unit_labels
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
@@ -45,9 +56,6 @@ DEFAULT_SLIVER_ASPECT = 50.0          # face length / mean width
 DEFAULT_FACE_COUNT_FACTOR = 5.0       # body faces vs median of the checked bodies
 FACE_COUNT_MIN_EXCESS = 20            # and at least this many faces above the median
 FACE_COUNT_MIN_PEERS = 3              # need this many bodies for a median to mean anything
-VOLUME_REL_TOLERANCE = 1e-4           # 0.01 % volume change is noise
-VOLUME_ABS_TOLERANCE_CM3 = 1e-6
-MOVE_TOLERANCE_CM = 1e-4
 
 DEFAULT_MAX_DETAILS = 50
 MAX_DETAILS_LIMIT = 500
@@ -55,13 +63,8 @@ MAX_BODY_REFS = 500
 MAX_INTERFERENCE_PAIRS = 300
 MAX_FACE_SCAN = 20000                 # per-face metrics skipped above this (face_count still reported)
 MAX_EXAMPLES = 3                      # worst offending faces/edges listed per body
-BASELINE_STORE_LIMIT = 20
 
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
-
-# Module-level baseline store: token -> {"created", "document", "records"}.
-# Session-only (lost when the add-in reloads), most recent last.
-_BASELINES = OrderedDict()
 
 
 # -- Units ----------------------------------------------------------------------
@@ -200,17 +203,6 @@ def thresholds_for_display(thresholds, units):
 # -- Body identity -------------------------------------------------------------
 
 
-def assign_keys(entries):
-    """Give each entry a stable display key: '<occurrence_path>/<body>' (+ '#<i>' for duplicate names)."""
-    seen = {}
-    for e in entries:
-        seen[(e["occurrence_path"], e["body"])] = seen.get((e["occurrence_path"], e["body"]), 0) + 1
-    for e in entries:
-        base = f"{e['occurrence_path']}/{e['body']}"
-        e["key"] = f"{base}#{e['index']}" if seen[(e["occurrence_path"], e["body"])] > 1 else base
-    return entries
-
-
 def select_entries(entries, refs):
     """Default: visible bodies. With refs: every body matching a (path, name) ref, hidden or not.
 
@@ -222,19 +214,6 @@ def select_entries(entries, refs):
     selected = [e for e in entries if (e["occurrence_path"], e["body"]) in wanted]
     found = {(e["occurrence_path"], e["body"]) for e in selected}
     return selected, [r for r in refs if r not in found]
-
-
-def in_component(entry, edited_component):
-    """True when the body belongs to the component the caller says it edited.
-
-    Matches the component name, the exact occurrence path, or any occurrence
-    nested below that path ('Frame:1' covers 'Frame:1+Gusset:1').
-    """
-    if edited_component is None:
-        return False
-    path = entry.get("occurrence_path") or ""
-    return (entry.get("component") == edited_component or path == edited_component
-            or path.startswith(edited_component + "+"))
 
 
 # -- Per-body checks (pure) -----------------------------------------------------
@@ -384,86 +363,6 @@ def interference_problems(overlaps, thresholds, units):
              "overlap_volume": to_units(v, units, 3)} for a, b, v in rows]
 
 
-# -- Baselines and diff (pure) --------------------------------------------------
-
-
-def snapshot_records(measured):
-    """{key: {volume, faces, bbox, component, occurrence_path}} for every measured body."""
-    return {m["key"]: {"volume": m.get("volume_cm3"), "faces": m.get("face_count"), "bbox": m.get("bbox"),
-                       "component": m.get("component"), "occurrence_path": m.get("occurrence_path")}
-            for m in measured}
-
-
-def store_baseline(records, document, now=None):
-    token = uuid.uuid4().hex[:12]
-    _BASELINES[token] = {"created": time.time() if now is None else now, "document": document, "records": records}
-    while len(_BASELINES) > BASELINE_STORE_LIMIT:
-        _BASELINES.popitem(last=False)
-    return token
-
-
-def get_baseline(token):
-    return _BASELINES.get(token)
-
-
-def _volume_changed(before, after):
-    if before is None or after is None:
-        return before != after
-    return abs(after - before) > max(VOLUME_ABS_TOLERANCE_CM3, VOLUME_REL_TOLERANCE * abs(before))
-
-
-def _bbox_shift(before, after):
-    if before is None or after is None:
-        return None
-    return max(abs(a - b) for pb, pa in zip(before, after) for b, a in zip(pb, pa))
-
-
-def diff_snapshots(before, after, edited_component, units):
-    """Compare two snapshot record maps. Returns problem rows.
-
-    Changes to bodies outside edited_component are warnings (errors when the
-    body lost volume or vanished: the signature of a cut that reached into
-    another component); changes inside it are info. With no edited_component
-    every change is a warning.
-    """
-    rows = []
-
-    def severity(rec, loss):
-        if edited_component is None:
-            return "warning"
-        if in_component(rec, edited_component):
-            return "info"
-        return "error" if loss else "warning"
-
-    def base(kind, key, rec, sev, **detail):
-        row = {"type": kind, "severity": sev, "body": key}
-        if edited_component is not None:
-            row["outside_edited_component"] = not in_component(rec, edited_component)
-        row.update(detail)
-        return row
-
-    for key in sorted(set(before) | set(after)):
-        b, a = before.get(key), after.get(key)
-        if b is None:
-            rows.append(base("body_appeared", key, a, severity(a, False), volume=to_units(a["volume"], units, 3)))
-            continue
-        if a is None:
-            rows.append(base("body_disappeared", key, b, severity(b, True), volume=to_units(b["volume"], units, 3)))
-            continue
-        if _volume_changed(b["volume"], a["volume"]):
-            delta = (a["volume"] or 0.0) - (b["volume"] or 0.0)
-            pct = round(100.0 * delta / b["volume"], 3) if b["volume"] else None
-            rows.append(base("volume_changed", key, a, severity(a, delta < 0),
-                             before=to_units(b["volume"], units, 3), after=to_units(a["volume"], units, 3),
-                             delta=to_units(delta, units, 3), percent=pct))
-        if b["faces"] != a["faces"]:
-            rows.append(base("face_count_changed", key, a, severity(a, False), before=b["faces"], after=a["faces"]))
-        shift = _bbox_shift(b["bbox"], a["bbox"])
-        if shift is not None and shift > MOVE_TOLERANCE_CM and not _volume_changed(b["volume"], a["volume"]):
-            rows.append(base("body_moved", key, a, "info", max_bbox_shift=to_units(shift, units)))
-    return rows
-
-
 # -- Summary -------------------------------------------------------------------
 
 
@@ -486,21 +385,6 @@ def summarize(problems, max_details):
 # -- Fusion layer ---------------------------------------------------------------
 
 
-def measure_summary(entry):
-    """Cheap metrics used by snapshots and the lump/validity checks."""
-    body = entry["_body"]
-    return {
-        "key": entry["key"], "occurrence_path": entry["occurrence_path"], "component": entry["component"],
-        "is_solid": safe(body, "isSolid"),
-        "volume_cm3": safe(body, "volume"),
-        "lumps": safe(safe(body, "lumps"), "count"),
-        "shells": safe(safe(body, "shells"), "count"),
-        "face_count": safe(safe(body, "faces"), "count"),
-        "edge_count": safe(safe(body, "edges"), "count"),
-        "bbox": bbox(body),
-    }
-
-
 def measure_details(entry, metrics):
     """Add per-face area/perimeter and per-edge lengths (skipped for very large bodies)."""
     body = entry["_body"]
@@ -517,11 +401,6 @@ def measure_details(entry, metrics):
     metrics["faces"] = faces
     metrics["edge_lengths"] = [x for x in (safe(e, "length") for e in strict_items(safe(body, "edges"))) if x is not None]
     return metrics
-
-
-def _entity_path(entity):
-    occ = safe(entity, "assemblyContext")
-    return safe(occ, "fullPathName") if occ is not None else ROOT_PATH
 
 
 def _match_entity(entity, candidates):

@@ -10,7 +10,6 @@ The Fusion-free helpers at the top take plain values or duck-typed objects
 so they are testable with fakes.
 """
 
-import math
 import traceback
 
 import adsk.core
@@ -18,8 +17,29 @@ import adsk.fusion
 
 from .common.api import safe, strict_items
 from .common.args import bool_arg, error_pair, int_arg, require_object, text_arg
-from .common.bodies import bbox, is_hidden, iter_body_entries, native
-from .common.geometry import DIGITS, UNIT_FACTORS, dot, sub, to_units, unit, unit_labels, xyz
+from .common.bodies import (
+    PARTIAL_SWEEP_DEG,
+    SURFACE_TYPES,
+    TRAP_NOTE,
+    axial_extent,  # noqa: F401 (re-exported)
+    bbox,
+    cylinder_concavity,  # noqa: F401 (re-exported)
+    face_record as _face_record,
+    feature_map,
+    is_hidden,
+    iter_body_entries,
+    native,
+    sweep_degrees,  # noqa: F401 (re-exported)
+)
+from .common.geometry import (
+    DIGITS,
+    UNIT_FACTORS,
+    display_direction as direction,
+    display_point as point,
+    to_units,
+    unit_labels,
+    xyz,
+)
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -28,26 +48,10 @@ DEFAULT_MAX_RESULTS = 200
 MAX_RESULTS_LIMIT = 1000
 DEFAULT_MAX_FACES = 25
 MAX_FACES_LIMIT = 500
-FEATURE_SCAN_LIMIT = 5000
 
-# adsk.core.SurfaceTypes values (Plane=0 ... NURBS=7).
-SURFACE_TYPES = {
-    0: "plane", 1: "cylinder", 2: "cone", 3: "sphere", 4: "torus",
-    5: "elliptical_cylinder", 6: "elliptical_cone", 7: "nurbs",
-}
 ANALYTIC_GROUPS = {"plane": "planes", "cylinder": "cylinders", "cone": "cones",
                    "torus": "tori", "sphere": "spheres"}
-# A cylinder sweeping less than this is a partial cylinder (fillet/round), not a bore or boss.
-PARTIAL_SWEEP_DEG = 135.0
 _FILLET_FEATURES = ("FilletFeature", "ChamferFeature", "RuleFilletFeature")
-
-TRAP_NOTE = (
-    "Fillet faces are cylinders (straight edge) or tori (curved edge) and can match a bore "
-    "or tube OD by radius. Check concavity (concave = bore/inner fillet, convex = boss/OD/rounded edge), "
-    "sweep_deg (a fillet sweeps ~90 deg, a bore or OD 360) and created_by before treating a "
-    "cylinder as a bore or OD."
-)
-
 
 # -- Pure helpers (no Fusion) -------------------------------------------------
 
@@ -62,18 +66,6 @@ def area(value_cm2, units):
 
 def volume(value_cm3, units):
     return to_units(value_cm3, units, 3)
-
-
-def point(xyz_cm, units):
-    return [length(c, units) for c in xyz_cm]
-
-
-def direction(vector):
-    """Unit vector rounded for display; None for a zero vector."""
-    n = math.sqrt(sum(c * c for c in vector))
-    if n == 0:
-        return None
-    return [round(c / n, 6) + 0.0 for c in vector]
 
 
 def _units_arg(arguments):
@@ -149,38 +141,6 @@ def resolve_body(entries, occurrence_path, body_name, body_index=None):
                   "candidates_truncated": len(near) > 50}
 
 
-def cylinder_concavity(sample_point, outward_normal, axis_origin, axis_dir):
-    """'convex' when the outward face normal points away from the axis (OD/boss),
-    'concave' when it points toward it (bore/inner fillet), else None."""
-    axis = unit(axis_dir)
-    if axis is None or outward_normal is None:
-        return None
-    rel = sub(sample_point, axis_origin)
-    along = dot(rel, axis)
-    radial = sub(rel, tuple(along * c for c in axis))
-    d = dot(radial, outward_normal)
-    if abs(d) < 1e-9:
-        return None
-    return "convex" if d > 0 else "concave"
-
-
-def axial_extent(points, axis_origin, axis_dir):
-    """Length of the projection of *points* onto the axis (0 for <2 points)."""
-    axis = unit(axis_dir)
-    if axis is None or not points:
-        return 0.0
-    ts = [dot(sub(p, axis_origin), axis) for p in points]
-    return max(ts) - min(ts)
-
-
-def sweep_degrees(face_area, radius, axial_length):
-    """Approximate angular sweep of a cylinder face from area = r * theta * L.
-    None when length is unknown; clamped to 360 (cut ends under-report length)."""
-    if radius <= 0 or axial_length <= 1e-9:
-        return None
-    return round(min(360.0, math.degrees(face_area / (radius * axial_length))), 1)
-
-
 def cylinder_hint(record):
     """Human-readable warning for cylinders that are probably not bores/ODs."""
     created = record.get("created_by_type") or ""
@@ -253,115 +213,6 @@ def list_body_rows(root, opts):
         result["note"] = (f"{hidden} hidden bodies excluded (hidden bodies are often stale "
                           "reference geometry); pass include_hidden=true to see them.")
     return result
-
-
-def _outward_normal(face):
-    """Face normal at pointOnFace from the face evaluator (honors face orientation)."""
-    try:
-        p = face.pointOnFace
-        ok, n = face.evaluator.getNormalAtPoint(p)
-        if ok and n is not None:
-            return xyz(p), xyz(n)
-    except Exception:
-        pass
-    return None, None
-
-
-def _vertex_points(face):
-    pts = []
-    for v in strict_items(safe(face, "vertices")):
-        g = safe(v, "geometry")
-        if g is not None:
-            pts.append(xyz(g))
-    return pts
-
-
-def feature_map(component, temp_ids, native_body):
-    """Map face tempId -> (feature name, feature type) for features that own them.
-
-    Best effort: direct-modeled bodies have no features, and Feature.faces is
-    not available on every feature type, so missing entries mean 'unknown'.
-    """
-    found = {}
-    if not temp_ids:
-        return found, None
-    features = safe(component, "features")
-    if features is None:
-        return found, "component.features unavailable"
-    count = safe(features, "count", 0) or 0
-    note = None
-    if count > FEATURE_SCAN_LIMIT:
-        note = f"only the first {FEATURE_SCAN_LIMIT} of {count} features scanned"
-    for i in range(min(count, FEATURE_SCAN_LIMIT)):
-        try:
-            feature = features.item(i)
-            faces = feature.faces
-        except Exception:
-            continue
-        for f in strict_items(faces):
-            tid = safe(f, "tempId")
-            if tid in temp_ids and tid not in found:
-                try:
-                    if native_body is not None and f.body != native_body:
-                        continue
-                except Exception:
-                    continue
-                found[tid] = (safe(feature, "name"), _object_type(feature))
-        if len(found) == len(temp_ids):
-            break
-    return found, note
-
-
-def _object_type(obj):
-    t = safe(obj, "objectType") or type(obj).__name__
-    return t.split("::")[-1]
-
-
-def _face_record(face, kind, units):
-    """World-frame record for one analytic face (geometry from the proxy)."""
-    g = face.geometry
-    native_face = native(face)
-    face_area = safe(face, "area", 0.0) or 0.0
-    reversed_ = safe(face, "isParamReversed")
-    rec = {"area": area(face_area, units), "is_param_reversed": reversed_, "_temp_id": safe(native_face, "tempId")}
-    if kind == "plane":
-        p, n = _outward_normal(face)
-        if n is None:
-            n = xyz(g.normal)
-            if reversed_:
-                n = tuple(-c for c in n)
-            p = xyz(safe(face, "pointOnFace") or g.origin)
-        rec.update({"point": point(p, units), "normal": direction(n)})
-    elif kind == "cylinder":
-        r = g.radius
-        rec.update({"diameter": length(2 * r, units), "radius": length(r, units),
-                    "axis_origin": point(xyz(g.origin), units), "axis_direction": direction(xyz(g.axis))})
-        ng = native_face.geometry
-        n_origin, n_axis = xyz(ng.origin), xyz(ng.axis)
-        p, n = _outward_normal(native_face)
-        concavity = cylinder_concavity(p, n, n_origin, n_axis) if n is not None else None
-        basis = "evaluator"
-        if reversed_ is not None:
-            # A cylinder surface's own normal points away from its axis; a reversed face flips it.
-            by_param = "concave" if reversed_ else "convex"
-            if concavity is None:
-                concavity, basis = by_param, "isParamReversed"
-            elif concavity != by_param:
-                basis = "evaluator (disagrees with isParamReversed)"
-        rec["concavity"] = concavity
-        rec["concavity_basis"] = basis if concavity else None
-        axial = axial_extent(_vertex_points(native_face), n_origin, n_axis)
-        rec["length_along_axis"] = length(axial, units) if axial > 0 else None
-        rec["sweep_deg"] = sweep_degrees(safe(native_face, "area", face_area) or face_area, ng.radius, axial)
-    elif kind == "cone":
-        rec.update({"radius": length(g.radius, units), "half_angle_deg": round(math.degrees(g.halfAngle), 4),
-                    "axis_origin": point(xyz(g.origin), units), "axis_direction": direction(xyz(g.axis))})
-    elif kind == "torus":
-        rec.update({"major_radius": length(g.majorRadius, units), "minor_radius": length(g.minorRadius, units),
-                    "center": point(xyz(g.origin), units), "axis_direction": direction(xyz(g.axis))})
-    elif kind == "sphere":
-        rec.update({"radius": length(g.radius, units), "center": point(xyz(g.origin), units)})
-    return rec
 
 
 def _physical(body, units):

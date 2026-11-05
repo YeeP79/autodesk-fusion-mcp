@@ -67,3 +67,16 @@ def to_cm(value, units, power=1):
 def from_cm(value, units, digits=DIGITS):
     """A cm length in *units*, by division and with no negative zero."""
     return round(value / CM_PER_UNIT[units], digits) + 0.0
+
+
+def display_point(xyz_cm, units):
+    """A cm point in *units*, as a list for a report."""
+    return [to_units(c, units) for c in xyz_cm]
+
+
+def display_direction(vector):
+    """Unit vector rounded for a report; None for a zero vector."""
+    n = math.sqrt(sum(c * c for c in vector))
+    if n == 0:
+        return None
+    return [round(c / n, 6) + 0.0 for c in vector]
