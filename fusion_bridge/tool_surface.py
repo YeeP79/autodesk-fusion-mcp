@@ -385,8 +385,12 @@ TOOL_DEFINITIONS = [
             "while Fusion is blocked. list (default) reports modal windows/sheets with title, "
             "role/subrole and button names. dismiss acts on the first modal dialog (optionally "
             "filtered by title_contains): it presses Cancel or Close, otherwise sends Escape; it "
-            "never presses Save, Delete, Yes, OK, Replace or Continue. Needs Accessibility "
-            "permission for Fusion."
+            "never presses Save, Delete, Yes, OK, Replace or Continue. Fusion's Qt dialogs expose "
+            "no button names, so expect dismiss to send Escape (verified on Preferences). Needs "
+            "Accessibility permission for Fusion; a fast preflight reports a missing permission "
+            "at once. Read-only osascript runs retry once on timeout; osascript_attempts gives "
+            "elapsed_ms per attempt. Do not query Accessibility from execute_python: on Fusion's "
+            "main thread it sees 0 windows."
         ),
         "inputSchema": {
             "type": "object", "additionalProperties": False,
