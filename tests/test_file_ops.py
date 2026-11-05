@@ -12,7 +12,7 @@ import _fusion_test_bootstrap  # noqa: F401  (installs adsk mock + parent pkg sh
 import adsk
 
 from fusion_bridge import data_tree, file_ops, tool_surface
-from fusion_bridge.server_log import ServerLog
+from fusion_bridge.common.app_log import ServerLog
 
 OPAQUE = "2 : InternalValidationError : res"
 

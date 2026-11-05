@@ -17,7 +17,7 @@ Rules this module enforces:
   ``InternalValidationError``). The rename waits for the lock with events pumped,
   on a fresh folder object, and gives up after a bounded number of tries.
 - Cloud writes raise that same opaque error for every server refusal, so each
-  failure carries the server's reason from the app log (``server_log``).
+  failure carries the server's reason from the app log (``common.app_log``).
 - A file open in Fusion is never moved or renamed, and nothing is ever closed
   (closing a document also closes the documents it links). Such files are
   refused and listed.
@@ -34,10 +34,10 @@ from functools import partial
 import adsk
 
 from . import data_tree, project_tree
+from .common.app_log import INTERNAL_ERROR, LOCKED_CODE, LOCKED_STATUS, ServerLog, current_log
 from .common.args import bool_arg, reject_unknown, require_object, text_arg
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
-from .server_log import INTERNAL_ERROR, LOCKED_CODE, LOCKED_STATUS, ServerLog, current_log
 
 # Plans list every file; a one-space indent keeps them readable and short.
 _result = partial(tool_result, indent=1)

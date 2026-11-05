@@ -119,7 +119,7 @@ def _patched(app, log_path=None):
         mock.patch.object(dio, "get_app", return_value=app),
         mock.patch.object(dio.adsk, "doEvents", create=True),
         mock.patch.object(dio.time, "sleep"),
-        mock.patch.object(dio, "newest_app_log", return_value=log_path),
+        mock.patch.object(dio, "newest_log", return_value=log_path),
         mock.patch.object(dio, "log"),
     ]
 
@@ -399,17 +399,8 @@ class LogFilterTests(unittest.TestCase):
             path = os.path.join(tmp, "AppLogFile1.log")
             with open(path, "w") as handle:
                 handle.write("first line\nsecond line\nthird line\n")
-            self.assertEqual(dio.read_log_tail(path, max_bytes=1000), ["first line", "second line", "third line"])
-            self.assertEqual(dio.read_log_tail(path, max_bytes=15), ["third line"])
-
-    def test_newest_log_by_mtime(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            old, new = os.path.join(tmp, "AppLogFile2.log"), os.path.join(tmp, "AppLogFile1.log")
-            for path, mtime in ((old, 100), (new, 200)):
-                open(path, "w").close()
-                os.utime(path, (mtime, mtime))
-            self.assertEqual(dio.newest_app_log(os.path.join(tmp, "AppLogFile*.log")), new)
-            self.assertIsNone(dio.newest_app_log(os.path.join(tmp, "none*.log")))
+            self.assertEqual(dio.read_tail_lines(path, 1000), ["first line", "second line", "third line"])
+            self.assertEqual(dio.read_tail_lines(path, 15), ["third line"])
 
 
 class RecommendationTests(unittest.TestCase):

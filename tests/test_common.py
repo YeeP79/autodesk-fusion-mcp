@@ -1,10 +1,14 @@
 """Tests for the shared helpers in ``fusion_bridge/common``."""
 
 import json
+import os
+import tempfile
 import unittest
+from datetime import datetime
+from unittest import mock
 
 import _fusion_test_bootstrap  # noqa: F401
-from fusion_bridge.common import api, args, geometry, results
+from fusion_bridge.common import api, app_log, args, geometry, results
 
 
 class ResultsTests(unittest.TestCase):
@@ -278,6 +282,133 @@ class UnitTests(unittest.TestCase):
     def test_factor_tables_agree(self):
         for units, factor in geometry.UNIT_FACTORS.items():
             self.assertAlmostEqual(factor * geometry.CM_PER_UNIT[units], 1.0)
+
+
+class LogLocationTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        self.logs = os.path.join(self.root, "user", "logs")
+        os.makedirs(self.logs)
+
+    def write(self, name, mtime, text="x"):
+        path = os.path.join(self.logs, name)
+        with open(path, "w") as handle:
+            handle.write(text)
+        os.utime(path, (mtime, mtime))
+        return path
+
+    def test_newest_by_mtime_not_name(self):
+        new = self.write("AppLogFile1.log", 200)
+        old = self.write("AppLogFile2.log", 100)
+        self.assertEqual(app_log.newest_log([self.root]), new)
+        self.assertEqual([path for _, _, path in app_log.find_log_files([self.root])], [new, old])
+
+    def test_equal_mtimes_pick_the_later_session(self):
+        self.write("AppLogFile20261104T100000.log", 100)
+        later = self.write("AppLogFile20261105T100000.log", 100)
+        self.assertEqual(app_log.newest_log([self.root]), later)
+
+    def test_nothing_found(self):
+        self.assertIsNone(app_log.newest_log([self.root]))
+        self.assertIsNone(app_log.newest_log([os.path.join(self.root, "missing")]))
+        self.assertIsNone(app_log.newest_log([]))
+
+    def test_other_files_are_ignored(self):
+        self.write("Other.log", 100)
+        self.assertEqual(app_log.find_log_files([self.root]), [])
+
+    def test_root_with_glob_characters_is_taken_literally(self):
+        root = os.path.join(self.root, "a[1]")
+        os.makedirs(os.path.join(root, "u", "logs"))
+        path = os.path.join(root, "u", "logs", "AppLogFile1.log")
+        open(path, "w").close()
+        self.assertEqual(app_log.newest_log([root]), path)
+
+    def test_default_roots_cover_mac_and_windows(self):
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": "C:/Local"}):
+            roots = app_log.default_log_roots()
+        self.assertIn(os.path.join("Library", "Application Support"), roots[0])
+        self.assertEqual(roots[1], os.path.join("C:/Local", "Autodesk", "Autodesk Fusion 360"))
+
+    def test_default_roots_without_localappdata(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("LOCALAPPDATA", None)
+            self.assertEqual(len(app_log.default_log_roots()), 1)
+
+    def test_tail_drops_the_partial_first_line(self):
+        path = self.write("AppLogFile1.log", 100, "aaaa\nbbbb\ncccc\n")
+        self.assertEqual(app_log.read_tail_lines(path, 7), ["cccc"])
+        self.assertEqual(app_log.read_tail_lines(path), ["aaaa", "bbbb", "cccc"])
+
+
+FAILED = ('20261105T113355 E .1 POST 423 https://x/entities/urn%3Aa%3Aco.ABC/rename?n=1 requestId:r1 - z\n'
+          '  Request Body: [Empty body]\n'
+          '  Response Body: {"errorCode":"LOCK_RESOURCE_IS_LOCKED","message":"locked"}\n')
+
+
+class LogParsingTests(unittest.TestCase):
+    def test_parse_header(self):
+        self.assertEqual(app_log.parse_header("20261104T170849 I 245 [CFS] Start"),
+                         ("20261104T170849", "I", "245", "[CFS] Start"))
+        self.assertEqual(app_log.parse_header("20261104T170849 I 245"), ("20261104T170849", "I", "245", ""))
+        self.assertIsNone(app_log.parse_header("Response Body: {}"))
+        self.assertIsNone(app_log.parse_header(""))
+
+    def test_entry_time(self):
+        self.assertEqual(app_log.entry_time("20261104T170849"), datetime(2026, 11, 4, 17, 8, 49))
+        self.assertIsNone(app_log.entry_time("20261399T999999"))
+
+    def test_parse_failures(self):
+        entry = app_log.parse_failures(FAILED)[0]
+        self.assertEqual((entry["status"], entry["request_id"], entry["request_body"]), (423, "r1", "[Empty body]"))
+        self.assertIn("LOCK_RESOURCE", entry["response_body"])
+
+    def test_gets_and_successes_are_not_failures(self):
+        self.assertEqual(app_log.parse_failures("20261105T113355 E .1 GET 404 https://x\n"), [])
+        self.assertEqual(app_log.parse_failures("20261105T113355 I .1 POST 200 https://x\n"), [])
+
+    def test_a_body_under_a_success_is_not_given_to_the_next_failure(self):
+        text = "20261105T113355 I .1 POST 200 https://x\nResponse Body: fine\n" + FAILED
+        self.assertEqual(len(app_log.parse_failures(text)), 1)
+        self.assertIn("LOCK", app_log.parse_failures(text)[0]["response_body"])
+
+    def test_failure_reason_reads_json(self):
+        reason = app_log.failure_reason(app_log.parse_failures(FAILED)[0])
+        self.assertEqual(reason, {"status": 423, "error_code": "LOCK_RESOURCE_IS_LOCKED",
+                                  "message": "locked", "request_id": "r1"})
+
+    def test_failure_reason_with_a_plain_or_missing_body(self):
+        entry = {"status": 500, "request_id": None, "response_body": "x" * 900}
+        self.assertEqual(len(app_log.failure_reason(entry)["message"]), 500)
+        self.assertIsNone(app_log.failure_reason(dict(entry, response_body=None))["message"])
+        self.assertIsNone(app_log.failure_reason(dict(entry, response_body="[1]"))["error_code"])
+
+    def test_server_reason_only_names_the_resource(self):
+        self.assertEqual(app_log.server_reason(FAILED, "urn:a:co.ABC")["status"], 423)
+        self.assertIsNone(app_log.server_reason(FAILED, "urn:a:co.OTHER"))
+
+    def test_resource_token_joins_lineage_and_version_ids(self):
+        self.assertEqual(app_log.resource_token("urn:a:vf.ABC?version=2"), "ABC")
+        self.assertEqual(app_log.resource_token("urn:a:ABC"), "ABC")
+
+    def test_poll_reason_stops_at_the_first_answer(self):
+        answers = iter([None, None, "found", "late"])
+        naps = []
+        self.assertEqual(app_log.poll_reason(lambda: next(answers), 6, naps.append), "found")
+        self.assertEqual(len(naps), 2)
+
+    def test_poll_reason_gives_up(self):
+        naps = []
+        self.assertIsNone(app_log.poll_reason(lambda: None, 3, naps.append))
+        self.assertEqual(len(naps), 2)
+
+    def test_server_log_without_a_path_reads_nothing(self):
+        log = app_log.ServerLog()
+        self.assertIsNone(log.mark())
+        self.assertEqual(log.since(None), "")
+        self.assertIsNone(log.reason(None, "urn:a:b"))
 
 
 if __name__ == "__main__":

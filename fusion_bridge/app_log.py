@@ -1,29 +1,22 @@
-"""Read Fusion's own application log without touching the Fusion API.
+"""The ``tail_log`` tool: read Fusion's own application log without the Fusion API.
 
-Fusion writes ``AppLogFile<session start>.log`` under
-``~/Library/Application Support/Autodesk/Autodesk Fusion 360/<user id>/logs``
-(``%LOCALAPPDATA%\\Autodesk\\Autodesk Fusion 360\\<user id>\\logs`` on
-Windows). One file spans the whole session, often days and tens of MB, so the
-newest file by mtime is the live one and it is read backwards from the end in
-chunks.
+The log is found and parsed by ``common.app_log``. One file spans the whole
+session, so it is read backwards from the end in chunks.
 
 The log is most useful when the main thread is stuck, so this tool runs on the
 HTTP server thread (see ``tool_surface.DIRECT_TOOL_NAMES``) and never imports
 ``adsk``. The add-in has no log file of its own: ``futil.log`` writes only
 error-level messages to Fusion's log, so those show up here too.
-
-Entry format: ``20261104T170849 I 24564113 [CFSUploader] Starting upload ...``
-(timestamp in local time, level I/W/E/D, thread id, message). Lines that do
-not start with a timestamp (HTTP request/response dumps) continue the entry
-above them.
 """
 
-import glob
 import json
 import os
 import re
 from datetime import datetime, timedelta
 
+from .common.app_log import (
+    LOG_GLOB, TIMESTAMP_FORMAT, default_log_roots, entry_time, find_log_files, parse_header
+)
 from .common.args import is_int, unknown_message
 from .common.results import error_result, ok_result
 
@@ -38,7 +31,6 @@ PRESETS = {
     },
     "errors": {"contains": None, "level": "WE"},
 }
-LOG_GLOB = os.path.join("*", "logs", "AppLogFile*.log")
 CHUNK_BYTES = 256 * 1024
 MAX_SCAN_BYTES = 64 * 1024 * 1024
 MAX_LINE_CHARS = 2000
@@ -48,43 +40,17 @@ MAX_CONTINUATION_LINES = 20
 SINCE_GRACE = timedelta(seconds=60)
 
 _ARGUMENTS = {"lines", "contains", "level", "since", "file", "preset"}
-_HEADER = re.compile(r"^(\d{8}T\d{6}) ([A-Z]) (\S+) ?(.*)$")
 _RELATIVE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd])\s*$", re.IGNORECASE)
 _UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
-_TS_FORMAT = "%Y%m%dT%H%M%S"
 
 
-# -- Locating log files --------------------------------------------------------
-
-
-def default_log_roots():
-    """Directories that hold ``<user id>/logs/AppLogFile*.log``."""
-    roots = [os.path.expanduser(
-        os.path.join("~", "Library", "Application Support", "Autodesk", "Autodesk Fusion 360"))]
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        roots.append(os.path.join(local_app_data, "Autodesk", "Autodesk Fusion 360"))
-    return roots
-
-
-def find_log_files(roots):
-    """All app log files under *roots*, newest mtime first."""
-    found = []
-    for root in roots:
-        for path in glob.glob(os.path.join(glob.escape(root), LOG_GLOB)):
-            try:
-                stat = os.stat(path)
-            except OSError:
-                continue
-            found.append((stat.st_mtime, stat.st_size, path))
-    found.sort(key=lambda item: item[0], reverse=True)
-    return found
+# -- Describing log files -----------------------------------------------------
 
 
 def _session_start(path):
     stem = os.path.basename(path)[len("AppLogFile"):-len(".log")]
     try:
-        return datetime.strptime(stem, _TS_FORMAT).isoformat()
+        return datetime.strptime(stem, TIMESTAMP_FORMAT).isoformat()
     except ValueError:
         return None
 
@@ -115,21 +81,6 @@ def describe_files(files):
 
 
 # -- Parsing -------------------------------------------------------------------
-
-
-def parse_header(line):
-    """``(timestamp, level, thread, message)`` for an entry's first line, else None."""
-    match = _HEADER.match(line)
-    if not match:
-        return None
-    return match.group(1), match.group(2), match.group(3), match.group(4)
-
-
-def entry_time(timestamp):
-    try:
-        return datetime.strptime(timestamp, _TS_FORMAT)
-    except ValueError:
-        return None
 
 
 def parse_since(value, now):

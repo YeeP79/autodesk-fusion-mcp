@@ -13,8 +13,6 @@ Neither tool ever closes a document: closing one also closes the documents
 it links.
 """
 
-import glob
-import os
 import re
 import time
 import traceback
@@ -23,6 +21,7 @@ from datetime import datetime, timedelta
 import adsk.core
 
 from .common.api import safe
+from .common.app_log import default_log_roots, entry_time, newest_log, read_tail_lines
 from .common.args import UNKNOWN_CAPITALIZED, int_or_none, is_int, is_number, reject_unknown, text_arg
 from .common.results import tool_result
 from .dispatch import get_app, log
@@ -34,10 +33,6 @@ MAX_SAVE_TIMEOUT_S = 110.0
 _POLL_SLEEP_S = 0.1
 _CLOUD_POLL_INTERVAL_S = 1.0
 
-APP_LOG_GLOB = os.path.join(
-    os.path.expanduser("~"), "Library", "Application Support", "Autodesk",
-    "Autodesk Fusion 360", "*", "logs", "AppLogFile*.log",
-)
 LOG_KEYWORDS = ("Workflow start: save", "CFSUploader", "Upload failed", "Uploaded document")
 _LOG_TAIL_BYTES = 4 * 1024 * 1024
 _LOG_MAX_LINES = 20
@@ -265,12 +260,7 @@ class SaveVerifier:
 def parse_log_time(line):
     """Timestamp of a Fusion app log line (local time, 1 s resolution), or None."""
     match = _LOG_TS.match(line)
-    if not match:
-        return None
-    try:
-        return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S")
-    except ValueError:
-        return None
+    return entry_time(match.group(1)) if match else None
 
 
 def filter_log_lines(lines, since, keywords=LOG_KEYWORDS, limit=_LOG_MAX_LINES):
@@ -431,34 +421,12 @@ def _current_file_id(document, fallback):
     return value if isinstance(value, str) and value else fallback
 
 
-def newest_app_log(pattern=APP_LOG_GLOB):
-    """Path of the most recently written Fusion app log, or None."""
-    paths = glob.glob(pattern)
-    if not paths:
-        return None
-    try:
-        return max(paths, key=os.path.getmtime)
-    except OSError:
-        return None
-
-
-def read_log_tail(path, max_bytes=_LOG_TAIL_BYTES):
-    """Lines from the last *max_bytes* of *path* (the first, partial line dropped)."""
-    with open(path, "rb") as handle:
-        handle.seek(0, os.SEEK_END)
-        size = handle.tell()
-        handle.seek(max(0, size - max_bytes))
-        data = handle.read()
-    lines = data.decode("utf-8", errors="replace").splitlines()
-    return lines[1:] if size > max_bytes else lines
-
-
 def _log_evidence(started_wall, file_name):
-    path = newest_app_log()
+    path = newest_log(default_log_roots())
     if path is None:
         return {"log_file": None, "note": "no Fusion AppLogFile*.log found"}
     try:
-        lines = filter_log_lines(read_log_tail(path), started_wall)
+        lines = filter_log_lines(read_tail_lines(path, _LOG_TAIL_BYTES), started_wall)
     except Exception as exc:
         return {"log_file": path, "note": f"could not read log: {exc}"}
     return {"log_file": path, "summary": summarize_log(lines, file_name), "lines": lines}

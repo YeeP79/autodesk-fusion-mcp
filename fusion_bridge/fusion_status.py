@@ -13,13 +13,13 @@ Entry format: ``20261105T113244 I .24563490 Begin:\tOpen the Document ...``
 (local time, level, thread, message). Other lines continue the entry above.
 """
 
-import glob
 import os
 import re
 import time
 from datetime import datetime, timedelta
 
 from . import dispatch
+from .common.app_log import default_log_roots, entry_time, newest_log, parse_header, read_tail_lines
 from .common.args import UNKNOWN_CAPITALIZED, is_finite_number, reject_unknown, require_object
 from .common.results import error_result, ok_result
 
@@ -30,8 +30,6 @@ MAX_TIMEOUT_SECONDS = 10.0
 MAX_WAIT_SECONDS = 100.0
 POLL_INTERVAL_SECONDS = 0.25
 
-LOG_GLOB = os.path.join("*", "logs", "AppLogFile*.log")
-LOG_TAIL_BYTES = 256 * 1024
 LOG_WINDOW = timedelta(seconds=60)
 MAX_EVIDENCE_LINES = 5
 MAX_EVIDENCE_CHARS = 200
@@ -46,8 +44,6 @@ ACTIVITIES = (
 )
 
 _ARGUMENTS = {"timeout_seconds", "wait_until_idle_seconds"}
-_HEADER = re.compile(r"^(\d{8}T\d{6}) [A-Z] \S+ ?(.*)$")
-_TS_FORMAT = "%Y%m%dT%H%M%S"
 
 
 # -- Arguments -----------------------------------------------------------------
@@ -102,41 +98,6 @@ def poll_until_responsive(probe, timeout_seconds, wait_seconds, clock, pause):
 # -- App log -------------------------------------------------------------------
 
 
-def default_log_roots():
-    """Directories that hold ``<user id>/logs/AppLogFile*.log``."""
-    roots = [os.path.expanduser(
-        os.path.join("~", "Library", "Application Support", "Autodesk", "Autodesk Fusion 360"))]
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        roots.append(os.path.join(local_app_data, "Autodesk", "Autodesk Fusion 360"))
-    return roots
-
-
-def newest_log(roots):
-    """Path of the app log modified most recently, or None."""
-    newest = None
-    for root in roots:
-        for path in glob.glob(os.path.join(glob.escape(root), LOG_GLOB)):
-            try:
-                mtime = os.stat(path).st_mtime
-            except OSError:
-                continue
-            if newest is None or mtime > newest[0]:
-                newest = (mtime, path)
-    return newest[1] if newest else None
-
-
-def read_tail_lines(path, max_bytes=LOG_TAIL_BYTES):
-    """Complete lines from the last *max_bytes* of *path*; the log runs to tens of MB."""
-    with open(path, "rb") as handle:
-        size = handle.seek(0, os.SEEK_END)
-        start = max(0, size - max_bytes)
-        handle.seek(start)
-        data = handle.read(max_bytes)
-    lines = data.decode("utf-8", errors="replace").splitlines()
-    return lines[1:] if start else lines
-
-
 def _classify(message):
     for label, pattern in ACTIVITIES:
         if pattern.search(message):
@@ -155,15 +116,10 @@ def summarize_log(lines, now):
     """
     recent = []
     for line in lines:
-        match = _HEADER.match(line)
-        if not match:
-            continue
-        try:
-            stamp = datetime.strptime(match.group(1), _TS_FORMAT)
-        except ValueError:
-            continue
-        if stamp >= now - LOG_WINDOW:
-            recent.append((line, _classify(match.group(2))))
+        header = parse_header(line)
+        stamp = entry_time(header[0]) if header else None
+        if stamp is not None and stamp >= now - LOG_WINDOW:
+            recent.append((line, _classify(header[3])))
 
     counts = {}
     for _, label in recent:

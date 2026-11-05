@@ -202,7 +202,7 @@ class LogParsingTests(unittest.TestCase):
             path = os.path.join(tmp, "AppLogFile.log")
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(failure_lines(request="stale"))
-            reader = df.LogReader(path)
+            reader = df.ServerLog(path)
             offset = reader.mark()
             self.assertIsNone(df.server_reason(reader.since(offset), URN))
             with open(path, "a", encoding="utf-8") as fh:
@@ -210,7 +210,7 @@ class LogParsingTests(unittest.TestCase):
             self.assertTrue(df.server_reason(reader.since(offset), URN)["request_id"].endswith("fresh"))
 
     def test_log_reader_without_a_log(self):
-        reader = df.LogReader(None)
+        reader = df.ServerLog(None)
         self.assertIsNone(reader.mark())
         self.assertEqual(reader.since(None), "")
 

@@ -24,15 +24,16 @@ What this module encodes:
 - ``DataProject`` has no delete, so projects cannot be removed through the API.
 """
 
-import glob
 import json
-import os
 import re
 import time
 import traceback
 from functools import partial
 
 from .. import settings
+from .common.app_log import (
+    LOG_POLLS, ServerLog, default_log_roots, failure_reason, newest_log, parse_requests, poll_reason
+)
 from .common.args import bool_arg, reject_unknown, require_object
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
@@ -47,19 +48,9 @@ _MAX_PARENT_HOPS = 64
 # reports what it did instead of a "may still be executing" timeout.
 _BUDGET_MARGIN_S = 20.0
 _MIN_BUDGET_S = 10.0
-# The failure entry can land in the log just after deleteMe raises.
-_LOG_POLLS = 6
-_LOG_POLL_INTERVAL_S = 0.1
-_MAX_LOG_READ_BYTES = 4 * 1024 * 1024
-_MAX_BODY_CHARS = 500
 
 _KNOWN_ARGS = {"project", "files", "folder", "include_empty_folder", "dry_run", "confirm"}
-_LOG_GLOB = os.path.join("*", "logs", "AppLogFile*.log")
-_LOG_HEADER = re.compile(r"^\d{8}T\d{6} [A-Z] \S+ ?(.*)$")
 _DELETE_ENTRY = re.compile(r"^POST (\d{3}) (\S*/lineages/delete)\b(.*)$")
-_REQUEST_ID = re.compile(r"requestId:(\S+)")
-_REQUEST_BODY = "Request Body:"
-_RESPONSE_BODY = "Response Body:"
 
 RELATED_OBJECTS = "GEN_RELATED_OBJECTS"
 RELATED_OBJECTS_HINT = (
@@ -292,30 +283,8 @@ def order_rounds(ids, parents):
 
 
 def parse_delete_entries(text):
-    """Parse the ``lineages/delete`` entries in app log *text*, oldest first.
-
-    An entry is its timestamped line plus the untimestamped lines under it. Returns
-    dicts with ``status``, ``request_id``, ``request_body`` and ``response_body``.
-    """
-    entries = []
-    current = None
-    for line in text.splitlines():
-        header = _LOG_HEADER.match(line)
-        if header:
-            current = None
-            found = _DELETE_ENTRY.match(header.group(1))
-            if found:
-                request_id = _REQUEST_ID.search(found.group(3))
-                current = {"status": int(found.group(1)), "request_id": request_id.group(1) if request_id else None,
-                           "request_body": None, "response_body": None}
-                entries.append(current)
-        elif current is not None:
-            stripped = line.strip()
-            if stripped.startswith(_REQUEST_BODY):
-                current["request_body"] = stripped[len(_REQUEST_BODY):].strip()
-            elif stripped.startswith(_RESPONSE_BODY):
-                current["response_body"] = stripped[len(_RESPONSE_BODY):].strip()
-    return entries
+    """The ``lineages/delete`` entries in app log *text*, oldest first; see ``parse_requests``."""
+    return parse_requests(text, _DELETE_ENTRY)
 
 
 def _names_lineage(request_body, urn):
@@ -334,74 +303,12 @@ def server_reason(text, urn):
     Only an entry naming *urn* counts: a reason is never borrowed from another file.
     """
     failed = [e for e in parse_delete_entries(text) if e["status"] >= 400 and _names_lineage(e["request_body"], urn)]
-    if not failed:
-        return None
-    entry = failed[-1]
-    reason = {"status": entry["status"], "error_code": None, "message": None, "request_id": entry["request_id"]}
-    body = entry["response_body"]
-    try:
-        parsed = json.loads(body)
-        reason["error_code"] = parsed.get("errorCode")
-        reason["message"] = parsed.get("message")
-    except (TypeError, ValueError, AttributeError):
-        if body:
-            reason["message"] = body[:_MAX_BODY_CHARS]
-    return reason
+    return failure_reason(failed[-1]) if failed else None
 
 
-def default_log_roots():
-    roots = [os.path.expanduser(os.path.join("~", "Library", "Application Support", "Autodesk",
-                                             "Autodesk Fusion 360"))]
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        roots.append(os.path.join(local_app_data, "Autodesk", "Autodesk Fusion 360"))
-    return roots
-
-
-def newest_log(roots):
-    """The live app log (newest mtime under *roots*), or None."""
-    found = []
-    for root in roots:
-        for path in glob.glob(os.path.join(glob.escape(root), _LOG_GLOB)):
-            try:
-                found.append((os.path.getmtime(path), path))
-            except OSError:
-                continue
-    return max(found)[1] if found else None
-
-
-class LogReader:
-    """Read what Fusion appended to its app log since a mark."""
-
-    def __init__(self, path):
-        self.path = path
-
-    def mark(self):
-        try:
-            return os.path.getsize(self.path) if self.path else None
-        except OSError:
-            return None
-
-    def since(self, offset):
-        if offset is None:
-            return ""
-        try:
-            with open(self.path, "rb") as fh:
-                fh.seek(offset)
-                return fh.read(_MAX_LOG_READ_BYTES).decode("utf-8", "replace")
-        except OSError:
-            return ""
-
-
-def find_reason(reader, offset, urn, *, polls=_LOG_POLLS, sleep=time.sleep):
+def find_reason(reader, offset, urn, *, polls=LOG_POLLS, sleep=time.sleep):
     """Poll the log after a failed delete; return the server's reason or None."""
-    for attempt in range(polls):
-        if attempt:
-            sleep(_LOG_POLL_INTERVAL_S)
-        reason = server_reason(reader.since(offset), urn)
-        if reason is not None:
-            return reason
-    return None
+    return poll_reason(lambda: server_reason(reader.since(offset), urn), polls, sleep)
 
 
 # -- Planning ----------------------------------------------------------------
@@ -683,7 +590,7 @@ def _run(app, options, out_of_time):
         return open_file_ids(app.documents)[0]
 
     outcome = execute_delete(work, lookup=data.findFileById, open_ids=read_open, resolver=resolver,
-                             reader=LogReader(newest_log(default_log_roots())), out_of_time=out_of_time)
+                             reader=ServerLog(newest_log(default_log_roots())), out_of_time=out_of_time)
     folder_result = None
     if options["include_empty_folder"]:
         deleted_ids = {row["id"] for row in outcome["deleted"]}
