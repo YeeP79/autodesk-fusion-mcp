@@ -8,6 +8,7 @@ import adsk.core
 
 from . import (
     annotations,
+    delete_files,
     app_log,
     bridge_info,
     bodies,
@@ -175,6 +176,7 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     delete_script=_wrap(script_store.delete_script),
     get_active_selection=_wrap(selection.get_active_selection),
     manage_annotations=_wrap(annotations.manage_annotations),
+    delete_files=_wrap(delete_files.delete_files),
     save_document=_wrap(document_io.save_document),
     open_document=_wrap(document_io.open_document),
     tail_log=_wrap(app_log.tail_log),

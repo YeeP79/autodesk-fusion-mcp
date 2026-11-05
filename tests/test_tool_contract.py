@@ -52,6 +52,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "tail_log",
         "save_document",
         "open_document",
+        "delete_files",
     }
 
     def test_all_expected_tools_present(self):

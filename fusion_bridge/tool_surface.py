@@ -44,6 +44,7 @@ TAIL_LOG = "tail_log"
 DIRECT_TOOL_NAMES = frozenset({FUSION_DIALOGS, TAIL_LOG})
 SAVE_DOCUMENT = "save_document"
 OPEN_DOCUMENT = "open_document"
+DELETE_FILES = "delete_files"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -1030,6 +1031,38 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "name": DELETE_FILES,
+        "description": (
+            "Permanently delete cloud files (every version), parents before the files they link. dry_run defaults "
+            "to true and returns the order, set sizes and every outside link; dry_run=false also needs confirm=true. "
+            "The whole call is refused, deleting nothing, if a file is open in Fusion, is linked from outside the "
+            "set, or a path is missing or ambiguous. Each file is re-checked just before deletion and errors are "
+            "per file, with the server's reason from Fusion's app log. Projects cannot be deleted: DataProject has "
+            "no delete in the Fusion API."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "project": {"type": "string", "description": "Project name or id."},
+                "files": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "File paths inside the project ('folder/sub/name') or ids ('urn:...').",
+                },
+                "folder": {
+                    "type": "string",
+                    "description": "Delete every file directly in this folder path; subfolders are not included.",
+                },
+                "include_empty_folder": {
+                    "type": "boolean",
+                    "description": "Remove 'folder' afterwards if it ends up empty (default false).",
+                },
+                "dry_run": {"type": "boolean", "description": "Only report the plan (default true)."},
+                "confirm": {"type": "boolean", "description": "Must be true when dry_run is false."},
+            },
+            "required": ["project"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -1075,6 +1108,7 @@ def build_tool_handlers(
     tail_log,
     save_document,
     open_document,
+    delete_files,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -1120,6 +1154,7 @@ def build_tool_handlers(
         TAIL_LOG: tail_log,
         SAVE_DOCUMENT: save_document,
         OPEN_DOCUMENT: open_document,
+        DELETE_FILES: delete_files,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
