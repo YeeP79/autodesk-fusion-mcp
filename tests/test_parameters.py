@@ -223,8 +223,9 @@ def make_design(link_api=True):
     user = [od, wall, idp]
     everything = user + [d1, d2]
     if link_api:
-        od.dependentParameters = [idp, d1]
-        wall.dependentParameters = [idp]
+        # Transitive, as in Fusion: od lists d2, which references id, not od.
+        od.dependentParameters = [idp, d1, d2]
+        wall.dependentParameters = [idp, d2]
         idp.dependentParameters = [d2]
         idp.dependencyParameters = [od, wall]
     else:
@@ -328,6 +329,7 @@ class ListTests(unittest.TestCase):
         self.assertEqual(od["comment"], "Tube OD")
         self.assertTrue(od["favorite"])
         self.assertEqual(od["dependents"]["items"], ["id", "d1 (Sketch1)"])
+        self.assertEqual(od["all_dependents"]["items"], ["id", "d1 (Sketch1)", "d2 (Extrude1)"])
         self.assertEqual(od["drives"]["items"], ["Sketch1", "Extrude1"])
         self.assertEqual(rows["wall"]["drives"]["items"], ["Extrude1"])
         self.assertEqual(payload["dependency_check"]["mismatch_count"], 0)
@@ -337,15 +339,62 @@ class ListTests(unittest.TestCase):
         _, parsed = call(make_design(link_api=False)[0], {})
         self.assertEqual(parsed["dependency_source"], "parsed")
         def strip(payload):
-            return [(r["name"], r["dependents"], r["drives"]) for r in payload["user_parameters"]["rows"]]
+            return [(r["name"], r["dependents"], r["all_dependents"]["total"], r["drives"])
+                    for r in payload["user_parameters"]["rows"]]
         self.assertEqual(strip(api), strip(parsed))
 
     def test_mismatch_is_reported(self):
         design, params = make_design()
-        params["od"].dependentParameters = [params["id"]]  # API misses d1
+        params["od"].dependentParameters = [params["id"], params["d2"]]  # API misses d1
         _, payload = call(design, {})
         self.assertEqual(payload["dependency_check"]["mismatches"],
                          [{"name": "od", "api_only": [], "parsed_only": ["d1"]}])
+
+    def test_api_extra_is_a_mismatch(self):
+        design, params = make_design()
+        params["wall"].dependentParameters = [params["id"], params["d2"], params["d1"]]
+        _, payload = call(design, {})
+        self.assertEqual(payload["dependency_check"]["mismatches"],
+                         [{"name": "wall", "api_only": ["d1"], "parsed_only": []}])
+
+    def test_live_transitive_api_is_healthy(self):
+        # Issue 18: od -> idia -> d7. The API lists d7 under od; it is not a direct dependent.
+        od = FakeParam("od", "2 in", unit="in")
+        idia = FakeParam("idia", "od - 0.25 in", unit="in")
+        d7 = FakeParam("d7", "idia / 2", unit="in", kind="model", role="AlongDistance",
+                       created_by=SimpleNamespace(objectType="adsk::fusion::ExtrudeFeature", name="Bore"))
+        od.dependentParameters = [idia, d7]
+        idia.dependentParameters = [d7]
+        design = SimpleNamespace(userParameters=[od, idia], allParameters=[od, idia, d7], unitsManager=FakeUnits(),
+                                 timeline=[])
+        _, payload = call(design, {})
+        rows = {r["name"]: r for r in payload["user_parameters"]["rows"]}
+        self.assertEqual(rows["od"]["dependents"]["items"], ["idia"])
+        self.assertEqual(rows["od"]["all_dependents"]["items"], ["idia", "d7 (Bore)"])
+        self.assertEqual(payload["dependency_check"], {"compared": 2, "mismatches": [], "mismatch_count": 0})
+        _, payload = call(design, {"name": "od"})
+        detail = payload["parameter"]
+        self.assertEqual(detail["direct_dependents"], ["idia"])
+        self.assertEqual(detail["all_dependents"], ["idia", "d7 (Bore)"])
+        self.assertEqual([(n["name"], n["depth"], n["via"]) for n in detail["dependents_tree"]["nodes"]],
+                         [("idia", 1, "od"), ("d7", 2, "idia")])
+        self.assertNotIn("dependency_check_mismatch", detail)
+
+    def test_parameter_named_like_a_unit_is_a_dependency(self):
+        h = FakeParam("h", "2 in", unit="in")
+        double = FakeParam("double", "h * 2", unit="in")
+        h.dependentParameters = [double]
+        design = SimpleNamespace(userParameters=[h, double], allParameters=[h, double], unitsManager=FakeUnits(),
+                                 timeline=[])
+        _, payload = call(design, {})
+        self.assertEqual(payload["user_parameters"]["rows"][0]["dependents"]["items"], ["double"])
+        self.assertEqual(payload["dependency_check"]["mismatch_count"], 0)
+
+    def test_truncated_closure_is_not_compared(self):
+        design, _ = make_design()
+        with patch.object(parameters, "MAX_CLOSURE_NODES", 1):
+            _, payload = call(design, {})
+        self.assertEqual(payload["dependency_check"]["mismatch_count"], 0)
 
     def test_include_model_and_filters(self):
         _, payload = call(make_design()[0], {"include_model": True, "name_contains": "D"})
@@ -408,6 +457,7 @@ class SetTests(unittest.TestCase):
         self.assertEqual((od["old_expression"], od["new_expression"]), ("1.75 in", "2 in"))
         self.assertEqual(od["dependents_affected"]["items"], ["id", "d1 (Sketch1)", "d2 (Extrude1)"])
         self.assertEqual(od["drives"], ["Sketch1", "Extrude1"])
+        self.assertNotIn("dependency_check_mismatch", od)
         self.assertTrue(od["expression_valid"])
         self.assertEqual(wall["would_create_cycle"], ["id"])
         self.assertEqual(wall["unknown_identifiers"], ["tpyo"])

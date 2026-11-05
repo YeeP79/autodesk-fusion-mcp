@@ -2,10 +2,12 @@
 
 ``Parameter.value`` is in internal units (cm, radians, kg), so values are
 formatted through the design's units manager in each parameter's own unit.
-Dependencies come from ``Parameter.dependentParameters`` /
-``dependencyParameters``; parsed expressions (``parameter_graph``) are the
-fallback and a cross-check. Only user parameters can be set: model
-parameters belong to features and sketches and are edited there.
+Direct dependents and dependents trees come from parsed expressions
+(``parameter_graph``). ``Parameter.dependentParameters`` is transitive (live:
+``od`` listed ``d7``, which references ``idia``, not ``od``), so it supplies
+``all_dependents`` and is checked against the parsed closure, like with like.
+Only user parameters can be set: model parameters belong to features and
+sketches and are edited there.
 """
 
 import json
@@ -26,6 +28,7 @@ MAX_UPDATES = 50
 MAX_ROW_DEPENDENTS = 25
 MAX_DRIVES = 25
 MAX_TREE_NODES = 500
+MAX_CLOSURE_NODES = 5000
 MAX_MISMATCHES = 20
 MAX_TIMELINE_ERRORS = 25
 
@@ -219,7 +222,7 @@ def snapshot(design):
 
 
 class DependencyIndex:
-    """Direct dependents per parameter, from the API with parsed fallback."""
+    """Direct dependents parsed from expressions; all dependents from the API, else parsed."""
 
     def __init__(self, infos, objects):
         self._infos = infos
@@ -229,11 +232,18 @@ class DependencyIndex:
         self.api_names = 0
         self.parsed_names = 0
 
-    def parsed(self, name):
+    def dependents_of(self, name):
+        """Parameters whose expressions reference ``name`` directly."""
         return self._parsed.get(name, [])
 
+    def closure(self, name):
+        """Everything downstream of ``name`` by parsing. Returns ``(names, truncated)``."""
+        nodes, truncated = graph.transitive_dependents(name, self.dependents_of, max_depth=MAX_CLOSURE_NODES,
+                                                       max_nodes=MAX_CLOSURE_NODES)
+        return [node["name"] for node in nodes], truncated
+
     def api(self, name):
-        """Dependents reported by ``dependentParameters``, or None if unavailable."""
+        """Transitive dependents reported by ``dependentParameters``, or None if unavailable."""
         param = self._objects.get(name)
         if param is None:
             return None
@@ -242,11 +252,12 @@ class DependencyIndex:
             return None
         return [n for n in names if n != name]
 
-    def dependents_of(self, name):
+    def all_dependents(self, name):
+        """Everything downstream of ``name``: the API's list, else the parsed closure."""
         if name not in self._cache:
             names = self.api(name)
             if names is None:
-                names = self.parsed(name)
+                names = self.closure(name)[0]
                 self.parsed_names += 1
             else:
                 self.api_names += 1
@@ -271,11 +282,12 @@ class DependencyIndex:
         return "api"
 
     def mismatch(self, name):
-        """``{"api_only", "parsed_only"}`` when API and parsed direct dependents differ."""
-        api_names = self.dependents_of(name) if name in self._cache else self.api(name)
-        if api_names is None:
+        """``{"api_only", "parsed_only"}`` when the API's list and the parsed closure differ."""
+        api_names = self.api(name)
+        closure, truncated = self.closure(name)
+        if api_names is None or truncated:
             return None
-        api_set, parsed_set = set(api_names), set(self.parsed(name))
+        api_set, parsed_set = set(api_names), set(closure)
         if api_set == parsed_set:
             return None
         return {"name": name, "api_only": sorted(api_set - parsed_set), "parsed_only": sorted(parsed_set - api_set)}
@@ -320,6 +332,8 @@ def build_list(infos, user_order, model_order, index, args):
             if with_dependents:
                 direct = index.dependents_of(name)
                 row["dependents"] = _capped([_label(infos, n) for n in direct], MAX_ROW_DEPENDENTS)
+                row["all_dependents"] = _capped([_label(infos, n) for n in index.all_dependents(name)],
+                                                MAX_ROW_DEPENDENTS)
                 nodes, truncated = graph.transitive_dependents(
                     name, index.dependents_of, max_depth=args["depth"], max_nodes=MAX_TREE_NODES
                 )
@@ -357,6 +371,7 @@ def build_detail(infos, index, name, depth):
     info["dependencies"] = dependencies
     info["dependencies_source"] = dep_source
     info["direct_dependents"] = [_label(infos, n) for n in index.dependents_of(name)]
+    info["all_dependents"] = [_label(infos, n) for n in index.all_dependents(name)]
     info["dependents_tree"] = {"depth_cap": depth, "nodes": nodes, "truncated": truncated}
     info["drives"] = drives(infos, nodes)
     info["dependency_source"] = index.source
@@ -411,6 +426,9 @@ def plan_update(infos, index, update, depth, units_manager=None):
     cycle = graph.would_create_cycle(name, references, index.dependents_of)
     if cycle:
         plan["would_create_cycle"] = cycle
+    mismatch = index.mismatch(name)
+    if mismatch:
+        plan["dependency_check_mismatch"] = mismatch
     if units_manager is not None:
         valid = _safe(lambda: units_manager.isValidExpression(expression, info["unit"]))
         if valid is not None:
