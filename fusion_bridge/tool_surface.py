@@ -15,6 +15,12 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+FUSION_STATUS = "fusion_status"
+
+# Tools the HTTP server thread runs inline instead of dispatching to Fusion's
+# main thread. Only for handlers that never call the Fusion API: they must
+# keep working while a modal dialog blocks the main thread.
+DIRECT_TOOL_NAMES = frozenset({FUSION_STATUS})
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -370,6 +376,31 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": FUSION_STATUS,
+        "description": (
+            "Check whether Fusion can take work right now. Runs outside the main thread, so it answers "
+            "while Fusion is busy; call it before a batch, or after a timeout, instead of piling up "
+            "calls. Times a no-op through the main-thread queue: main_thread_responsive and "
+            "main_thread_latency_ms (null if no answer within timeout_seconds; an idle Fusion reads up to "
+            "about 80 ms, the queue's polling interval). Also in_flight_tool "
+            "({name, running_seconds}, null when no tool is running, and still set after a call timed "
+            "out on the client but keeps running), queued_calls, open_file_count (null where /dev/fd "
+            "is missing). When unresponsive: busy_reason, a best guess from the in-flight tool and the "
+            "end of Fusion's app log, with busy_log_lines as evidence. wait_until_idle_seconds polls "
+            "until responsive and adds wait {requested_seconds, waited_seconds, attempts, timed_out}. "
+            "An unresponsive Fusion is a normal result, not an error."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 10,
+                                    "description": "How long one probe waits for the main thread (default 2)."},
+                "wait_until_idle_seconds": {"type": "number", "minimum": 0, "maximum": 100,
+                                            "description": "Keep probing up to this long for the main thread to respond (default 0: probe once)."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +422,7 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    fusion_status,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +444,7 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        FUSION_STATUS: fusion_status,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")

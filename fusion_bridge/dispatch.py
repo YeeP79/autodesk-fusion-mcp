@@ -28,6 +28,10 @@ CALLBACK_EVENT_ID = "FusionBridgeCallback"
 _TICK_INTERVAL = 0.075
 _KEEPALIVE_INTERVAL = 2.0
 _BATCH_LIMIT = 8
+_READY_PING = "__startup_ping__"
+_PROBE_POLL_INTERVAL = 0.05
+# A probe the main thread already dequeued is answered within microseconds.
+_PROBE_DEQUEUED_GRACE = 0.25
 
 
 # ── Fusion application accessor ──────────────────────────────────────────
@@ -149,6 +153,10 @@ _CANCELLED_TEXT = (
 # Server/session/request key -> envelope; never key by JSON-RPC ID alone.
 _inflight = {}
 _inflight_lock = threading.Lock()
+
+# (tool name, monotonic start) of the call executing on the main thread now.
+# Written only by _flush_pending and replaced whole, so readers need no lock.
+_running_tool = None
 
 
 def _text_result(text):
@@ -346,7 +354,7 @@ def wait_for_main_thread(poll_interval=1.0, shutdown=None):
     while shutdown is None or not shutdown.is_set():
         reply = queue.Queue(maxsize=1)
         envelope = _new_envelope(
-            {"params": {"name": "__startup_ping__"}}, reply
+            {"params": {"name": _READY_PING}}, reply
         )
         envelope["_shutdown"] = shutdown
         _pending.put(envelope)
@@ -381,7 +389,104 @@ def _is_ready_reply(result):
     )
 
 
+def probe_main_thread(timeout_seconds, cancel_event=None):
+    """Time a no-op round trip through the main-thread queue.
+
+    The readiness ping is answered inside ``_flush_pending`` without running
+    a tool, so the probe delays real work by nothing measurable, and when
+    the wait ends unanswered it is pulled back out of the queue. Queued
+    behind real calls it is answered after them, which is the point: the
+    answer means the main thread has caught up.
+
+    Deliberately makes no Fusion API call: this runs on the HTTP thread and
+    must return while Fusion is busy, so the scheduler tick (which fires
+    whenever the queue is non-empty) wakes the main thread instead of
+    ``fireCustomEvent`` here. That adds up to ``_TICK_INTERVAL`` of latency.
+
+    Returns ``{"responsive", "latency_ms", "stopped"}``; ``stopped`` is
+    ``"shutdown"`` or ``"cancelled"`` when the probe was abandoned early.
+    """
+    if threading.current_thread() is threading.main_thread():
+        return _probe_result(True, 0.0)
+
+    shutdown = _halt
+    reply = queue.Queue(maxsize=1)
+    envelope = _new_envelope({"params": {"name": _READY_PING}}, reply)
+    envelope["_shutdown"] = shutdown
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    _pending.put(envelope)
+
+    stopped = None
+    while True:
+        if shutdown.is_set():
+            stopped = "shutdown"
+            break
+        if cancel_event is not None and cancel_event.is_set():
+            stopped = "cancelled"
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            answer = reply.get(timeout=min(_PROBE_POLL_INTERVAL, remaining))
+        except queue.Empty:
+            continue
+        return _probe_answer(answer, started)
+
+    with envelope["_lock"]:
+        removed = _try_remove(envelope)
+        if removed:
+            envelope["_state"] = "cancelled"
+    if not removed:
+        # Lost the race with _flush_pending or the shutdown drain: the
+        # envelope has left the queue and its answer is on the way.
+        try:
+            return _probe_answer(reply.get(timeout=_PROBE_DEQUEUED_GRACE), started)
+        except queue.Empty:
+            pass
+    return _probe_result(False, None, stopped)
+
+
+def _probe_answer(answer, started):
+    if _is_ready_reply(answer):
+        return _probe_result(True, (time.monotonic() - started) * 1000)
+    # Only the shutdown drain answers a probe with anything but "ready".
+    return _probe_result(False, None, "shutdown")
+
+
+def _probe_result(responsive, latency_ms, stopped=None):
+    return {"responsive": responsive, "latency_ms": latency_ms, "stopped": stopped}
+
+
+def running_tool():
+    """Name and elapsed seconds of the tool on the main thread, or ``None``.
+
+    Stays set after the client's own wait timed out, because the work is
+    still running then.
+    """
+    current = _running_tool
+    if current is None:
+        return None
+    name, started = current
+    return {"name": name, "running_seconds": round(time.monotonic() - started, 1)}
+
+
+def queued_call_count():
+    """Tool calls waiting for the main thread, not counting probes."""
+    with _pending.mutex:
+        return sum(
+            1 for envelope in _pending.queue
+            if _payload_tool_name(envelope["payload"]) != _READY_PING
+        )
+
+
 # ── Internal helpers ─────────────────────────────────────────────────────
+
+
+def _payload_tool_name(payload):
+    params = payload.get("params") if isinstance(payload, dict) else None
+    return params.get("name") if isinstance(params, dict) else None
 
 
 def _try_remove(envelope):
@@ -396,6 +501,8 @@ def _try_remove(envelope):
 
 def _flush_pending():
     """Process up to *_BATCH_LIMIT* envelopes from the queue."""
+    global _running_tool
+
     if not _run_lock.acquire(blocking=False):
         return
     try:
@@ -421,13 +528,7 @@ def _flush_pending():
             # The readiness ping is answered here, before any tool routing,
             # so it succeeds even while the tool handler is not installed
             # (cold start, add-in not fully running).
-            ping_params = (
-                payload.get("params") if isinstance(payload, dict) else None
-            )
-            if (
-                isinstance(ping_params, dict)
-                and ping_params.get("name") == "__startup_ping__"
-            ):
+            if _payload_tool_name(payload) == _READY_PING:
                 with envelope["_lock"]:
                     envelope["_state"] = "done"
                 _put_reply(
@@ -464,6 +565,7 @@ def _flush_pending():
                 processed += 1
                 continue
 
+            _running_tool = (_payload_tool_name(payload), time.monotonic())
             try:
                 if _callback_impl is None:
                     raise RuntimeError("Tool implementation is not initialized")
@@ -488,6 +590,8 @@ def _flush_pending():
                     ],
                     "isError": True,
                 }
+            finally:
+                _running_tool = None
 
             with envelope["_lock"]:
                 envelope["_state"] = "done"

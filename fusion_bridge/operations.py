@@ -9,6 +9,7 @@ import adsk.core
 from . import (
     annotations,
     doc_lookup,
+    fusion_status,
     python_exec,
     script_store,
     selection,
@@ -134,6 +135,17 @@ def _wrap_doc(fn):
     return wrapper
 
 
+def _wrap_cancellable(fn):
+    """Wrap a handler that also takes the request's cancel event, if any."""
+
+    def wrapper(call_data):
+        params = call_data.get("params", {})
+        arguments = params.get("arguments", {})
+        return fn(arguments, call_data.get("_cancel_event"))
+
+    return wrapper
+
+
 # -- Handler registry -------------------------------------------------------
 
 TOOL_HANDLERS = tool_surface.build_tool_handlers(
@@ -151,4 +163,5 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     delete_script=_wrap(script_store.delete_script),
     get_active_selection=_wrap(selection.get_active_selection),
     manage_annotations=_wrap(annotations.manage_annotations),
+    fusion_status=_wrap_cancellable(fusion_status.fusion_status),
 )

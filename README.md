@@ -83,6 +83,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `load_script` | Load a previously saved script |
 | `list_scripts` | List saved scripts with metadata |
 | `delete_script` | Delete a saved script |
+| `fusion_status` | Check from outside the main thread whether Fusion is responsive, what is running or queued, and why it looks busy; optionally wait until it is idle |
 
 ### Generic API example
 
