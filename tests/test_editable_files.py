@@ -86,7 +86,8 @@ class SchemaTests(unittest.TestCase):
         self.assertFalse(schema["additionalProperties"])
         self.assertNotIn("required", schema)
         self.assertEqual(set(schema["properties"]),
-                         {"project", "editable_limit", "max_files", "max_depth", "stale_days", "include_read_only"})
+                         {"project", "editable_limit", "max_files", "max_depth", "stale_days", "include_read_only",
+                          "time_budget_s"})
 
     def test_description_says_read_only(self):
         self.assertIn("Never changes anything", self._tool()["description"])
@@ -101,6 +102,7 @@ class ValidationTests(unittest.TestCase):
         self.assertIsNone(opts["editable_limit"])
         self.assertIsNone(opts["project"])
         self.assertFalse(opts["include_read_only"])
+        self.assertEqual(opts["time_budget_s"], 90.0)
 
     def test_rejects_bad_values(self):
         cases = {
@@ -110,6 +112,7 @@ class ValidationTests(unittest.TestCase):
             "max_depth": [-1, 65, "3"],
             "stale_days": [-0.1, "14", True],
             "include_read_only": ["yes", 1],
+            "time_budget_s": [0, 0.5, 111, "90", True],
         }
         for key, values in cases.items():
             for bad in values:
@@ -150,7 +153,7 @@ class WalkTests(unittest.TestCase):
         entries, info = ef.walk_projects([self._tree()], max_depth=8, max_files=500)
         self.assertEqual([e["path"] for e in entries],
                          ["Cart/rootfile", "Cart/L1/top", "Cart/L1/L2/mid", "Cart/L1/L2/L3/deep"])
-        self.assertEqual(entries[0]["version"], 7)
+        self.assertEqual(ef.ensure_details(entries[0])["version"], 7)
         self.assertFalse(entries[0]["is_read_only"])
         self.assertEqual(info["non_design_files"], 1)
         self.assertEqual(info["folders_visited"], 4)
@@ -172,6 +175,7 @@ class WalkTests(unittest.TestCase):
         entries, info = ef.walk_projects([self._tree(), other], max_depth=8, max_files=2)
         self.assertEqual(len(entries), 2)
         self.assertTrue(info["truncated"])
+        self.assertEqual(info["truncated_reason"], "max_files")
         self.assertEqual(info["projects_walked"], ["Cart"])
 
     def test_exact_cap_not_truncated(self):
@@ -208,6 +212,156 @@ class WalkTests(unittest.TestCase):
         project = FakeProject("P", FakeFolder("root", files=[NoFlag("x")]))
         entries, _ = ef.walk_projects([project], 8, 500)
         self.assertTrue(entries[0]["is_read_only"])
+
+
+class TimeBudgetTests(unittest.TestCase):
+    def test_deadline_stops_walk_and_reports_time_budget(self):
+        ticks = iter(range(100))
+        files = [FakeFile(f"f{i}") for i in range(10)]
+        other = FakeProject("Other", FakeFolder("root", files=[FakeFile("x")]))
+        project = FakeProject("P", FakeFolder("root", files=files))
+        entries, info = ef.walk_projects([project, other], 8, 500, deadline=4, clock=lambda: next(ticks))
+        self.assertTrue(info["truncated"])
+        self.assertEqual(info["truncated_reason"], "time_budget")
+        self.assertLess(len(entries), 10)
+        self.assertEqual(info["projects_walked"], ["P"])
+
+    def test_no_deadline_walks_everything(self):
+        project = FakeProject("P", FakeFolder("root", files=[FakeFile("a")]))
+        _, info = ef.walk_projects([project], 8, 500, deadline=None, clock=lambda: 1e12)
+        self.assertFalse(info["truncated"])
+        self.assertNotIn("truncated_reason", info)
+
+    def test_summary_explains_time_budget(self):
+        entries, info = ef.walk_projects([], 8, 500)
+        info.update(truncated=True, truncated_reason="time_budget")
+        report = ef.summarize(entries, info, None, {}, _options(time_budget_s=30), NOW)
+        self.assertEqual(report["walk"]["truncated_reason"], "time_budget")
+        self.assertIn("30 s time budget", report["walk"]["truncated_note"])
+
+    def test_handler_passes_budget_as_deadline(self):
+        app = mock.Mock()
+        app.data.dataProjects = Coll([FakeProject("P", FakeFolder("root"))])
+        app.data.personalUseLimits = None
+        app.data.activeHub = None
+        app.documents = Coll([])
+        with mock.patch.object(ef, "get_app", return_value=app), \
+                mock.patch.object(ef.time, "monotonic", return_value=1000.0), \
+                mock.patch.object(ef, "walk_projects", wraps=ef.walk_projects) as walk:
+            ef.editable_files({"time_budget_s": 12})
+        self.assertEqual(walk.call_args.kwargs["deadline"], 1012.0)
+
+    def test_read_only_files_skip_version_dates_and_links(self):
+        touched = []
+
+        class Watched(FakeFile):
+            def __getattribute__(self, name):
+                if name in ("versionNumber", "dateCreated", "dateModified", "parentReferences",
+                            "childReferences", "hasParentReferences", "hasChildReferences"):
+                    touched.append((object.__getattribute__(self, "name"), name))
+                return object.__getattribute__(self, name)
+
+        ro = Watched("ro")
+        rw = Watched("rw", read_only=False, parents=[FakeFile("asm")])
+        entries, info = ef.walk_projects([FakeProject("P", FakeFolder("root", files=[ro, rw]))], 8, 500)
+        self.assertEqual(touched, [])  # the walk reads no details at all
+        ef.summarize(entries, info, None, {}, _options(), NOW)
+        self.assertFalse([t for t in touched if t[0] == "ro"])
+        self.assertIn(("rw", "parentReferences"), touched)
+        self.assertIn(("rw", "versionNumber"), touched)
+
+
+class LineageKeyTests(unittest.TestCase):
+    def test_forms_reduce_to_token(self):
+        token = "H_8Q_XkyQTyUcKBFgoCdjw"
+        for raw in (f"urn:adsk.wipprod:dm.lineage:{token}",
+                    f"urn:adsk.wipprod:fs.file:vf.{token}?version=17",
+                    f"urn:adsk.wipprod:fs.file:vf.{token}",
+                    f" urn:adsk.wipprod:dm.lineage:{token} "):
+            with self.subTest(raw=raw):
+                self.assertEqual(ef.lineage_key(raw), token)
+
+    def test_unknown_form_drops_query_only(self):
+        self.assertEqual(ef.lineage_key("abc?version=3"), "abc")
+        self.assertEqual(ef.lineage_key("id:plain"), "id:plain")
+
+    def test_empty_and_non_strings(self):
+        for raw in (None, "", "   ", 5, b"x"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(ef.lineage_key(raw))
+
+    def test_bare_markers_are_not_tokens(self):
+        self.assertEqual(ef.lineage_key("urn:adsk.wipprod:dm.lineage:"), "urn:adsk.wipprod:dm.lineage:")
+
+
+class PersonalUseMatchTests(unittest.TestCase):
+    TOKEN = "H_8Q_XkyQTyUcKBFgoCdjw"
+
+    def _walk(self, files, project="P"):
+        return ef.walk_projects([FakeProject(project, FakeFolder("root", files=files))], 8, 500)
+
+    def _api(self, name, file_id=None, version_id=None, project="P"):
+        f = FakeFile(name, read_only=False, project=FakeProject(project, None))
+        f.id = file_id
+        f.versionId = version_id
+        return f
+
+    def test_version_urn_matches_lineage_id(self):
+        walked = FakeFile("knuckle", file_id=f"urn:adsk.wipprod:dm.lineage:{self.TOKEN}", read_only=False)
+        api = self._api("knuckle", file_id=f"urn:adsk.wipprod:fs.file:vf.{self.TOKEN}?version=17")
+        entries, info = self._walk([walked])
+        report = ef.summarize(entries, info, ef.personal_use_summary(FakeLimits([api])), {}, _options(), NOW)
+        self.assertEqual(len(report["editable_files"]), 1)
+        row = report["editable_files"][0]
+        self.assertTrue(row["in_personal_use_list"])
+        self.assertNotIn("outside_walk", row)
+        self.assertNotIn("matched_by", row)
+        self.assertNotIn("personal_use_list_ids_sample", report)
+
+    def test_version_id_attribute_matches_when_id_differs(self):
+        walked = FakeFile("k", file_id=f"urn:adsk.wipprod:dm.lineage:{self.TOKEN}", read_only=False)
+        api = self._api("k", file_id="something-else", version_id=f"urn:adsk.wipprod:fs.file:vf.{self.TOKEN}?version=2")
+        entries, info = self._walk([walked])
+        report = ef.summarize(entries, info, ef.personal_use_summary(FakeLimits([api])), {}, _options(), NOW)
+        self.assertTrue(report["editable_files"][0]["in_personal_use_list"])
+
+    def test_missing_ids_fall_back_to_project_and_name(self):
+        walked = FakeFile("Bracket", read_only=False)
+        api = self._api("bracket", file_id=None, project="p")
+        entries, info = self._walk([walked])
+        report = ef.summarize(entries, info, ef.personal_use_summary(FakeLimits([api])), {}, _options(), NOW)
+        self.assertEqual(len(report["editable_files"]), 1)
+        row = report["editable_files"][0]
+        self.assertTrue(row["in_personal_use_list"])
+        self.assertEqual(row["matched_by"], "project_and_name")
+        self.assertEqual(report["personal_use_list_ids_sample"], [None])
+
+    def test_duplicate_names_are_not_guessed(self):
+        sub = FakeFolder("Archive", files=[FakeFile("dup", file_id="id:archived")])
+        root = FakeFolder("root", files=[FakeFile("dup", file_id="id:live", read_only=False)], folders=[sub])
+        entries, info = ef.walk_projects([FakeProject("P", root)], 8, 500)
+        api = self._api("dup", file_id="urn:other:form")
+        report = ef.summarize(entries, info, ef.personal_use_summary(FakeLimits([api])), {}, _options(), NOW)
+        rows = {r["path"]: r for r in report["editable_files"]}
+        self.assertFalse(rows["P/dup"]["in_personal_use_list"])
+        self.assertTrue(rows["P/.../dup"]["outside_walk"])
+
+    def test_disagreement_adds_raw_id_samples(self):
+        walked = [FakeFile(f"w{i}", file_id=f"urn:adsk.wipprod:dm.lineage:W{i}", read_only=False) for i in range(5)]
+        api = [self._api(f"a{i}", file_id=f"urn:x:A{i}", project="Elsewhere") for i in range(5)]
+        entries, info = self._walk(walked)
+        report = ef.summarize(entries, info, ef.personal_use_summary(FakeLimits(api)), {}, _options(), NOW)
+        self.assertEqual(report["personal_use_list_ids_sample"], ["urn:x:A0", "urn:x:A1", "urn:x:A2"])
+        self.assertEqual(report["walk_ids_sample"],
+                         [f"urn:adsk.wipprod:dm.lineage:W{i}" for i in range(3)])
+        self.assertTrue(all(not r["in_personal_use_list"] for r in report["editable_files"] if not r.get("outside_walk")))
+
+    def test_open_state_matches_across_id_forms(self):
+        walked = FakeFile("k", file_id=f"urn:adsk.wipprod:dm.lineage:{self.TOKEN}", read_only=False, created=NOW - 60 * DAY)
+        opened = FakeFile("k", file_id=f"urn:adsk.wipprod:fs.file:vf.{self.TOKEN}?version=3")
+        states = ef.open_file_states(Coll([FakeDoc(opened, modified=True)]))
+        hints = ef.release_hints(ef.file_entry(walked, ["P"]), states, NOW, 14)
+        self.assertIn("unsaved changes", hints["blockers"][0])
 
 
 class HintTests(unittest.TestCase):
@@ -263,7 +417,7 @@ class HintTests(unittest.TestCase):
         f = FakeFile("a")
         unsaved = FakeDoc(None)
         states = ef.open_file_states(Coll([FakeDoc(f, modified=True, active=True), unsaved]))
-        self.assertEqual(states, {f.id: {"modified": True, "active": True}})
+        self.assertEqual(states, {ef.lineage_key(f.id): {"modified": True, "active": True}})
 
 
 class SummaryTests(unittest.TestCase):
@@ -324,7 +478,10 @@ class SummaryTests(unittest.TestCase):
         info["truncated"] = True
         report = ef.summarize(entries, info, None, {}, _options(include_read_only=True, max_files=1), NOW)
         self.assertEqual(report["read_only_files"], [{"path": "P/ro", "version": 3}])
-        self.assertIn("max_files=1", report["walk"]["truncated_reason"])
+        info["truncated_reason"] = "max_files"
+        report = ef.summarize(entries, info, None, {}, _options(include_read_only=True, max_files=1), NOW)
+        self.assertEqual(report["walk"]["truncated_reason"], "max_files")
+        self.assertIn("max_files=1", report["walk"]["truncated_note"])
 
     def test_errors_omitted_when_empty(self):
         entries, info = self._walk([])
