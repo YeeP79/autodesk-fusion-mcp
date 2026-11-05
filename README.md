@@ -241,6 +241,23 @@ API offers (checked against the Fusion API definitions shipped with the app,
   Documents"). They are not API members: they act on the active document
   only, Make Read-Only opens a confirmation dialog (which blocks the bridge),
   and they are undocumented, so this add-in deliberately does not run them.
+### Modal dialogs (macOS)
+
+A modal dialog blocks Fusion's main thread, so every other tool fails with
+"Request cancelled" or a main-thread timeout. `fusion_dialogs` runs on the HTTP
+server thread and reads Fusion's windows through Accessibility (`osascript` +
+System Events). Facts from live use:
+
+- Fusion's Qt dialogs expose **no button names** to Accessibility, so `dismiss`
+  falls back to the Escape key (verified: Preferences closed by Escape).
+- An Accessibility query from inside `execute_python` sees **0 windows**: that
+  code runs on Fusion's main thread, which cannot service AX requests meanwhile.
+  Only the off-main-thread tool works.
+- Each call starts with a short preflight (`UI elements enabled`) so a missing
+  Accessibility or Automation permission fails at once with the System Settings
+  path. osascript has timed out intermittently (15 s, then 0.5 s on the next
+  call), so the read-only scripts are retried once on timeout; the press/Escape
+  script is not. Results carry `osascript_attempts` with `elapsed_ms` per run.
 
 ## Architecture
 

@@ -27,21 +27,46 @@ PREFS = _win_line(wi=2, title="Preferences", modal="true", buttons=("Restore Def
 
 
 class FakeRunner:
-    """Returns queued (code, stdout, stderr) answers and records each script."""
+    """Returns queued (code, stdout, stderr) answers and records each script.
 
-    def __init__(self, *answers):
+    The permission preflight is answered from ``preflight`` (default: granted)
+    and recorded separately, so ``scripts`` holds only the list/press scripts.
+    """
+
+    def __init__(self, *answers, preflight=((0, "true\n", ""),)):
         self.answers = list(answers)
+        self.preflight = list(preflight)
         self.scripts = []
+        self.preflights = 0
+        self.timeouts = []
 
     def __call__(self, script, timeout):
+        self.timeouts.append(timeout)
+        if script == dialogs.PREFLIGHT_SCRIPT:
+            self.preflights += 1
+            return self.preflight.pop(0) if len(self.preflight) > 1 else self.preflight[0]
         self.scripts.append(script)
         return self.answers.pop(0)
 
 
+class FakeClock:
+    """Advances 0.25 s per reading, so each run measures 250 ms."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        self.now += 0.25
+        return self.now
+
+
 def _run(arguments, runner, platform="darwin"):
     result = dialogs.fusion_dialogs(arguments, runner=runner, platform=platform, pid=5740,
-                                    sleep=lambda s: None)
+                                    sleep=lambda s: None, clock=FakeClock())
     return result, result["content"][0]["text"]
+
+
+TIMEOUT = (dialogs.TIMEOUT_RETURNCODE, "", "osascript timed out after 15s")
 
 
 class AppleScriptStringTests(unittest.TestCase):
@@ -266,13 +291,99 @@ class HandlerTests(unittest.TestCase):
 
     def test_dismiss_relist_failure_still_reports_press(self):
         runner = FakeRunner((0, "\n".join([_proc_line(), PREFS]), ""), (0, "OK", ""),
-                            (124, "", "osascript timed out after 15s"))
+                            TIMEOUT, TIMEOUT)
         result, text = _run({"action": "dismiss"}, runner)
         self.assertFalse(result["isError"])
         payload = json.loads(text)
         self.assertEqual(payload["pressed"], "Cancel")
         self.assertIsNone(payload["remaining_dialogs"])
         self.assertIn("timed out", payload["note"])
+
+
+class RetryAndPreflightTests(unittest.TestCase):
+    LISTING = (0, "\n".join([_proc_line(), MAIN, PREFS]), "")
+
+    def test_list_reports_elapsed_ms_per_attempt(self):
+        payload = json.loads(_run({}, FakeRunner(self.LISTING))[1])
+        self.assertEqual(payload["osascript_attempts"], [
+            {"step": "preflight", "attempt": 1, "elapsed_ms": 250, "outcome": "ok"},
+            {"step": "list", "attempt": 1, "elapsed_ms": 250, "outcome": "ok"},
+        ])
+
+    def test_list_timeout_is_retried_once(self):
+        runner = FakeRunner(TIMEOUT, self.LISTING)
+        result, text = _run({}, runner)
+        self.assertFalse(result["isError"])
+        attempts = json.loads(text)["osascript_attempts"]
+        self.assertEqual([(a["step"], a["attempt"], a["outcome"]) for a in attempts],
+                         [("preflight", 1, "ok"), ("list", 1, "timeout"), ("list", 2, "ok")])
+
+    def test_two_timeouts_fail_with_timings(self):
+        runner = FakeRunner(TIMEOUT, TIMEOUT)
+        result, text = _run({}, runner)
+        self.assertTrue(result["isError"])
+        self.assertIn("timed out", text)
+        self.assertIn("list#1 timeout in 250 ms, list#2 timeout in 250 ms", text)
+        self.assertEqual(len(runner.scripts), 2)
+
+    def test_non_timeout_failure_not_retried(self):
+        runner = FakeRunner((2, "", "syntax error: boom"))
+        result, text = _run({}, runner)
+        self.assertTrue(result["isError"])
+        self.assertEqual(len(runner.scripts), 1)
+        self.assertIn("list#1 exit 2", text)
+
+    def test_preflight_false_fails_fast(self):
+        runner = FakeRunner(preflight=((0, "false\n", ""),))
+        result, text = _run({}, runner)
+        self.assertTrue(result["isError"])
+        self.assertIn("Privacy & Security > Accessibility", text)
+        self.assertEqual(runner.scripts, [])
+
+    def test_preflight_automation_error_fails_fast(self):
+        runner = FakeRunner(preflight=((1, "", "Not authorized to send Apple events to System Events. (-1743)"),))
+        result, text = _run({"action": "dismiss"}, runner)
+        self.assertTrue(result["isError"])
+        self.assertIn("Automation", text)
+        self.assertEqual(runner.scripts, [])
+
+    def test_preflight_uses_short_timeout(self):
+        runner = FakeRunner(self.LISTING)
+        _run({}, runner)
+        self.assertEqual(runner.timeouts, [dialogs.PREFLIGHT_TIMEOUT_S, dialogs.OSASCRIPT_TIMEOUT_S])
+        self.assertLess(dialogs.PREFLIGHT_TIMEOUT_S, dialogs.OSASCRIPT_TIMEOUT_S)
+
+    def test_preflight_timeout_or_odd_error_does_not_block(self):
+        for preflight in ((TIMEOUT,), ((2, "", "weird"),)):
+            with self.subTest(preflight=preflight):
+                runner = FakeRunner(self.LISTING, preflight=preflight)
+                result, _text = _run({}, runner)
+                self.assertFalse(result["isError"])
+                self.assertEqual(len(runner.scripts), 1)
+        runner = FakeRunner(self.LISTING, preflight=(TIMEOUT, TIMEOUT))
+        _run({}, runner)
+        self.assertEqual(runner.preflights, 2)  # timed-out preflight retried once too
+
+    def test_dismiss_timeout_is_not_retried(self):
+        runner = FakeRunner(self.LISTING, TIMEOUT)
+        result, text = _run({"action": "dismiss"}, runner)
+        self.assertTrue(result["isError"])
+        self.assertIn("not retried", text)
+        self.assertIn("dismiss#1 timeout", text)
+        self.assertEqual(len(runner.scripts), 2)
+
+    def test_dismiss_reports_attempts_including_relist(self):
+        runner = FakeRunner(self.LISTING, (0, "OK", ""), (0, "\n".join([_proc_line(), MAIN]), ""))
+        payload = json.loads(_run({"action": "dismiss"}, runner)[1])
+        self.assertEqual([a["step"] for a in payload["osascript_attempts"]],
+                         ["preflight", "list", "dismiss", "relist"])
+
+    def test_escape_note_mentions_qt(self):
+        box = _win_line(wi=2, title="Preferences", modal="true", buttons=())
+        runner = FakeRunner((0, "\n".join([_proc_line(), box]), ""), (0, "OK", ""), (0, _proc_line(), ""))
+        payload = json.loads(_run({"action": "dismiss"}, runner)[1])
+        self.assertEqual(payload["pressed"], "Escape key")
+        self.assertIn("Qt", payload["note"])
 
 
 class SchemaTests(unittest.TestCase):

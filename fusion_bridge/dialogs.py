@@ -9,7 +9,21 @@ Fusion's windows through macOS Accessibility (``osascript`` + System Events).
 
 Dismissing only ever presses a button named Cancel or Close, or sends the
 Escape key when the dialog has neither. It never presses Save, Delete, Yes,
-OK, Replace, Continue or any other button.
+OK, Replace, Continue or any other button. Seen live: Fusion's Qt dialogs
+expose no button names to Accessibility at all, so in practice dismiss sends
+Escape (which closed Preferences).
+
+The Accessibility query only works off the main thread: run from inside
+``execute_python`` (main thread) it sees 0 windows, because Fusion cannot
+service AX requests while its main thread is running the script.
+
+Each call starts with a fast preflight (``UI elements enabled``) so a missing
+permission fails in a second with the System Settings path instead of after a
+long timeout. Read-only scripts (preflight, list) are retried once when
+osascript times out (seen live: an intermittent 15 s timeout followed by a
+0.5 s success); the press/Escape script is not retried, because a timed-out
+keypress may still have landed. Every osascript run is reported with its
+``elapsed_ms``.
 
 Script generation and output parsing are pure functions so they can be
 tested without macOS; ``fusion_dialogs`` takes an injectable runner.
@@ -31,6 +45,9 @@ SAFE_BUTTONS = ("cancel", "close")
 # runs a modal session) and sheets are.
 DIALOG_SUBROLES = ("AXSystemDialog",)
 OSASCRIPT_TIMEOUT_S = 15.0
+PREFLIGHT_TIMEOUT_S = 5.0
+PREFLIGHT_SCRIPT = 'tell application "System Events" to get UI elements enabled'
+TIMEOUT_RETURNCODE = 124  # run_osascript's code for subprocess.TimeoutExpired
 _SETTLE_S = 0.4
 
 _FIELD = "\x1f"  # unit separator between fields
@@ -367,10 +384,56 @@ def run_osascript(script, timeout):
         done = subprocess.run(["/usr/bin/osascript", "-"], input=script, capture_output=True,
                               text=True, encoding="utf-8", timeout=timeout)
     except subprocess.TimeoutExpired:
-        return 124, "", f"osascript timed out after {timeout:.0f}s"
+        return TIMEOUT_RETURNCODE, "", f"osascript timed out after {timeout:.0f}s"
     except OSError as exc:
         return 127, "", f"could not run osascript: {exc}"
     return done.returncode, done.stdout, done.stderr
+
+
+class _Runs:
+    """Runs osascript through *runner*, timing every attempt."""
+
+    def __init__(self, runner, clock):
+        self.runner = runner
+        self.clock = clock
+        self.attempts = []
+
+    def run(self, step, script, timeout, retry_on_timeout):
+        tries = 2 if retry_on_timeout else 1
+        for attempt in range(1, tries + 1):
+            started = self.clock()
+            code, out, err = self.runner(script, timeout)
+            self.attempts.append({
+                "step": step, "attempt": attempt,
+                "elapsed_ms": int(round((self.clock() - started) * 1000)),
+                "outcome": "ok" if code == 0 else
+                           "timeout" if code == TIMEOUT_RETURNCODE else f"exit {code}",
+            })
+            if code != TIMEOUT_RETURNCODE:
+                break
+        return code, out, err
+
+    def describe(self):
+        return ", ".join(f"{a['step']}#{a['attempt']} {a['outcome']} in {a['elapsed_ms']} ms"
+                         for a in self.attempts)
+
+    def error(self, message):
+        return _error(f"{message}\nosascript attempts: {self.describe()}")
+
+
+def _preflight(runs):
+    """Fail fast on a missing permission; None when it is fine or unknown.
+
+    A preflight timeout is not treated as a failure (System Events may be cold
+    starting); the list script that follows has its own timeout and retry.
+    """
+    code, out, err = runs.run("preflight", PREFLIGHT_SCRIPT, PREFLIGHT_TIMEOUT_S, True)
+    if code == 0:
+        return ACCESSIBILITY_MESSAGE if out.strip().lower() == "false" else None
+    if code == TIMEOUT_RETURNCODE:
+        return None
+    message = classify_osascript_error(code, err)
+    return message if message in (ACCESSIBILITY_MESSAGE, AUTOMATION_MESSAGE) else None
 
 
 def _summary(entry):
@@ -378,8 +441,8 @@ def _summary(entry):
                                   "role", "subrole", "modal", "buttons")}
 
 
-def _list(runner, pid):
-    code, out, err = runner(build_list_script(pid), OSASCRIPT_TIMEOUT_S)
+def _list(runs, pid, step="list"):
+    code, out, err = runs.run(step, build_list_script(pid), OSASCRIPT_TIMEOUT_S, True)
     if code != 0:
         return None, classify_osascript_error(code, err)
     parsed = parse_list_output(out)
@@ -389,7 +452,8 @@ def _list(runner, pid):
     return parsed, None
 
 
-def fusion_dialogs(arguments, runner=None, platform=None, pid=None, sleep=time.sleep):
+def fusion_dialogs(arguments, runner=None, platform=None, pid=None, sleep=time.sleep,
+                   clock=time.monotonic):
     """List or dismiss Fusion modal dialogs. Runs off Fusion's main thread."""
     arguments = arguments or {}
     unknown = set(arguments) - {"action", "title_contains"}
@@ -406,12 +470,15 @@ def fusion_dialogs(arguments, runner=None, platform=None, pid=None, sleep=time.s
     if platform != "darwin":
         return _error(f"Error: fusion_dialogs is not supported on this platform ({platform}); "
                       "it needs macOS Accessibility.")
-    runner = runner or run_osascript
+    runs = _Runs(runner or run_osascript, clock)
     pid = pid if pid is not None else os.getpid()
 
-    parsed, failure = _list(runner, pid)
+    failure = _preflight(runs)
     if failure:
-        return _error(failure)
+        return runs.error(failure)
+    parsed, failure = _list(runs, pid)
+    if failure:
+        return runs.error(failure)
     dialogs = select_dialogs(parsed["windows"], title_contains)
 
     if action == "list":
@@ -421,12 +488,14 @@ def fusion_dialogs(arguments, runner=None, platform=None, pid=None, sleep=time.s
             "dialogs": [_summary(d) for d in dialogs],
             "other_windows": [{k: w[k] for k in ("window_index", "title", "role", "subrole", "modal")}
                               for w in others],
+            "osascript_attempts": runs.attempts,
         })
 
     if not dialogs:
         scope = f" with a title containing {title_contains!r}" if title_contains else ""
         return _ok({"process": parsed["process"], "pressed": None,
-                    "note": f"No modal dialog found{scope}; nothing pressed."})
+                    "note": f"No modal dialog found{scope}; nothing pressed.",
+                    "osascript_attempts": runs.attempts})
 
     target = dialogs[0]
     button = choose_button(target["buttons"])
@@ -437,18 +506,22 @@ def fusion_dialogs(arguments, runner=None, platform=None, pid=None, sleep=time.s
     else:
         script = build_escape_script(target_pid, target)
         pressed = "Escape key"
-    code, _out, err = runner(script, OSASCRIPT_TIMEOUT_S)
+    code, _out, err = runs.run("dismiss", script, OSASCRIPT_TIMEOUT_S, False)
     if code != 0:
-        return _error(classify_osascript_error(code, err))
+        message = classify_osascript_error(code, err)
+        if code == TIMEOUT_RETURNCODE:
+            message += "; not retried because the press may have landed. Run list to check."
+        return runs.error(message)
 
     sleep(_SETTLE_S)
-    after, failure = _list(runner, pid)
+    after, failure = _list(runs, pid, "relist")
     remaining = None if failure else [_summary(d) for d in select_dialogs(after["windows"])]
     result = {"process": parsed["process"], "pressed": pressed, "dialog": _summary(target),
               "remaining_dialogs": remaining}
     if button is None:
-        result["note"] = ("No Cancel or Close button found, so Escape was sent after bringing "
-                          "Fusion to the front.")
+        result["note"] = ("No Cancel or Close button found (Fusion's Qt dialogs expose no button "
+                          "names), so Escape was sent after bringing Fusion to the front.")
     if failure:
         result["note"] = (result.get("note", "") + f" Could not re-list dialogs: {failure}").strip()
+    result["osascript_attempts"] = runs.attempts
     return _ok(result)
