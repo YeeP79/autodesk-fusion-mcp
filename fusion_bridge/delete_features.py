@@ -49,6 +49,7 @@ import adsk.core
 import adsk.fusion
 
 from .common.api import items, safe
+from .common.args import bool_arg, error_pair, require_object, text_arg
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
@@ -115,28 +116,24 @@ def _read(obj, name, errors):
 # -- Argument validation -------------------------------------------------------
 
 
+@error_pair
 def validate_arguments(arguments):
     """Return (params, error_text)."""
-    if not isinstance(arguments, dict):
-        return None, "Error: arguments must be an object"
+    require_object(arguments)
     names = arguments.get("names")
     if not isinstance(names, list) or not names:
-        return None, "Error: 'names' must be a non-empty list of timeline item names"
+        raise ValueError("'names' must be a non-empty list of timeline item names")
     if not all(isinstance(n, str) and n.strip() for n in names):
-        return None, "Error: every entry in 'names' must be a non-empty string"
+        raise ValueError("every entry in 'names' must be a non-empty string")
     duplicates = sorted({n for n in names if names.count(n) > 1})
     if duplicates:
-        return None, f"Error: 'names' contains duplicates: {duplicates}"
-    component = arguments.get("component")
-    if component is not None and (not isinstance(component, str) or not component.strip()):
-        return None, "Error: 'component' must be a non-empty string when given"
-    params = {"names": list(names), "component": component}
-    for key, default in (("include_dependents", False), ("dry_run", True)):
-        value = arguments.get(key, default)
-        if not isinstance(value, bool):
-            return None, f"Error: '{key}' must be a boolean"
-        params[key] = value
-    return params, None
+        raise ValueError(f"'names' contains duplicates: {duplicates}")
+    return {
+        "names": list(names),
+        "component": text_arg(arguments, "component", suffix=" when given"),
+        "include_dependents": bool_arg(arguments, "include_dependents"),
+        "dry_run": bool_arg(arguments, "dry_run", True),
+    }
 
 
 # -- Pure planning logic (entries are plain dicts) -----------------------------

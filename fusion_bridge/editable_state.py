@@ -33,6 +33,7 @@ from collections import Counter
 import adsk.core
 
 from .common.api import safe, strict_items
+from .common.args import bool_arg, is_int, reject_unknown, text_arg
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -63,27 +64,17 @@ _STATE_POLL_S = 0.5
 _IDLE_COMMANDS = ("SelectCommand", None, "")
 
 
-def _is_int(value):
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 # -- Validation ---------------------------------------------------------------
 
 
 def validate_arguments(arguments):
     """Return (files, project, state, dry_run), or raise ValueError."""
-    unknown = sorted(set(arguments) - _ARGS)
-    if unknown:
-        raise ValueError(f"unknown argument(s): {', '.join(unknown)}")
+    reject_unknown(arguments, _ARGS)
     state = arguments.get("state")
     if state not in COMMAND_IDS:
         raise ValueError(f"'state' must be one of {sorted(COMMAND_IDS)}, got {state!r}")
-    dry_run = arguments.get("dry_run", True)
-    if not isinstance(dry_run, bool):
-        raise ValueError("'dry_run' must be a boolean")
-    project = arguments.get("project")
-    if project is not None and (not isinstance(project, str) or not project.strip()):
-        raise ValueError("'project' must be a non-empty string")
+    dry_run = bool_arg(arguments, "dry_run", True)
+    project = text_arg(arguments, "project")
 
     files = arguments.get("files")
     if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES:
@@ -179,7 +170,7 @@ def plan_file(row, infos, target):
     if len(hits) > 1:
         warnings.append(f"{len(hits)} instances of this file are open; using {info.get('name')!r}")
     latest = row.get("latest_version")
-    if _is_int(latest) and _is_int(info.get("version")) and info["version"] < latest:
+    if is_int(latest) and is_int(info.get("version")) and info["version"] < latest:
         warnings.append(f"the open instance has v{info['version']} loaded; the latest is v{latest}")
     if info.get("is_visible") is False:
         warnings.append("the only open instance is hidden (loaded by a parent); Fusion may refuse to activate it")
@@ -189,7 +180,7 @@ def plan_file(row, infos, target):
 
 def free_slots(limits):
     """Editable slots left, or None when there is no limit to go by (paid licence)."""
-    if not limits or not _is_int(limits.get("count")) or not _is_int(limits.get("max")):
+    if not limits or not is_int(limits.get("count")) or not is_int(limits.get("max")):
         return None
     return max(0, limits["max"] - limits["count"])
 

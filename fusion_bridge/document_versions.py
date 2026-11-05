@@ -15,6 +15,7 @@ import datetime
 import traceback
 
 from .common.api import attempt
+from .common.args import UNKNOWN_CAPITALIZED, is_int, reject_unknown, require_object
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -25,34 +26,24 @@ MAX_LIMIT = 500
 # -- Pure logic ---------------------------------------------------------------
 
 
-def _is_int(value):
-    return type(value) is int
-
-
 def validate_list_args(arguments):
     """Return the version limit, or raise ValueError."""
-    if not isinstance(arguments, dict):
-        raise ValueError("arguments must be an object")
-    unknown = set(arguments) - {"limit", "description"}
-    if unknown:
-        raise ValueError(f"Unknown argument(s): {', '.join(sorted(unknown))}")
+    require_object(arguments)
+    reject_unknown(arguments, {"limit", "description"}, UNKNOWN_CAPITALIZED)
     limit = arguments.get("limit", DEFAULT_LIMIT)
-    if not _is_int(limit) or not 1 <= limit <= MAX_LIMIT:
+    if not is_int(limit) or not 1 <= limit <= MAX_LIMIT:
         raise ValueError(f"'limit' must be an integer between 1 and {MAX_LIMIT}")
     return limit
 
 
 def validate_restore_args(arguments):
     """Return (version_number, confirm, discard_unsaved), or raise ValueError."""
-    if not isinstance(arguments, dict):
-        raise ValueError("arguments must be an object")
-    unknown = set(arguments) - {"version_number", "confirm", "discard_unsaved", "description"}
-    if unknown:
-        raise ValueError(f"Unknown argument(s): {', '.join(sorted(unknown))}")
+    require_object(arguments)
+    reject_unknown(arguments, {"version_number", "confirm", "discard_unsaved", "description"}, UNKNOWN_CAPITALIZED)
     if "version_number" not in arguments:
         raise ValueError("'version_number' is required")
     number = arguments["version_number"]
-    if not _is_int(number) or number < 1:
+    if not is_int(number) or number < 1:
         raise ValueError("'version_number' must be a positive integer")
     confirm = arguments.get("confirm", False)
     if type(confirm) is not bool:
@@ -83,7 +74,7 @@ def format_version_list(document_name, records, loaded_number, latest_number, li
     unique = {}
     for record in records:
         number = record.get("version_number")
-        if _is_int(number) and number not in unique:
+        if is_int(number) and number not in unique:
             unique[number] = record
     ordered = sorted(unique.values(), key=lambda r: r["version_number"], reverse=True)
     versions = []
@@ -151,9 +142,9 @@ def plan_restore(state, version_number, confirm, discard_unsaved):
         "document": name,
         "restore_version": version_number,
         "current_latest_version": latest,
-        "expected_new_version": latest + 1 if _is_int(latest) else None,
+        "expected_new_version": latest + 1 if is_int(latest) else None,
         "steps": [
-            f"Promote version {version_number} to a new latest version (v{latest + 1 if _is_int(latest) else '?'}); "
+            f"Promote version {version_number} to a new latest version (v{latest + 1 if is_int(latest) else '?'}); "
             "existing versions are kept.",
             f"Close '{name}' without saving"
             + (" (DISCARDING its unsaved changes)" if state.get("is_modified") else "")
@@ -228,7 +219,7 @@ def _version_files(data_file):
     files = {}
     for version in list(data_file.versions) + [data_file]:
         number = attempt(lambda v=version: v.versionNumber)
-        if _is_int(number) and number not in files:
+        if is_int(number) and number not in files:
             files[number] = version
     return files
 

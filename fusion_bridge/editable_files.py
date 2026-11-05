@@ -15,6 +15,7 @@ import time
 import traceback
 
 from .common.api import items, present
+from .common.args import bool_arg, error_pair, int_arg, is_int, is_number, text_arg
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -39,37 +40,22 @@ HINTS_NOTE = (
 )
 
 
-def _is_int(value):
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _is_number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
+@error_pair
 def validate_arguments(arguments):
     """Return (options, None) or (None, error message)."""
-    project = arguments.get("project")
-    if project is not None and (not isinstance(project, str) or not project.strip()):
-        return None, "Error: 'project' must be a non-empty string"
+    project = text_arg(arguments, "project")
     limit = arguments.get("editable_limit")
-    if limit is not None and (not _is_int(limit) or limit < 1):
-        return None, "Error: 'editable_limit' must be a positive integer"
-    max_files = arguments.get("max_files", DEFAULT_MAX_FILES)
-    if not _is_int(max_files) or not 1 <= max_files <= MAX_MAX_FILES:
-        return None, f"Error: 'max_files' must be an integer from 1 to {MAX_MAX_FILES}"
-    max_depth = arguments.get("max_depth", DEFAULT_MAX_DEPTH)
-    if not _is_int(max_depth) or not 0 <= max_depth <= MAX_MAX_DEPTH:
-        return None, f"Error: 'max_depth' must be an integer from 0 to {MAX_MAX_DEPTH}"
+    if limit is not None and (not is_int(limit) or limit < 1):
+        raise ValueError("'editable_limit' must be a positive integer")
+    max_files = int_arg(arguments, "max_files", DEFAULT_MAX_FILES, 1, MAX_MAX_FILES)
+    max_depth = int_arg(arguments, "max_depth", DEFAULT_MAX_DEPTH, 0, MAX_MAX_DEPTH)
     stale_days = arguments.get("stale_days", DEFAULT_STALE_DAYS)
-    if not _is_number(stale_days) or stale_days < 0:
-        return None, "Error: 'stale_days' must be a non-negative number"
-    include_read_only = arguments.get("include_read_only", False)
-    if not isinstance(include_read_only, bool):
-        return None, "Error: 'include_read_only' must be a boolean"
+    if not is_number(stale_days) or stale_days < 0:
+        raise ValueError("'stale_days' must be a non-negative number")
+    include_read_only = bool_arg(arguments, "include_read_only")
     budget = arguments.get("time_budget_s", DEFAULT_TIME_BUDGET_S)
-    if not _is_number(budget) or not 1 <= budget <= MAX_TIME_BUDGET_S:
-        return None, f"Error: 'time_budget_s' must be a number from 1 to {MAX_TIME_BUDGET_S:.0f}"
+    if not is_number(budget) or not 1 <= budget <= MAX_TIME_BUDGET_S:
+        raise ValueError(f"'time_budget_s' must be a number from 1 to {MAX_TIME_BUDGET_S:.0f}")
     return {
         "project": project.strip() if project else None,
         "editable_limit": limit,
@@ -78,7 +64,7 @@ def validate_arguments(arguments):
         "stale_days": stale_days,
         "include_read_only": include_read_only,
         "time_budget_s": budget,
-    }, None
+    }
 
 
 # -- Safe reads -------------------------------------------------------------
@@ -235,7 +221,7 @@ def walk_projects(projects, max_depth, max_files, deadline=None, clock=time.mono
 def last_changed(entry):
     """Latest of dateCreated/dateModified (a save creates a new version, so the
     latest version's creation date is the last save; dateModified covers renames)."""
-    stamps = [s for s in (entry.get("date_created"), entry.get("date_modified")) if _is_number(s)]
+    stamps = [s for s in (entry.get("date_created"), entry.get("date_modified")) if is_number(s)]
     return max(stamps) if stamps else None
 
 
@@ -376,12 +362,12 @@ def summarize(entries, walk_info, personal_use, open_files, options, now):
 
     if options["editable_limit"] is not None:
         limit, limit_source = options["editable_limit"], "argument"
-    elif personal_use and _is_int(personal_use.get("max_editable")):
+    elif personal_use and is_int(personal_use.get("max_editable")):
         limit, limit_source = personal_use["max_editable"], "personalUseLimits.maxEditableFileCount"
     else:
         limit, limit_source = DEFAULT_EDITABLE_LIMIT, "default"
 
-    count = personal_use["editable_count"] if personal_use and _is_int(personal_use.get("editable_count")) else len(editable)
+    count = personal_use["editable_count"] if personal_use and is_int(personal_use.get("editable_count")) else len(editable)
     rows = []
     for entry in editable:
         ensure_details(entry)

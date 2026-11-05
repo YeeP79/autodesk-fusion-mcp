@@ -12,6 +12,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
+from .common.args import is_number
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
@@ -54,7 +55,7 @@ def compute(arguments):
     if scope not in COMMAND_IDS:
         return error_result(f"Error: 'scope' must be one of {sorted(COMMAND_IDS)}, got {scope!r}")
     timeout_s = arguments.get("timeout_seconds", DEFAULT_TIMEOUT_S)
-    if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool) or timeout_s <= 0:
+    if not is_number(timeout_s) or timeout_s <= 0:
         return error_result("Error: 'timeout_seconds' must be a positive number")
 
     try:

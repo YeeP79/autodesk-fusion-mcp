@@ -17,6 +17,7 @@ import adsk.core
 import adsk.fusion
 
 from .common.api import safe, strict_items
+from .common.args import bool_arg, error_pair, int_arg, require_object, text_arg
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -98,80 +99,37 @@ def _xyz(p):
     return (p.x, p.y, p.z)
 
 
-def _bool_arg(arguments, key, default):
-    value = arguments.get(key, default)
-    if not isinstance(value, bool):
-        return None, f"Error: '{key}' must be a boolean"
-    return value, None
-
-
-def _int_arg(arguments, key, default, low, high):
-    value = arguments.get(key, default)
-    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
-        return None, f"Error: '{key}' must be an integer from {low} to {high}"
-    return value, None
-
-
-def _str_arg(arguments, key, required=False):
-    value = arguments.get(key)
-    if value is None:
-        return (None, f"Error: '{key}' is required") if required else (None, None)
-    if not isinstance(value, str) or (required and not value.strip()):
-        return None, f"Error: '{key}' must be a non-empty string"
-    return value, None
-
-
 def _units_arg(arguments):
     units = arguments.get("units", "in")
     if units not in UNIT_FACTORS:
-        return None, f"Error: 'units' must be one of {sorted(UNIT_FACTORS)}, got {units!r}"
-    return units, None
+        raise ValueError(f"'units' must be one of {sorted(UNIT_FACTORS)}, got {units!r}")
+    return units
 
 
+@error_pair
 def validate_list_args(arguments):
     """Return (options, error_text)."""
-    if not isinstance(arguments, dict):
-        return None, "Error: arguments must be an object"
-    opts = {}
-    checks = [
-        ("units", lambda: _units_arg(arguments)),
-        ("include_hidden", lambda: _bool_arg(arguments, "include_hidden", False)),
-        ("name_contains", lambda: _str_arg(arguments, "name_contains")),
-        ("component_contains", lambda: _str_arg(arguments, "component_contains")),
-        ("max_results", lambda: _int_arg(arguments, "max_results", DEFAULT_MAX_RESULTS, 1, MAX_RESULTS_LIMIT)),
-    ]
-    for key, check in checks:
-        value, err = check()
-        if err:
-            return None, err
-        opts[key] = value
-    return opts, None
+    require_object(arguments)
+    return {
+        "units": _units_arg(arguments),
+        "include_hidden": bool_arg(arguments, "include_hidden", False),
+        "name_contains": text_arg(arguments, "name_contains", blank_ok=True),
+        "component_contains": text_arg(arguments, "component_contains", blank_ok=True),
+        "max_results": int_arg(arguments, "max_results", DEFAULT_MAX_RESULTS, 1, MAX_RESULTS_LIMIT),
+    }
 
 
+@error_pair
 def validate_describe_args(arguments):
     """Return (options, error_text)."""
-    if not isinstance(arguments, dict):
-        return None, "Error: arguments must be an object"
-    opts = {}
-    checks = [
-        ("occurrence_path", lambda: _str_arg(arguments, "occurrence_path", required=True)),
-        ("body_name", lambda: _str_arg(arguments, "body_name", required=True)),
-        ("units", lambda: _units_arg(arguments)),
-        ("max_faces", lambda: _int_arg(arguments, "max_faces", DEFAULT_MAX_FACES, 1, MAX_FACES_LIMIT)),
-    ]
-    for key, check in checks:
-        value, err = check()
-        if err:
-            return None, err
-        opts[key] = value
-    if "body_index" in arguments:
-        value, err = _int_arg(arguments, "body_index", 0, 0, 1_000_000)
-        if err:
-            return None, err
-        opts["body_index"] = value
-    else:
-        opts["body_index"] = None
-    return opts, None
+    require_object(arguments)
+    return {
+        "occurrence_path": text_arg(arguments, "occurrence_path", required=True),
+        "body_name": text_arg(arguments, "body_name", required=True),
+        "units": _units_arg(arguments),
+        "max_faces": int_arg(arguments, "max_faces", DEFAULT_MAX_FACES, 1, MAX_FACES_LIMIT),
+        "body_index": int_arg(arguments, "body_index", 0, 0, 1_000_000) if "body_index" in arguments else None,
+    }
 
 
 def is_hidden(entry):

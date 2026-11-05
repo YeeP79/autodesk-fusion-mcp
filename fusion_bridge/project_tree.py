@@ -11,6 +11,7 @@ import traceback
 
 from .. import settings
 from . import data_tree
+from .common.args import bool_arg, error_pair, int_arg, reject_unknown, require_object, text_arg
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -30,48 +31,28 @@ NOTES = [
 ]
 
 
-def _is_int(value):
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
+@error_pair
 def validate_arguments(arguments):
     """Return (options, None) or (None, error_text). Touches nothing in Fusion."""
-    if not isinstance(arguments, dict):
-        return None, "Error: arguments must be an object"
-    unknown = sorted(set(arguments) - _KNOWN_ARGS)
-    if unknown:
-        return None, f"Error: unknown argument(s): {', '.join(unknown)}"
-
-    list_projects = arguments.get("list_projects", False)
-    if not isinstance(list_projects, bool):
-        return None, "Error: 'list_projects' must be a boolean"
-
-    project = arguments.get("project")
-    if project is not None and (not isinstance(project, str) or not project.strip()):
-        return None, "Error: 'project' must be a non-empty string (project name or id)"
+    require_object(arguments)
+    reject_unknown(arguments, _KNOWN_ARGS)
+    list_projects = bool_arg(arguments, "list_projects")
+    project = text_arg(arguments, "project", suffix=" (project name or id)")
     if not list_projects and project is None:
-        return None, "Error: 'project' is required unless 'list_projects' is true"
+        raise ValueError("'project' is required unless 'list_projects' is true")
 
     try:
         segments = data_tree.split_path(arguments.get("folder"))
     except ValueError as exc:
-        return None, f"Error: 'folder': {exc}"
+        raise ValueError(f"'folder': {exc}")
 
-    depth = arguments.get("depth", DEFAULT_DEPTH)
-    if not _is_int(depth) or not 0 <= depth <= data_tree.MAX_DEPTH:
-        return None, f"Error: 'depth' must be an integer from 0 to {data_tree.MAX_DEPTH}"
-
-    max_files = arguments.get("max_files", DEFAULT_MAX_FILES)
-    if not _is_int(max_files) or not 1 <= max_files <= MAX_FILES_LIMIT:
-        return None, f"Error: 'max_files' must be an integer from 1 to {MAX_FILES_LIMIT}"
-
-    include_links = arguments.get("include_links", True)
-    if not isinstance(include_links, bool):
-        return None, "Error: 'include_links' must be a boolean"
+    depth = int_arg(arguments, "depth", DEFAULT_DEPTH, 0, data_tree.MAX_DEPTH)
+    max_files = int_arg(arguments, "max_files", DEFAULT_MAX_FILES, 1, MAX_FILES_LIMIT)
+    include_links = bool_arg(arguments, "include_links", True)
 
     name_contains = arguments.get("name_contains")
     if name_contains is not None and (not isinstance(name_contains, str) or not name_contains):
-        return None, "Error: 'name_contains' must be a non-empty string"
+        raise ValueError("'name_contains' must be a non-empty string")
 
     return {
         "list_projects": list_projects,
@@ -81,7 +62,7 @@ def validate_arguments(arguments):
         "max_files": max_files,
         "include_links": include_links,
         "name_contains": name_contains,
-    }, None
+    }
 
 
 def time_budget():

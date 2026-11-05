@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 import adsk.core
 
 from .common.api import safe
+from .common.args import UNKNOWN_CAPITALIZED, int_or_none, is_int, is_number, reject_unknown, text_arg
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -54,15 +55,6 @@ STUCK_INSTANCE_FIX = (
 
 
 # -- Small helpers -----------------------------------------------------------
-
-
-def _non_empty_str(arguments, key):
-    value = arguments.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"'{key}' must be a non-empty string")
-    return value.strip()
 
 
 def instance_suffix(name):
@@ -109,8 +101,7 @@ def _file_id(info):
 
 
 def _loaded_version(info):
-    value = (info.get("data_file") or {}).get("version_number")
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
+    return int_or_none((info.get("data_file") or {}).get("version_number"))
 
 
 # -- Pure decision logic -------------------------------------------------------
@@ -246,7 +237,7 @@ class SaveVerifier:
             return True
         if is_modified is not None:
             self.is_modified = bool(is_modified)
-        if isinstance(latest_version, int) and not isinstance(latest_version, bool):
+        if is_int(latest_version):
             self.latest_version = latest_version
         if (self.is_modified is False and self.latest_version is not None
                 and self.version_before is not None and self.latest_version > self.version_before):
@@ -387,25 +378,18 @@ _SAVE_ARGS = {"description", "name", "data_file_id", "timeout_seconds"}
 _OPEN_ARGS = {"data_file_id", "project", "path", "version"}
 
 
-def _reject_unknown(arguments, known):
-    unknown = sorted(set(arguments) - known)
-    if unknown:
-        raise ValueError(f"Unknown argument(s): {', '.join(unknown)}")
-
-
 def validate_save(arguments):
     """Return (description, selector_field, selector_value, timeout_s)."""
-    _reject_unknown(arguments, _SAVE_ARGS)
+    reject_unknown(arguments, _SAVE_ARGS, UNKNOWN_CAPITALIZED)
     description = arguments.get("description")
     if not isinstance(description, str) or not description.strip():
         raise ValueError("'description' (the version comment) must be a non-empty string")
-    name = _non_empty_str(arguments, "name")
-    file_id = _non_empty_str(arguments, "data_file_id")
+    name = text_arg(arguments, "name", strip=True)
+    file_id = text_arg(arguments, "data_file_id", strip=True)
     if name and file_id:
         raise ValueError("give at most one of 'name' or 'data_file_id'")
     timeout_s = arguments.get("timeout_seconds", DEFAULT_SAVE_TIMEOUT_S)
-    if (not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool)
-            or timeout_s <= 0 or timeout_s > MAX_SAVE_TIMEOUT_S):
+    if not is_number(timeout_s) or timeout_s <= 0 or timeout_s > MAX_SAVE_TIMEOUT_S:
         raise ValueError(f"'timeout_seconds' must be a number in (0, {MAX_SAVE_TIMEOUT_S:.0f}]")
     field = "name" if name else ("data_file_id" if file_id else None)
     return description.strip(), field, name or file_id, float(timeout_s)
@@ -413,9 +397,9 @@ def validate_save(arguments):
 
 def validate_open(arguments):
     """Return (data_file_id, project, segments, version)."""
-    _reject_unknown(arguments, _OPEN_ARGS)
-    file_id = _non_empty_str(arguments, "data_file_id")
-    project = _non_empty_str(arguments, "project")
+    reject_unknown(arguments, _OPEN_ARGS, UNKNOWN_CAPITALIZED)
+    file_id = text_arg(arguments, "data_file_id", strip=True)
+    project = text_arg(arguments, "project", strip=True)
     path = arguments.get("path")
     if file_id and (project or path is not None):
         raise ValueError("give either 'data_file_id' or 'project' + 'path', not both")
@@ -423,7 +407,7 @@ def validate_open(arguments):
         raise ValueError("give 'data_file_id', or both 'project' and 'path'")
     segments = path_segments(path) if not file_id else None
     version = arguments.get("version")
-    if version is not None and (not isinstance(version, int) or isinstance(version, bool) or version < 1):
+    if version is not None and (not is_int(version) or version < 1):
         raise ValueError("'version' must be a positive integer")
     return file_id, project, segments, version
 
@@ -437,8 +421,7 @@ def _cloud_latest_version(app, file_id):
         data_file = app.data.findFileById(file_id)
     except Exception:
         return None
-    value = safe(data_file, "latestVersionNumber") if data_file is not None else None
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
+    return int_or_none(safe(data_file, "latestVersionNumber")) if data_file is not None else None
 
 
 def _current_file_id(document, fallback):

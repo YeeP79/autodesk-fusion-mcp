@@ -22,6 +22,7 @@ import adsk.core
 import adsk.fusion
 
 from .common.api import safe, strict_items
+from .common.args import is_finite_number, is_int
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -85,7 +86,7 @@ def to_cm(value, units, power=1):
 
 def _number(arguments, key, default):
     value = arguments.get(key, default)
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+    if not is_finite_number(value) or value <= 0:
         return None, f"Error: '{key}' must be a positive number"
     return float(value), None
 
@@ -189,7 +190,7 @@ def validate_args(arguments):
     opts["thresholds"] = thresholds
 
     max_details = arguments.get("max_details", DEFAULT_MAX_DETAILS)
-    if not isinstance(max_details, int) or isinstance(max_details, bool) or not 1 <= max_details <= MAX_DETAILS_LIMIT:
+    if not is_int(max_details) or not 1 <= max_details <= MAX_DETAILS_LIMIT:
         return None, f"Error: 'max_details' must be an integer from 1 to {MAX_DETAILS_LIMIT}"
     opts["max_details"] = max_details
     return opts, None

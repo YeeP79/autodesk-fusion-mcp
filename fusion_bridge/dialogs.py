@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 
+from .common.args import unknown_message
 from .common.results import error_result, ok_result
 
 FUSION_BUNDLE_ID = "com.autodesk.fusion360"
@@ -449,9 +450,9 @@ def fusion_dialogs(arguments, runner=None, platform=None, pid=None, sleep=time.s
                    clock=time.monotonic):
     """List or dismiss Fusion modal dialogs. Runs off Fusion's main thread."""
     arguments = arguments or {}
-    unknown = set(arguments) - {"action", "title_contains"}
+    unknown = unknown_message(arguments, {"action", "title_contains"})
     if unknown:
-        return error_result(f"Error: unknown argument(s): {', '.join(sorted(unknown))}")
+        return error_result(f"Error: {unknown}")
     action = arguments.get("action", "list")
     if action not in ACTIONS:
         return error_result(f"Error: 'action' must be one of {list(ACTIONS)}, got {action!r}")

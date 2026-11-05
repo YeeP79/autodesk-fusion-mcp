@@ -24,6 +24,7 @@ from collections import Counter
 import adsk.core
 
 from .common.api import safe, strict_items
+from .common.args import bool_arg, int_or_none, reject_unknown
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -88,24 +89,6 @@ LOOKUP_BUDGET_NOTE = (
 )
 
 
-def _version(value):
-    """A version number, or None for anything else (bool is an int in Python)."""
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _flag(arguments, key):
-    value = arguments.get(key, False)
-    if not isinstance(value, bool):
-        raise ValueError(f"'{key}' must be a boolean")
-    return value
-
-
-def _reject_unknown(arguments, known):
-    unknown = sorted(set(arguments) - set(known))
-    if unknown:
-        raise ValueError(f"unknown argument(s): {', '.join(unknown)}")
-
-
 def _selector(arguments):
     """Return (field, value) for the selector given, or None when there is none."""
     given = {key: arguments.get(key) for key in ("name", "data_file_id") if arguments.get(key) is not None}
@@ -121,16 +104,16 @@ def _selector(arguments):
 
 def validate_close(arguments):
     """Return (field, value, all_instances, discard_unsaved); raise ValueError if invalid."""
-    _reject_unknown(arguments, ("name", "data_file_id", "all_instances", "discard_unsaved"))
+    reject_unknown(arguments, ("name", "data_file_id", "all_instances", "discard_unsaved"))
     selector = _selector(arguments)
     if selector is None:
         raise ValueError("provide one of 'name' or 'data_file_id'")
-    return (*selector, _flag(arguments, "all_instances"), _flag(arguments, "discard_unsaved"))
+    return (*selector, bool_arg(arguments, "all_instances"), bool_arg(arguments, "discard_unsaved"))
 
 
 def validate_references(arguments):
     """Return (selector or None, apply, files or None); raise ValueError if invalid."""
-    _reject_unknown(arguments, ("name", "data_file_id", "apply", "files"))
+    reject_unknown(arguments, ("name", "data_file_id", "apply", "files"))
     selector = _selector(arguments)
     files = arguments.get("files")
     if files is not None:
@@ -138,7 +121,7 @@ def validate_references(arguments):
             raise ValueError("'files' must be a non-empty array of file names or DataFile ids")
         if not all(isinstance(item, str) and item.strip() for item in files):
             raise ValueError("every entry in 'files' must be a non-empty string")
-    return selector, _flag(arguments, "apply"), files
+    return selector, bool_arg(arguments, "apply"), files
 
 
 # -- close_document: decisions ------------------------------------------------
@@ -566,18 +549,18 @@ class CloudLookups:
             data_file = None
         folder = _folder_path(data_file) if data_file is not None else None
         path = None if folder is None else f"{folder.rstrip('/')}/{safe(data_file, 'name')}"
-        self.cache[file_id] = (_version(safe(data_file, "latestVersionNumber")), path)
+        self.cache[file_id] = (int_or_none(safe(data_file, "latestVersionNumber")), path)
         return self.cache[file_id]
 
 
 def _read_reference(ref, cloud):
     data_file = safe(ref, "dataFile")
     file_id = safe(data_file, "id")
-    file_version = _version(safe(data_file, "versionNumber"))
-    ref_version = _version(safe(ref, "version"))
+    file_version = int_or_none(safe(data_file, "versionNumber"))
+    ref_version = int_or_none(safe(ref, "version"))
     loaded = file_version if ref_version is None else ref_version
     cloud_latest, path = cloud.lookup(file_id) if file_id else (None, None)
-    known = [value for value in (cloud_latest, _version(safe(data_file, "latestVersionNumber"))) if value is not None]
+    known = [value for value in (cloud_latest, int_or_none(safe(data_file, "latestVersionNumber"))) if value is not None]
     latest = max(known) if known else None
     is_out_of_date = safe(ref, "isOutOfDate")
     entry = {
@@ -621,9 +604,9 @@ def _loaded_versions(document):
     versions = {}
     for ref in _direct_references(document):
         file_id = safe(safe(ref, "dataFile"), "id")
-        version = _version(safe(ref, "version"))
+        version = int_or_none(safe(ref, "version"))
         if version is None:
-            version = _version(safe(safe(ref, "dataFile"), "versionNumber"))
+            version = int_or_none(safe(safe(ref, "dataFile"), "versionNumber"))
         if file_id and version is not None:
             versions.setdefault(file_id, []).append(version)
     return versions
@@ -635,7 +618,7 @@ def _fresh_reference(document, entry):
         data_file = safe(ref, "dataFile")
         if safe(data_file, "id") != entry.get("data_file_id"):
             continue
-        version = _version(safe(ref, "version"))
+        version = int_or_none(safe(ref, "version"))
         if version is None or version == entry.get("loaded_version"):
             return ref
     return None

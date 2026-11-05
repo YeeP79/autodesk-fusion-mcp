@@ -34,6 +34,7 @@ from functools import partial
 import adsk
 
 from . import data_tree, project_tree
+from .common.args import bool_arg, reject_unknown, require_object, text_arg
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 from .server_log import INTERNAL_ERROR, LOCKED_CODE, LOCKED_STATUS, ServerLog, current_log
@@ -672,18 +673,12 @@ REMOVE_EMPTY_ARGS = _COMMON_ARGS | {"folder"}
 
 
 def _check_common(arguments, known):
-    if not isinstance(arguments, dict):
-        raise ValueError("arguments must be an object")
-    unknown = sorted(set(arguments) - known)
-    if unknown:
-        raise ValueError(f"unknown argument(s): {', '.join(unknown)}")
+    require_object(arguments)
+    reject_unknown(arguments, known)
     project = arguments.get("project")
     if not isinstance(project, str) or not project.strip():
         raise ValueError("'project' must be a non-empty string (project name or id)")
-    dry_run = arguments.get("dry_run", True)
-    if not isinstance(dry_run, bool):
-        raise ValueError("'dry_run' must be a boolean")
-    return {"project": project.strip(), "dry_run": dry_run}
+    return {"project": project.strip(), "dry_run": bool_arg(arguments, "dry_run", True)}
 
 
 def _folder_segments(value, what, required):
@@ -707,12 +702,8 @@ def validate_move(arguments):
         raise ValueError("every entry in 'files' must be a non-empty string")
     if "to_folder" not in arguments or not isinstance(arguments["to_folder"], str):
         raise ValueError("'to_folder' is required: a folder path ('' for the project root)")
-    to_project = arguments.get("to_project")
-    if to_project is not None and (not isinstance(to_project, str) or not to_project.strip()):
-        raise ValueError("'to_project' must be a non-empty string (project name or id)")
-    create_missing = arguments.get("create_missing", False)
-    if not isinstance(create_missing, bool):
-        raise ValueError("'create_missing' must be a boolean")
+    to_project = text_arg(arguments, "to_project", suffix=" (project name or id)")
+    create_missing = bool_arg(arguments, "create_missing")
     opts.update(files=[f.strip() for f in files],
                 to_segments=_folder_segments(arguments["to_folder"], "to_folder", False),
                 to_project=to_project.strip() if to_project else None,

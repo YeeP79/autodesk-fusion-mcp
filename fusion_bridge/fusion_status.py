@@ -14,13 +14,13 @@ Entry format: ``20261105T113244 I .24563490 Begin:\tOpen the Document ...``
 """
 
 import glob
-import math
 import os
 import re
 import time
 from datetime import datetime, timedelta
 
 from . import dispatch
+from .common.args import UNKNOWN_CAPITALIZED, is_finite_number, reject_unknown, require_object
 from .common.results import error_result, ok_result
 
 DEFAULT_TIMEOUT_SECONDS = 2.0
@@ -55,7 +55,7 @@ _TS_FORMAT = "%Y%m%dT%H%M%S"
 
 def _number(arguments, name, default, minimum, maximum):
     value = arguments.get(name, default)
-    if type(value) not in (int, float) or not math.isfinite(value):
+    if not is_finite_number(value):
         raise ValueError(f"{name} must be a number")
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} must be between {minimum:g} and {maximum:g}")
@@ -67,11 +67,8 @@ def parse_arguments(arguments):
 
     The legacy transport does not validate against the schema, so this does.
     """
-    if not isinstance(arguments, dict):
-        raise ValueError("arguments must be an object")
-    unknown = sorted(set(arguments) - _ARGUMENTS)
-    if unknown:
-        raise ValueError(f"Unknown argument(s): {', '.join(unknown)}")
+    require_object(arguments)
+    reject_unknown(arguments, _ARGUMENTS, UNKNOWN_CAPITALIZED)
     timeout = _number(arguments, "timeout_seconds", DEFAULT_TIMEOUT_SECONDS,
                       MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS)
     wait = _number(arguments, "wait_until_idle_seconds", 0, 0, MAX_WAIT_SECONDS)

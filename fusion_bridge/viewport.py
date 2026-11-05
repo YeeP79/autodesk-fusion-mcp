@@ -11,6 +11,7 @@ import adsk.core
 
 from ..lib import png_image
 from . import clean_view as clean
+from .common.args import is_finite_number
 from .common.results import error_result, ok_result
 
 VIEW_NAMES = {
@@ -35,13 +36,7 @@ def _viewport():
 
 
 def _number(value, label, minimum=None, maximum=None):
-    if type(value) not in (int, float):
-        raise ValueError(f"{label} must be a finite number")
-    try:
-        finite = math.isfinite(value)
-    except OverflowError:
-        finite = False
-    if not finite:
+    if not is_finite_number(value):
         raise ValueError(f"{label} must be a finite number")
     if (minimum is not None and value < minimum) or (maximum is not None and value > maximum):
         raise ValueError(f"{label} must be between {minimum} and {maximum}")

@@ -24,6 +24,7 @@ import adsk.core
 import adsk.fusion
 
 from .common.api import safe, strict_items
+from .common.args import is_finite_number, is_int
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -195,18 +196,9 @@ def frame_out(center, frame, units):
 # -- Argument validation (no Fusion) -------------------------------------------
 
 
-def _is_number(value):
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:  # a JSON integer too large for a float
-        return False
-
-
 def _vec3(arguments, key):
     value = arguments[key]
-    if not isinstance(value, list) or len(value) != 3 or not all(_is_number(c) for c in value):
+    if not isinstance(value, list) or len(value) != 3 or not all(is_finite_number(c) for c in value):
         return None, f"Error: '{key}' must be an array of three finite numbers [x, y, z]"
     return tuple(float(c) for c in value), None
 
@@ -223,7 +215,7 @@ def _direction(arguments, key):
 
 def _numbers(arguments, key, minimum=None):
     value = arguments[key]
-    if not isinstance(value, list) or not value or not all(_is_number(c) for c in value):
+    if not isinstance(value, list) or not value or not all(is_finite_number(c) for c in value):
         return None, f"Error: '{key}' must be a non-empty array of finite numbers"
     if minimum is not None and any(c < minimum for c in value):
         return None, f"Error: every value in '{key}' must be at least {minimum}"
@@ -232,7 +224,7 @@ def _numbers(arguments, key, minimum=None):
 
 def _count(arguments, key):
     value = arguments[key]
-    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= MAX_SAMPLES:
+    if not is_int(value) or not 1 <= value <= MAX_SAMPLES:
         return None, f"Error: '{key}' must be an integer from 1 to {MAX_SAMPLES}"
     return value, None
 
@@ -251,7 +243,7 @@ def _bodies_arg(arguments):
         path, name, index = item.get("occurrence_path"), item.get("body_name"), item.get("body_index")
         if not isinstance(path, str) or not path.strip() or not isinstance(name, str) or not name.strip():
             return None, "Error: each 'bodies' entry needs a non-empty occurrence_path and body_name"
-        if index is not None and (not isinstance(index, int) or isinstance(index, bool) or index < 0):
+        if index is not None and (not is_int(index) or index < 0):
             return None, "Error: 'body_index' must be a non-negative integer"
         if (path, name, index) not in wanted:
             wanted.append((path, name, index))
@@ -264,7 +256,7 @@ def _validate_point(arguments, cm):
         return None, "Error: 'points' must be a non-empty array of [x, y, z] points"
     points = []
     for item in value:
-        if not isinstance(item, list) or len(item) != 3 or not all(_is_number(c) for c in item):
+        if not isinstance(item, list) or len(item) != 3 or not all(is_finite_number(c) for c in item):
             return None, "Error: each entry of 'points' must be an array of three finite numbers [x, y, z]"
         points.append(scaled(item, cm))
     return {"points": points}, None
@@ -367,7 +359,7 @@ def _validate_axial(arguments, cm):
     opts["max_radius"] = None
     if "max_radius" in arguments:
         value = arguments["max_radius"]
-        if not _is_number(value) or value <= 0:
+        if not is_finite_number(value) or value <= 0:
             return None, "Error: 'max_radius' must be a positive number"
         opts["max_radius"] = value * cm
     return opts, None

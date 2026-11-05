@@ -4,7 +4,7 @@ import json
 import unittest
 
 import _fusion_test_bootstrap  # noqa: F401
-from fusion_bridge.common import api, results
+from fusion_bridge.common import api, args, results
 
 
 class ResultsTests(unittest.TestCase):
@@ -141,6 +141,95 @@ class ItemsTests(unittest.TestCase):
                 raise AssertionError("no count, so item must not be used")
 
         self.assertEqual(api.items(Odd([1])), [1])
+
+
+class PredicateTests(unittest.TestCase):
+    def test_is_int(self):
+        self.assertTrue(args.is_int(0))
+        for value in (True, 1.0, "1", None):
+            self.assertFalse(args.is_int(value))
+
+    def test_int_or_none(self):
+        self.assertEqual(args.int_or_none(3), 3)
+        self.assertIsNone(args.int_or_none(True))
+        self.assertIsNone(args.int_or_none("3"))
+
+    def test_is_number_allows_non_finite(self):
+        self.assertTrue(args.is_number(1.5))
+        self.assertTrue(args.is_number(float("nan")))
+        self.assertFalse(args.is_number(False))
+
+    def test_is_finite_number(self):
+        self.assertTrue(args.is_finite_number(2))
+        for value in (float("nan"), float("inf"), True, "1", None, 10 ** 400):
+            self.assertFalse(args.is_finite_number(value))
+
+
+class ArgumentCheckTests(unittest.TestCase):
+    def test_require_object(self):
+        args.require_object({})
+        with self.assertRaisesRegex(ValueError, "^arguments must be an object$"):
+            args.require_object([])
+
+    def test_unknown_message_sorts_and_keeps_the_label(self):
+        self.assertIsNone(args.unknown_message({"a": 1}, {"a"}))
+        self.assertEqual(args.unknown_message({"b": 1, "a": 2}, ()), "unknown argument(s): a, b")
+        self.assertEqual(args.unknown_message({"a": 1}, (), args.UNKNOWN_CAPITALIZED), "Unknown argument(s): a")
+
+    def test_reject_unknown(self):
+        args.reject_unknown({"a": 1}, ("a", "b"))
+        with self.assertRaisesRegex(ValueError, "^unknown argument"):
+            args.reject_unknown({"c": 1}, ("a",))
+
+    def test_bool_arg(self):
+        self.assertTrue(args.bool_arg({}, "k", True))
+        self.assertFalse(args.bool_arg({"k": False}, "k", True))
+        with self.assertRaisesRegex(ValueError, "^'k' must be a boolean$"):
+            args.bool_arg({"k": 1}, "k")
+
+    def test_int_arg_bounds_are_inclusive(self):
+        self.assertEqual(args.int_arg({"k": 5}, "k", 1, 1, 5), 5)
+        self.assertEqual(args.int_arg({}, "k", 1, 1, 5), 1)
+        for bad in (0, 6, True, 1.0, "2", None):
+            with self.assertRaisesRegex(ValueError, "^'k' must be an integer from 1 to 5$"):
+                args.int_arg({"k": bad}, "k", 1, 1, 5)
+
+    def test_text_arg_absent(self):
+        self.assertIsNone(args.text_arg({}, "k"))
+        with self.assertRaisesRegex(ValueError, "^'k' is required$"):
+            args.text_arg({}, "k", required=True)
+
+    def test_text_arg_blank(self):
+        for bad in ("", "  ", 3):
+            with self.assertRaisesRegex(ValueError, "^'k' must be a non-empty string$"):
+                args.text_arg({"k": bad}, "k")
+        self.assertEqual(args.text_arg({"k": ""}, "k", blank_ok=True), "")
+        with self.assertRaises(ValueError):
+            args.text_arg({"k": 3}, "k", blank_ok=True)
+
+    def test_text_arg_strip_and_suffix(self):
+        self.assertEqual(args.text_arg({"k": " a "}, "k"), " a ")
+        self.assertEqual(args.text_arg({"k": " a "}, "k", strip=True), "a")
+        with self.assertRaisesRegex(ValueError, r"string \(id\)$"):
+            args.text_arg({"k": ""}, "k", suffix=" (id)")
+
+    def test_error_pair(self):
+        @args.error_pair
+        def check(value):
+            if value < 0:
+                raise ValueError("negative")
+            return value
+
+        self.assertEqual(check(1), (1, None))
+        self.assertEqual(check(-1), (None, "Error: negative"))
+
+    def test_error_pair_lets_other_exceptions_through(self):
+        @args.error_pair
+        def check():
+            raise KeyError("bug")
+
+        with self.assertRaises(KeyError):
+            check()
 
 
 if __name__ == "__main__":

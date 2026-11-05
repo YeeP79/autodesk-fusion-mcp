@@ -11,6 +11,8 @@ with a three-point arc through an interior point (``mid``).
 
 import math
 
+from .common.args import is_finite_number, is_int
+
 UNIT_TO_CM = {"in": 2.54, "cm": 1.0, "mm": 0.1}
 # Shorter than this is a zero-length segment; closer than this is touching.
 LENGTH_TOL_CM = 1e-5
@@ -75,15 +77,11 @@ def unit_factor(units):
     return UNIT_TO_CM[units]
 
 
-def _finite_number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-
-
 def parse_point(value, dims, label, factor):
     """Validate one coordinate list of length *dims* and convert it to cm."""
     if not isinstance(value, (list, tuple)) or len(value) != dims:
         raise GeometryError([f"{label} must be a list of {dims} numbers"])
-    if not all(_finite_number(v) for v in value):
+    if not all(is_finite_number(v) for v in value):
         raise GeometryError([f"{label} must contain only finite numbers"])
     return tuple(float(v) * factor for v in value)
 
@@ -125,7 +123,7 @@ def parse_arcs(arcs, segment_count, dims, factor):
         if unknown:
             problems.append(f"{label} has unknown fields {sorted(unknown)}")
         index = arc.get("index")
-        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < segment_count:
+        if not is_int(index) or not 0 <= index < segment_count:
             problems.append(f"{label}.index must be an integer segment index 0..{segment_count - 1}")
             continue
         if index in result:
@@ -137,7 +135,7 @@ def parse_arcs(arcs, segment_count, dims, factor):
             continue
         if has_bulge:
             bulge = arc["bulge"]
-            if not _finite_number(bulge) or bulge == 0:
+            if not is_finite_number(bulge) or bulge == 0:
                 problems.append(f"{label}.bulge must be a finite non-zero number (0 is a straight line)")
                 continue
             result[index] = {"bulge": float(bulge)}

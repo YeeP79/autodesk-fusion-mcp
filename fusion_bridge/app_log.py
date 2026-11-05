@@ -24,6 +24,7 @@ import os
 import re
 from datetime import datetime, timedelta
 
+from .common.args import is_int, unknown_message
 from .common.results import error_result, ok_result
 
 DEFAULT_LINES = 50
@@ -250,12 +251,12 @@ def collect(entries, limit, levels=None, needles=(), required=(), since=None):
 
 
 def _validate(arguments, now):
-    unknown = set(arguments) - _ARGUMENTS
+    unknown = unknown_message(arguments, _ARGUMENTS)
     if unknown:
-        return None, f"Error: unknown argument(s): {', '.join(sorted(unknown))}"
+        return None, f"Error: {unknown}"
 
     lines = arguments.get("lines", DEFAULT_LINES)
-    if isinstance(lines, bool) or not isinstance(lines, int) or not 1 <= lines <= MAX_LINES:
+    if not is_int(lines) or not 1 <= lines <= MAX_LINES:
         return None, f"Error: 'lines' must be an integer from 1 to {MAX_LINES}, got {lines!r}"
 
     contains = arguments.get("contains", [])

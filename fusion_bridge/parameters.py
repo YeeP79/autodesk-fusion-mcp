@@ -17,6 +17,7 @@ import adsk.fusion
 
 from . import parameter_graph as graph
 from .common.api import attempt
+from .common.args import bool_arg, int_arg, require_object, text_arg
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
@@ -45,26 +46,9 @@ COMPUTE_NOTE = (
 # -- Argument validation (no Fusion) -----------------------------------------
 
 
-def _int_arg(arguments, key, default, low, high):
-    value = arguments.get(key, default)
-    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
-        raise ValueError(f"'{key}' must be an integer from {low} to {high}")
-    return value
-
-
-def _str_arg(arguments, key):
-    value = arguments.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"'{key}' must be a non-empty string")
-    return value
-
-
 def validate_arguments(arguments):
     """Return normalized arguments or raise ValueError with a user-facing message."""
-    if not isinstance(arguments, dict):
-        raise ValueError("arguments must be an object")
+    require_object(arguments)
     action = arguments.get("action", "list")
     if action not in ACTIONS:
         raise ValueError(f"'action' must be one of {list(ACTIONS)}, got {action!r}")
@@ -73,24 +57,19 @@ def validate_arguments(arguments):
     if extra:
         raise ValueError(f"Unexpected argument(s) for action '{action}': {extra}")
 
-    depth = _int_arg(arguments, "depth", DEFAULT_DEPTH, 1, MAX_DEPTH)
+    depth = int_arg(arguments, "depth", DEFAULT_DEPTH, 1, MAX_DEPTH)
     if action == "list":
-        include_model = arguments.get("include_model", False)
-        if not isinstance(include_model, bool):
-            raise ValueError("'include_model' must be a boolean")
         return {
             "action": action,
-            "include_model": include_model,
-            "name_contains": _str_arg(arguments, "name_contains"),
-            "comment_contains": _str_arg(arguments, "comment_contains"),
-            "limit": _int_arg(arguments, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT),
-            "name": _str_arg(arguments, "name"),
+            "include_model": bool_arg(arguments, "include_model"),
+            "name_contains": text_arg(arguments, "name_contains"),
+            "comment_contains": text_arg(arguments, "comment_contains"),
+            "limit": int_arg(arguments, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT),
+            "name": text_arg(arguments, "name"),
             "depth": depth,
         }
 
-    dry_run = arguments.get("dry_run", True)
-    if not isinstance(dry_run, bool):
-        raise ValueError("'dry_run' must be a boolean")
+    dry_run = bool_arg(arguments, "dry_run", True)
     updates = arguments.get("updates")
     if not isinstance(updates, list) or not updates:
         raise ValueError("'updates' must be a non-empty list of {name, expression}")

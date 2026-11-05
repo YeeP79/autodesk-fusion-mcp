@@ -33,6 +33,7 @@ import traceback
 from functools import partial
 
 from .. import settings
+from .common.args import bool_arg, reject_unknown, require_object
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
@@ -607,20 +608,14 @@ def remove_folder(folder, path, deleted_ids):
 
 def validate_arguments(arguments):
     """Return the options, or raise ValueError. Touches nothing in Fusion."""
-    if not isinstance(arguments, dict):
-        raise ValueError("arguments must be an object")
-    unknown = sorted(set(arguments) - _KNOWN_ARGS)
-    if unknown:
-        raise ValueError(f"unknown argument(s): {', '.join(unknown)}")
+    require_object(arguments)
+    reject_unknown(arguments, _KNOWN_ARGS)
     project = arguments.get("project")
     if not isinstance(project, str) or not project.strip():
         raise ValueError("'project' must be a non-empty string (project name or id)")
 
-    flags = {}
-    for name, default in (("dry_run", True), ("confirm", False), ("include_empty_folder", False)):
-        flags[name] = arguments.get(name, default)
-        if not isinstance(flags[name], bool):
-            raise ValueError(f"'{name}' must be a boolean")
+    flags = {name: bool_arg(arguments, name, default)
+             for name, default in (("dry_run", True), ("confirm", False), ("include_empty_folder", False))}
 
     files = arguments.get("files", [])
     if not isinstance(files, list):
