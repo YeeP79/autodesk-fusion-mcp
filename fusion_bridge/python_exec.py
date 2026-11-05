@@ -21,7 +21,32 @@ from ..lib import mcp_server as mcp_server_module
 from .dispatch import get_app
 
 
+# session_id -> the globals dict every call in that session executes in. One
+# live dict, never a copy: a function's __globals__ is the dict it was defined
+# in, so a helper only sees names from other calls if they all share it.
 SCRIPT_SESSIONS = {}
+# Rebuilt by _build_runtime_globals on every call, so app/ui stay current and a
+# script rebinding one does not outlive its call. Not reported as session names.
+_INJECTED_NAMES = frozenset({
+    "adsk",
+    "app",
+    "contextlib",
+    "futil",
+    "inspect",
+    "io",
+    "json",
+    "mcp",
+    "mcp_server_module",
+    "os",
+    "queue",
+    "re",
+    "settings",
+    "threading",
+    "time",
+    "traceback",
+    "ui",
+    "urllib",
+})
 _CACHED_VERSION_INFO = None
 
 
@@ -112,6 +137,39 @@ def _build_runtime_globals():
     }
 
 
+def _describe_session(namespace):
+    """Group the names a script left in a session by kind, for the result."""
+    groups = {"variables": [], "modules": [], "classes": [], "functions": []}
+    for name, value in namespace.items():
+        if name.startswith("__") or name == "_mcp_result" or name in _INJECTED_NAMES:
+            continue
+        if inspect.ismodule(value):
+            kind = "modules"
+        elif inspect.isclass(value):
+            kind = "classes"
+        elif callable(value):
+            kind = "functions"
+        else:
+            kind = "variables"
+        groups[kind].append(name)
+    return {
+        "session_variables": sorted(groups.pop("variables")),
+        "session_definitions": {kind: sorted(names) for kind, names in groups.items()},
+    }
+
+
+def clear_sessions():
+    """Forget every session, releasing what they hold.
+
+    Each dict is emptied in place because a persisted function and its
+    __globals__ form a cycle: dropping the outer reference alone would leave
+    held Fusion objects to the cycle collector, on whichever thread it runs.
+    """
+    for namespace in SCRIPT_SESSIONS.values():
+        namespace.clear()
+    SCRIPT_SESSIONS.clear()
+
+
 def run_python(arguments):
     code = arguments.get("code")
     if not code:
@@ -125,11 +183,13 @@ def run_python(arguments):
 
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
+    runtime_globals = None
 
     try:
-        runtime_globals = _build_runtime_globals()
-        if persistent and session_id in SCRIPT_SESSIONS:
-            runtime_globals.update(SCRIPT_SESSIONS[session_id])
+        runtime_globals = SCRIPT_SESSIONS.setdefault(session_id, {}) if persistent else {}
+        runtime_globals.update(_build_runtime_globals())
+        # A call that failed after setting it must not answer for this one.
+        runtime_globals.pop("_mcp_result", None)
 
         compiled = compile(code, "<mcp-script>", "exec")
         with (
@@ -140,47 +200,12 @@ def run_python(arguments):
 
         result_value = runtime_globals.pop("_mcp_result", None)
 
-        if persistent:
-            blocked = {
-                "adsk",
-                "app",
-                "contextlib",
-                "futil",
-                "inspect",
-                "io",
-                "json",
-                "mcp",
-                "mcp_server_module",
-                "os",
-                "queue",
-                "re",
-                "settings",
-                "threading",
-                "time",
-                "traceback",
-                "ui",
-                "urllib",
-            }
-            saved = {}
-            for key, value in runtime_globals.items():
-                if key.startswith("_") or key in blocked:
-                    continue
-                if (
-                    inspect.ismodule(value)
-                    or inspect.isfunction(value)
-                    or callable(value)
-                ):
-                    continue
-                saved[key] = value
-            SCRIPT_SESSIONS[session_id] = saved
-
+        session_names = _describe_session(runtime_globals) if persistent else {"session_variables": []}
         payload = {
             "stdout": stdout_buffer.getvalue(),
             "stderr": stderr_buffer.getvalue(),
             "return_value": str(result_value) if result_value is not None else None,
-            "session_variables": sorted(SCRIPT_SESSIONS.get(session_id, {}).keys())
-            if persistent
-            else [],
+            **session_names,
             "success": True,
         }
         return {
@@ -195,6 +220,9 @@ def run_python(arguments):
             "traceback": traceback.format_exc(),
             "success": False,
         }
+        # Names bound before the failure stay in the session, so say which.
+        if persistent and runtime_globals is not None:
+            payload.update(_describe_session(runtime_globals))
         return {
             "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
             "isError": True,

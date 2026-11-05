@@ -102,7 +102,11 @@ TOOL_DEFINITIONS = [
         "name": EXECUTE_PYTHON,
         "description": (
             "Run Python code inside the active Fusion 360 session with access "
-            "to the full SDK. Variables persist across calls within the same session_id."
+            "to the full SDK. Calls with the same session_id share one namespace, like a "
+            "REPL: variables, imports, functions and classes carry over, including names "
+            "bound before a call failed. session_variables lists plain values and "
+            "session_definitions the modules, classes and functions. Injected names "
+            "(app, ui, adsk, os, json, time, ...) are reset on every call."
         ),
         "inputSchema": {
             "type": "object",
@@ -121,7 +125,7 @@ TOOL_DEFINITIONS = [
                 },
                 "persistent": {
                     "type": "boolean",
-                    "description": "Whether to persist session variables (default: true)",
+                    "description": "Whether to run in the session's namespace (default: true); false runs in a fresh one and keeps nothing",
                 },
                 "description": {
                     "type": "string",

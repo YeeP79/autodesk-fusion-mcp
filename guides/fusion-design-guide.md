@@ -187,7 +187,8 @@ anything it marks as true.
 
 ## 14. Use Python Sessions for Investigation
 
-- Persistent sessions are useful for holding intermediate values between experiments.
+- Persistent sessions are useful for holding intermediate values between experiments. Imports, helper functions, classes, and aliases such as `P3 = adsk.core.Point3D.create` carry over too, and a helper sees names defined in later calls.
+- Session objects can outlive what they point at: a stored Fusion object or bound method goes stale when its document closes or its feature is undone. Check `isValid`, or fetch it again.
 - Put important final values into `_mcp_result` or `print()` them so the caller can inspect outcomes.
 - Avoid UI prompts in scripts because modal dialogs block automation.
 
