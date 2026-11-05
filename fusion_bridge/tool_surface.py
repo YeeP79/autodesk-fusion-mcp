@@ -57,6 +57,7 @@ COMPARE_FILES = "compare_files"
 COMPARE_BODIES = "compare_bodies"
 AUDIT_DESIGN = "audit_design"
 COMBINE_BODIES = "combine_bodies"
+EDGE_TREATMENT = "edge_treatment"
 CONSTRUCTION_PLANE = "construction_plane"
 APPLY_THREAD = "apply_thread"
 
@@ -1596,6 +1597,64 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": EDGE_TREATMENT,
+        "description": (
+            "Chamfer or fillet named edges of the active design, retry the way Fusion's refusal suggests, then "
+            "measure what was built. Name edges by EntityRefs from find_entities, or by any point on them with "
+            "'body'. All sets go to one feature per body; on refusal (strategy split_on_refusal) it tries the sets "
+            "on one plane, each set, each chain of connected edges (closed ones first), then each edge, finding "
+            "edges again each time, because a treated edge trims its neighbors. 'attempts' lists every step, "
+            "'features' what was built. Whatever no step could build stays in edges.refused with Fusion's words; "
+            "nothing substitutes another shape, so that is 'partial', and an isError result can still have built "
+            "features. edges.lost lists points and edges that found nothing. Points and edges are counted apart, "
+            "because Fusion may hold many named points as a few edges. size_two makes a two-distance chamfer: "
+            "size_on_face, adjacent to every edge of the set, is the face size is measured on. 'measured' gives "
+            "each set's inset or radius; a swapped two-distance chamfer is deleted and rebuilt flipped, and a size "
+            "the check disagrees with is 'suspect'. not_measured means nothing could tell, not that it passed: two "
+            "distances within 2%, a fillet with no cylinder or torus face, or a neighboring set's boundary. "
+            "'suspects' are short edges, sliver faces and high face counts that may explain a refusal. A chamfer "
+            "and a fillet cannot share a feature, so make two calls, fillets first. dry_run (default false) builds "
+            "nothing and returns the edges, adjacent faces, chains and suspects as 'plan'. For a chamfer at an "
+            "angle, turn it into two distances. isError is 'not ok': anything but built or planned."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "kind": {"type": "string", "enum": ["chamfer", "fillet"]},
+                "strategy": {"type": "string", "enum": ["split_on_refusal", "together_only"],
+                             "description": "Default split_on_refusal. together_only stops at the first refusal."},
+                "tolerance": {"type": "number",
+                              "description": "How near a point must be to an edge, in 'units'. Default 0.001 in."},
+                "feature_name": {"type": "string",
+                                 "description": "Timeline name; further features take ' 2', ' 3'."},
+                "units": UNITS_SCHEMA,
+                "dry_run": {"type": "boolean", "description": "Default false."},
+                "sets": {
+                    "type": "array",
+                    "description": "At least one. Each edge belongs to one set.",
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {
+                            "edges": {"type": "array", "items": ENTITY_REF_SCHEMA, "description": "Edge refs."},
+                            "points": {"type": "array", "items": NUMBERS_SCHEMA,
+                                       "description": "World [x, y, z] points on edges; needs 'body'."},
+                            "body": INDEXED_BODY_REF_SCHEMA,
+                            "size": {"type": "number", "description": "Distance or radius, above zero."},
+                            "size_expression": {"type": "string",
+                                                "description": "Instead of size; must carry a unit or parameter."},
+                            "size_two": {"type": "number", "description": "Chamfer only: the second distance."},
+                            "size_two_expression": {"type": "string", "description": "Instead of size_two."},
+                            "size_on_face": {**ENTITY_REF_SCHEMA, "description": "With size_two: where size lies."},
+                            "tangent_chain": {"type": "boolean",
+                                              "description": "Take edges tangent to these too. Default false."},
+                        },
+                    },
+                },
+            },
+            "required": ["kind", "sets"],
+        },
+    },
+    {
         "name": CONSTRUCTION_PLANE,
         "description": (
             "Make a construction plane at a stated place and report where it really is, normal sign included: "
@@ -1821,6 +1880,7 @@ def build_tool_handlers(
     compare_bodies,
     audit_design,
     combine_bodies,
+    edge_treatment,
     construction_plane,
     apply_thread,
 ):
@@ -1881,6 +1941,7 @@ def build_tool_handlers(
         COMPARE_BODIES: compare_bodies,
         AUDIT_DESIGN: audit_design,
         COMBINE_BODIES: combine_bodies,
+        EDGE_TREATMENT: edge_treatment,
         CONSTRUCTION_PLANE: construction_plane,
         APPLY_THREAD: apply_thread,
     }
