@@ -11,6 +11,10 @@ goes in. Other cylinders on the body do not matter, since a plate of holes is
 fine. ``modeled`` is required because the two differ by one flag and 9.8% of a
 rod, and the volume is measured across the add to prove which one happened.
 
+A thread resizes its cylinder to the thread's size, cosmetic or not: a 0.2 in hole
+reads 0.2015 after ``1/4-20 UNC`` 2B, the class minor. So a cosmetic thread can
+change the volume, by exactly that resize, which is reported and is not a defect.
+
 The API's spellings are not the dialog's. Sizes are decimals, gauge sizes carry
 the number in brackets (``0.19(#10)``) and ``1/4`` raises for the Unified family,
 yet ACME and the pipe families really are spelled ``1/4``. So ``normalize_size``
@@ -27,6 +31,7 @@ values, so it is testable with fakes. Fusion lengths are cm.
 
 import difflib
 import json
+import math
 import re
 import traceback
 
@@ -75,6 +80,10 @@ DIAMETER_TOLERANCE = 0.05
 _FRACTION_EPSILON = 1e-9
 # Kernel volumes drift on a large body, so a delta under this fraction of it is noise.
 VOLUME_NOISE_REL = 1e-6
+# Diameters are reported to five digits, so anything closer is the same size.
+RESIZE_MIN = 2e-5
+# A resize's volume is worked out from rounded values, and a neighboring chamfer moves with it.
+RESIZE_MATCH_REL = 0.05
 LOCATIONS = {"high": "HighEndThreadLocation", "low": "LowEndThreadLocation"}
 STALE_FACE = "the threaded face is gone after a modeled thread; find it again before naming it"
 
@@ -374,8 +383,30 @@ def diameter_problem(face_diameter, reference, internal, units):
     return None
 
 
-def volume_problem(modeled, volume_before, volume_after, faces_changed):
-    """Did the add do what ``modeled`` said? A small modeled thread on a big body may sit under the noise."""
+def resized_row(rec, after):
+    """``{"from", "to"}`` when the add changed the cylinder's diameter; None when it did not or cannot be read."""
+    if after is None or after.get("type") != "cylinder":
+        return None
+    start, end = rec["diameter"], after["diameter"]
+    return {"from": start, "to": end} if abs(end - start) > RESIZE_MIN else None
+
+
+def resize_volume(resized, length, concavity):
+    """The volume a resize alone changes, in its arguments' units; None when it cannot be worked out.
+
+    A wider bore loses material and a wider shaft gains it.
+    """
+    if resized is None or not length or concavity not in ("concave", "convex"):
+        return None
+    change = math.pi / 4.0 * (resized["to"] ** 2 - resized["from"] ** 2) * length
+    return -change if concavity == "concave" else change
+
+
+def volume_problem(modeled, volume_before, volume_after, faces_changed, resize_cm3=None):
+    """Did the add do what ``modeled`` said? A small modeled thread on a big body may sit under the noise.
+
+    A cosmetic thread may change the volume by *resize_cm3* and no more.
+    """
     if volume_before is None or volume_after is None:
         return "the body's volume could not be read, so nothing proves what the thread did"
     noise = max(VOLUME_ABS_TOLERANCE_CM3, VOLUME_NOISE_REL * abs(volume_before))
@@ -383,7 +414,10 @@ def volume_problem(modeled, volume_before, volume_after, faces_changed):
     if modeled and not moved and not faces_changed:
         return "a modeled thread changed nothing on the body"
     if not modeled and moved:
-        return "a cosmetic thread changed the body's volume"
+        delta = volume_after - volume_before
+        if resize_cm3 is not None and abs(delta - resize_cm3) <= max(noise, RESIZE_MATCH_REL * abs(resize_cm3)):
+            return None
+        return "a cosmetic thread changed the body's volume by more than resizing its face explains"
     return None
 
 
@@ -466,8 +500,24 @@ def _check_lengths(session, opts, problems):
             problems.append(str(exc))
 
 
-def _finish_apply(design, outcome, job):
-    """Measure across the add; *job* holds ``entry``, ``before``, ``token``, ``opts`` and the report rows."""
+def _face_after(session, opts, entry):
+    """The face's record now, from a fresh read; None when it is gone, as after a modeled thread."""
+    try:
+        scene = session.fresh()
+        found = resolve(scene, opts["face"])
+        return None if found.refusal else scene.describe(found.entity, opts["units"], entry)
+    except Exception as exc:
+        log(f"[MCP] apply_thread could not read the face back: {exc}")
+        return None
+
+
+def _resize_cm3(rec, resized, units):
+    change = resize_volume(resized, rec.get("length_along_axis"), rec.get("concavity"))
+    return None if change is None else to_cm(change, units, 3)
+
+
+def _finish_apply(design, session, outcome, job):
+    """Measure across the add; *job* holds ``entry``, ``record``, ``before``, ``token``, ``opts`` and report rows."""
     feature, health, opts, key = outcome["feature"], outcome["health"], job["opts"], job["entry"]["key"]
     before, units = job["before"], opts["units"]
     after = fo.snapshot(design)
@@ -476,8 +526,11 @@ def _finish_apply(design, outcome, job):
     volume_before, volume_after = (None if rec is None else rec["volume"] for rec in (old, new))
     faces_changed = old is not None and new is not None and old["faces"] != new["faces"]
 
+    rec = job["record"]
+    resized = resized_row(rec, _face_after(session, opts, job["entry"]))
     problems = []
-    problem = volume_problem(opts["modeled"], volume_before, volume_after, faces_changed)
+    problem = volume_problem(opts["modeled"], volume_before, volume_after, faces_changed,
+                             _resize_cm3(rec, resized, units))
     if problem:
         problems.append(problem)
     lost = fo.lost_outside(before, after, [key])
@@ -485,13 +538,16 @@ def _finish_apply(design, outcome, job):
         problems.append(f"bodies nobody named lost volume or went: {lost}")
     delta = None if None in (volume_before, volume_after) else volume_after - volume_before
     warnings = list(job["warnings"]) + ([STALE_FACE] if opts["modeled"] else [])
+    if resized:
+        warnings.append(f"the thread resized the face from {resized['from']} to {resized['to']} {units}, "
+                        "as Fusion does; volume_delta includes it")
     others = [item["ref"] for item in changes["touched"] if item["role"] == "other_instance"]
     if others:
         warnings.append(f"other instances of this component changed with it: {others}")
     return fo.envelope("suspect" if problems else "built", units, feature=fo.feature_row(feature, health),
                        bodies=changes, baseline_token=job["token"], resolved=job["resolved"],
                        warnings=problems + warnings, action="apply", thread=job["thread"], face=job["face"],
-                       volume_delta=geometry.to_units(delta, units, 3, _DIGITS + 1))
+                       volume_delta=geometry.to_units(delta, units, 3, _DIGITS + 1), resized=resized)
 
 
 def run_apply(design, document, library, info_of, opts, session):
@@ -529,10 +585,10 @@ def run_apply(design, document, library, info_of, opts, session):
     if outcome["status"] == "refused":
         return fo.refused(units, [outcome["refusal"]], resolved=resolved, warnings=warnings, baseline_token=token,
                           action="apply", **shown)
-    job = {"entry": entry, "before": before, "token": token, "opts": opts, "resolved": resolved, "warnings": warnings,
-           **shown}
+    job = {"entry": entry, "record": rec, "before": before, "token": token, "opts": opts, "resolved": resolved,
+           "warnings": warnings, **shown}
     try:
-        return _finish_apply(design, outcome, job)
+        return _finish_apply(design, session, outcome, job)
     except Exception as exc:
         log(f"[MCP] apply_thread post-check failed: {exc}")
         return fo.envelope("suspect", units, feature=fo.feature_row(outcome["feature"], outcome["health"]),
@@ -645,6 +701,10 @@ class FusionThread(FusionScene):
     def __init__(self, design):
         super().__init__(design)
         self._units = design.unitsManager
+
+    def fresh(self):
+        """A session with nothing cached, since wrappers do not outlive the add."""
+        return FusionThread(self._design)
 
     def describe(self, face, units, entry):
         return describe_face(face, units, entry)

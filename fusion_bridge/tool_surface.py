@@ -1826,9 +1826,11 @@ TOOL_DEFINITIONS = [
             "much, or fail); 'internal' contradicting concavity; a face more than 5% from the class's major "
             "(external) or minor (internal) diameter. thread_class defaults to 2A/2B or 6g/6H; class_defaulted says "
             "so. A partial thread takes full_length false, length, and optionally offset and measured_from (low or "
-            "high along face.axis_world, default high). Volume is measured across the add: modeled with no change or "
-            "cosmetic with a change is 'suspect'. dry_run (default false) checks everything and adds nothing. Result "
-            "is the write envelope with thread, face and volume_delta; isError is 'not ok'.\n"
+            "high along face.axis_world, default high). A thread resizes its face to the thread's size, cosmetic or "
+            "not: a 0.2 in hole reads 0.2015 after 1/4-20 UNC 2B. 'resized' gives from and to, with a warning. Volume "
+            "is measured across the add: modeled with no change, or cosmetic with a change the resize does not "
+            "explain, is 'suspect'. dry_run (default false) checks everything and adds nothing. Result is the write "
+            "envelope with thread, face, volume_delta and resized; isError is 'not ok'.\n"
             "Unknown names are refused with near_matches; tapered families are refused by name."
         ),
         "inputSchema": {
