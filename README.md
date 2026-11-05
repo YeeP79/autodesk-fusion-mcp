@@ -310,13 +310,15 @@ New tools must use `fusion_bridge/common/` instead of private copies of its help
 | `args.py` | Typed argument checks, unknown-key rejection, `error_pair` |
 | `api.py` | `safe`, `present`, `attempt` reads; `items` (skips what it cannot read) and `strict_items` (raises); both handle count/item collections and Fusion vectors |
 | `geometry.py` | Vector math, unit conversion |
-| `bodies.py` | Body enumeration, `bbox`, `native` |
-| `timeline.py` | Timeline health |
+| `bodies.py` | Body enumeration, `bbox`, `native`, BodyRefs and `resolve_targets`, face records, snapshots, diffs and the baseline store |
+| `timeline.py` | Timeline health, `read_rows`, `find_row`, marker and broken-feature refusals, the rolled-back window flag |
+| `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
+| `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `add_feature`, `snapshot`, `baseline`, `undo`, `temp_copy`, `body_changes`, `envelope` |
 | `documents.py` | Open documents, instances of a file, the event pump |
 | `cloud.py` | Cloud paths, projects, folders, files, the project tree walk |
 | `app_log.py` | Locating and scanning Fusion's log, the server's reason for a failed cloud write |
 
-`results`, `args`, `api`, `geometry`, `cloud` and `app_log` must not import `adsk` or `dispatch` (`tests/test_common.py` checks this). Tests import these modules as `from fusion_bridge.common import cloud`.
+`results`, `args`, `api`, `geometry`, `cloud` and `app_log` must not import `adsk` or `dispatch` (`tests/test_common.py` checks this). `entity_refs` imports `adsk` only inside `FusionScene`, so its filters load anywhere. Tests import these modules as `from fusion_bridge.common import cloud`.
 
 ## Testing
 
