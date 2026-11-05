@@ -207,6 +207,59 @@ class DocumentStatusTests(unittest.TestCase):
             self.assertTrue(documents.document_status({})["isError"])
 
 
+class DuplicateInstanceTests(unittest.TestCase):
+    def knuckle(self, version, active=False, modified=False):
+        df = data_file("f-knuckle", "Knuckle", FRONT, read_only=False)
+        df.versionNumber = version
+        return FakeDoc("Knuckle v%d" % version, df, active=active, modified=modified)
+
+    def status(self, docs):
+        with patch.object(documents, "get_app", return_value=FakeApp(docs)):
+            return body(documents.document_status({}))
+
+    def test_single_instances_are_not_flagged(self):
+        result = self.status([self.knuckle(12, active=True), FakeDoc("Untitled"), FakeDoc("Untitled")])
+        self.assertEqual(result["warnings"], [])
+        for info in result["documents"]:
+            self.assertNotIn("duplicate_instances", info)
+
+    def test_two_instances_flagged_with_versions(self):
+        result = self.status([self.knuckle(12, active=True), self.knuckle(11, modified=True)])
+        for info in result["documents"]:
+            self.assertEqual(info["duplicate_instances"], 2)
+            self.assertEqual(info["loaded_versions"], [12, 11])
+        self.assertEqual(len(result["warnings"]), 1)
+        warning = result["warnings"][0]
+        self.assertIn("2 open instances of 'Knuckle'", warning)
+        self.assertIn("f-knuckle", warning)
+        self.assertIn("[12, 11]", warning)
+        self.assertIn("silently do nothing", warning)
+        self.assertIn("without saving", warning)
+        self.assertNotIn("link it", warning)
+
+    def test_linked_parent_named(self):
+        knuckles = [self.knuckle(12), self.knuckle(11), self.knuckle(12)]
+        parent = FakeDoc("Moon Patrol v4", data_file("f-moon", "Moon Patrol", ROOT, read_only=False),
+                         active=True, refs=[knuckles[0].dataFile])
+        result = self.status(knuckles + [parent])
+        self.assertEqual(result["documents"][0]["duplicate_instances"], 3)
+        self.assertNotIn("duplicate_instances", result["documents"][3])
+        self.assertEqual(len(result["warnings"]), 1)
+        self.assertIn("3 open instances", result["warnings"][0])
+        self.assertIn("(Moon Patrol v4)", result["warnings"][0])
+
+    def test_duplicate_warning_follows_active_warnings(self):
+        result = self.status([self.knuckle(12, active=True, modified=True), self.knuckle(11)])
+        self.assertEqual(result["warnings"][0], documents.UNSAVED_WARNING)
+        self.assertIn("open instances", result["warnings"][1])
+
+    def test_flag_duplicates_ignores_unsaved_and_missing_ids(self):
+        infos = [{"name": "A", "data_file": None}, {"name": "B", "data_file": {"id": None}},
+                 {"name": "C", "data_file": {"id": None}}]
+        self.assertEqual(documents.flag_duplicates(infos), [])
+        self.assertTrue(all("duplicate_instances" not in info for info in infos))
+
+
 class ActivateDocumentTests(unittest.TestCase):
     def setUp(self):
         self.a = FakeDoc("Frame v7", data_file("f-1", "Frame", CHASSIS), active=True)
@@ -251,6 +304,12 @@ class ActivateDocumentTests(unittest.TestCase):
         candidates = body(result)["candidates"]
         self.assertEqual([c["folder_path"] for c in candidates], ["/Chassis/Front", "/Chassis"])
         self.assertEqual(self.b.activated + self.c.activated, 0)
+
+    def test_duplicate_id_points_at_duplicate_warning(self):
+        self.c.dataFile = self.b.dataFile
+        result = self.activate(data_file_id="f-2")
+        self.assertTrue(result["isError"])
+        self.assertIn("duplicate instances", body(result)["error"])
 
     def test_no_match_lists_open_documents(self):
         result = self.activate(name="Nope")
