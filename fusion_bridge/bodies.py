@@ -18,6 +18,7 @@ import adsk.fusion
 
 from .common.api import safe, strict_items
 from .common.args import bool_arg, error_pair, int_arg, require_object, text_arg
+from .common.bodies import bbox, is_hidden, iter_body_entries, native
 from .common.geometry import DIGITS, UNIT_FACTORS, dot, sub, to_units, unit, unit_labels, xyz
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
@@ -28,7 +29,6 @@ MAX_RESULTS_LIMIT = 1000
 DEFAULT_MAX_FACES = 25
 MAX_FACES_LIMIT = 500
 FEATURE_SCAN_LIMIT = 5000
-ROOT_PATH = "root"
 
 # adsk.core.SurfaceTypes values (Plane=0 ... NURBS=7).
 SURFACE_TYPES = {
@@ -107,11 +107,6 @@ def validate_describe_args(arguments):
         "max_faces": int_arg(arguments, "max_faces", DEFAULT_MAX_FACES, 1, MAX_FACES_LIMIT),
         "body_index": int_arg(arguments, "body_index", 0, 0, 1_000_000) if "body_index" in arguments else None,
     }
-
-
-def is_hidden(entry):
-    """Hidden if the body is hidden or its owning occurrence is."""
-    return entry["visible"] is False or entry["occurrence_visible"] is False
 
 
 def matches_filters(entry, opts):
@@ -217,31 +212,9 @@ def sort_and_cap(groups, max_faces):
 # -- Fusion access (duck-typed so fakes can drive it) ---------------------------
 
 
-def iter_body_entries(root):
-    """Yield one entry per B-Rep body: root bodies, then every occurrence's proxies."""
-    containers = [(None, root)]
-    containers.extend((occ, occ) for occ in strict_items(safe(root, "allOccurrences")))
-    for occ, owner in containers:
-        bodies = safe(owner, "bRepBodies")
-        component = safe(occ, "component") if occ is not None else root
-        for index, body in enumerate(strict_items(bodies)):
-            yield {
-                "occurrence_path": safe(occ, "fullPathName") if occ is not None else ROOT_PATH,
-                "component": safe(component, "name"),
-                "linked": bool(safe(occ, "isReferencedComponent", False)) if occ is not None else False,
-                "body": safe(body, "name"),
-                "index": index,
-                "visible": safe(body, "isVisible"),
-                "occurrence_visible": safe(occ, "isVisible") if occ is not None else None,
-                "_body": body,
-            }
-
-
 def _bbox(entity, units):
-    bb = safe(entity, "boundingBox")
-    if bb is None:
-        return None, None
-    return point(xyz(bb.minPoint), units), point(xyz(bb.maxPoint), units)
+    box = bbox(entity)
+    return (None, None) if box is None else (point(box[0], units), point(box[1], units))
 
 
 def body_row(entry, units):
@@ -280,10 +253,6 @@ def list_body_rows(root, opts):
         result["note"] = (f"{hidden} hidden bodies excluded (hidden bodies are often stale "
                           "reference geometry); pass include_hidden=true to see them.")
     return result
-
-
-def _native(entity):
-    return safe(entity, "nativeObject") or entity
 
 
 def _outward_normal(face):
@@ -351,10 +320,10 @@ def _object_type(obj):
 def _face_record(face, kind, units):
     """World-frame record for one analytic face (geometry from the proxy)."""
     g = face.geometry
-    native = _native(face)
+    native_face = native(face)
     face_area = safe(face, "area", 0.0) or 0.0
     reversed_ = safe(face, "isParamReversed")
-    rec = {"area": area(face_area, units), "is_param_reversed": reversed_, "_temp_id": safe(native, "tempId")}
+    rec = {"area": area(face_area, units), "is_param_reversed": reversed_, "_temp_id": safe(native_face, "tempId")}
     if kind == "plane":
         p, n = _outward_normal(face)
         if n is None:
@@ -367,9 +336,9 @@ def _face_record(face, kind, units):
         r = g.radius
         rec.update({"diameter": length(2 * r, units), "radius": length(r, units),
                     "axis_origin": point(xyz(g.origin), units), "axis_direction": direction(xyz(g.axis))})
-        ng = native.geometry
+        ng = native_face.geometry
         n_origin, n_axis = xyz(ng.origin), xyz(ng.axis)
-        p, n = _outward_normal(native)
+        p, n = _outward_normal(native_face)
         concavity = cylinder_concavity(p, n, n_origin, n_axis) if n is not None else None
         basis = "evaluator"
         if reversed_ is not None:
@@ -381,9 +350,9 @@ def _face_record(face, kind, units):
                 basis = "evaluator (disagrees with isParamReversed)"
         rec["concavity"] = concavity
         rec["concavity_basis"] = basis if concavity else None
-        axial = axial_extent(_vertex_points(native), n_origin, n_axis)
+        axial = axial_extent(_vertex_points(native_face), n_origin, n_axis)
         rec["length_along_axis"] = length(axial, units) if axial > 0 else None
-        rec["sweep_deg"] = sweep_degrees(safe(native, "area", face_area) or face_area, ng.radius, axial)
+        rec["sweep_deg"] = sweep_degrees(safe(native_face, "area", face_area) or face_area, ng.radius, axial)
     elif kind == "cone":
         rec.update({"radius": length(g.radius, units), "half_angle_deg": round(math.degrees(g.halfAngle), 4),
                     "axis_origin": point(xyz(g.origin), units), "axis_direction": direction(xyz(g.axis))})
@@ -430,7 +399,7 @@ def describe(entry, units, max_faces):
 
     # Creating feature, looked up only for the reported cylinders and tori.
     wanted = {r["_temp_id"] for g in ("cylinders", "tori") for r in groups[g] if r["_temp_id"] is not None}
-    native_body = _native(body)
+    native_body = native(body)
     creators, feature_note = feature_map(safe(native_body, "parentComponent"), wanted, native_body)
     for group, records in groups.items():
         for r in records:

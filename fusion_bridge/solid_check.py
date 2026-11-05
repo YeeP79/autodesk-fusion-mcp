@@ -24,11 +24,11 @@ import adsk.fusion
 from .common.api import safe, strict_items
 from .common.args import is_finite_number, is_int
 from .common import geometry
-from .common.geometry import UNIT_FACTORS, to_cm, unit_labels, xyz
+from .common.bodies import ROOT_PATH, bbox, iter_body_entries
+from .common.geometry import UNIT_FACTORS, to_cm, unit_labels
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
-ROOT_PATH = "root"
 _DIGITS = 6
 
 CHECKS = ["validity", "slivers", "lumps", "interference", "volume_change"]
@@ -486,31 +486,6 @@ def summarize(problems, max_details):
 # -- Fusion layer ---------------------------------------------------------------
 
 
-def iter_body_entries(root):
-    """One entry per B-Rep body: root bodies, then every occurrence's proxies."""
-    containers = [(None, root)]
-    containers.extend((occ, occ) for occ in strict_items(safe(root, "allOccurrences")))
-    for occ, owner in containers:
-        component = safe(occ, "component") if occ is not None else root
-        for index, body in enumerate(strict_items(safe(owner, "bRepBodies"))):
-            yield {
-                "occurrence_path": safe(occ, "fullPathName") if occ is not None else ROOT_PATH,
-                "component": safe(component, "name"),
-                "body": safe(body, "name"),
-                "index": index,
-                "visible": safe(body, "isVisible"),
-                "occurrence_visible": safe(occ, "isVisible") if occ is not None else None,
-                "_body": body,
-            }
-
-
-def _bbox(body):
-    bb = safe(body, "boundingBox")
-    if bb is None:
-        return None
-    return (xyz(bb.minPoint), xyz(bb.maxPoint))
-
-
 def measure_summary(entry):
     """Cheap metrics used by snapshots and the lump/validity checks."""
     body = entry["_body"]
@@ -522,7 +497,7 @@ def measure_summary(entry):
         "shells": safe(safe(body, "shells"), "count"),
         "face_count": safe(safe(body, "faces"), "count"),
         "edge_count": safe(safe(body, "edges"), "count"),
-        "bbox": _bbox(body),
+        "bbox": bbox(body),
     }
 
 

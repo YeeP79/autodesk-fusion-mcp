@@ -23,14 +23,14 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-from .common.api import safe, strict_items
+from .common.api import safe
 from .common.args import is_finite_number, is_int
+from .common.bodies import ROOT_PATH, bbox, is_hidden, iter_body_entries
 from .common.geometry import CM_PER_UNIT, along, cross, dot, from_cm, scaled, unit, xyz
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
 ACTIONS = ("point", "ray", "grid", "radial", "axial")
-ROOT_PATH = "root"
 
 MAX_SAMPLES = 2000
 MAX_HITS_PER_RAY = 200
@@ -101,13 +101,13 @@ def grid_points(origin, u, v, rows, columns):
             yield row, column, tuple(o + a * fu + b * fv for o, a, b in zip(origin, u, v))
 
 
-def bbox_corners(bbox):
-    lo, hi = bbox
+def bbox_corners(box):
+    lo, hi = box
     return [(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
 
 
-def in_bbox(bbox, p, margin=BBOX_MARGIN_CM):
-    lo, hi = bbox
+def in_bbox(box, p, margin=BBOX_MARGIN_CM):
+    lo, hi = box
     return all(a - margin <= c <= b + margin for a, b, c in zip(lo, hi, p))
 
 
@@ -633,28 +633,19 @@ def sample(opts, targets, probe, budget):
 # -- Fusion layer --------------------------------------------------------------
 
 
-def _bbox(body):
-    box = safe(body, "boundingBox")
-    return None if box is None else (xyz(box.minPoint), xyz(box.maxPoint))
-
-
 def body_entries(root):
     """Every body in the design, read through occurrence proxies (world coordinates)."""
-    containers = [(None, root)]
-    containers.extend((occ, occ) for occ in strict_items(safe(root, "allOccurrences")))
-    for occ, owner in containers:
-        path = safe(occ, "fullPathName") if occ is not None else ROOT_PATH
-        occurrence_visible = safe(occ, "isVisible", True) if occ is not None else True
-        for index, body in enumerate(strict_items(safe(owner, "bRepBodies"))):
-            yield {
-                "occurrence_path": path,
-                "body": safe(body, "name"),
-                "index": index,
-                "visible": bool(safe(body, "isVisible", True)) and bool(occurrence_visible),
-                "solid": bool(safe(body, "isSolid", False)),
-                "bbox": _bbox(body),
-                "_body": body,
-            }
+    for entry in iter_body_entries(root):
+        body = entry["_body"]
+        yield {
+            "occurrence_path": entry["occurrence_path"],
+            "body": entry["body"],
+            "index": entry["index"],
+            "visible": not is_hidden(entry),
+            "solid": bool(safe(body, "isSolid", False)),
+            "bbox": bbox(body),
+            "_body": body,
+        }
 
 
 class FusionProbe:

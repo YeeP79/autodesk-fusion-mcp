@@ -50,6 +50,7 @@ import adsk.fusion
 
 from .common.api import items, safe
 from .common.args import bool_arg, error_pair, require_object, text_arg
+from .common.bodies import native
 from .common.results import error_result, tool_result
 from .common.timeline import health_of
 from .dispatch import get_app, log
@@ -98,11 +99,6 @@ def short_type(obj):
     if not isinstance(object_type, str) or not object_type:
         return type(obj).__name__ if obj is not None else "None"
     return object_type.rsplit("::", 1)[-1]
-
-
-def _native(obj):
-    native = safe(obj, "nativeObject")
-    return native if native is not None else obj
 
 
 def _read(obj, name, errors):
@@ -393,7 +389,7 @@ class EntityKeys:
         self.labels = {}
 
     def key(self, obj, kind):
-        obj = _native(obj)
+        obj = native(obj)
         token = safe(obj, "entityToken")
         if token in self._by_token:
             return self._by_token[token]

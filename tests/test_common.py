@@ -8,7 +8,7 @@ from datetime import datetime
 from unittest import mock
 
 import _fusion_test_bootstrap  # noqa: F401
-from fusion_bridge.common import api, app_log, args, geometry, results, timeline
+from fusion_bridge.common import api, app_log, args, bodies, geometry, results, timeline
 
 
 class ResultsTests(unittest.TestCase):
@@ -452,6 +452,67 @@ class TimelineTests(unittest.TestCase):
         with self.enum():
             self.assertEqual(timeline.health_counts(design),
                              ({"healthy": 1, "warning": 2, "error": 1}, ["c"]))
+
+
+class Fake:
+    """An object with the given attributes."""
+
+    def __init__(self, **attributes):
+        self.__dict__.update(attributes)
+
+
+def fake_body(name, visible=True):
+    return Fake(name=name, isVisible=visible)
+
+
+class BodyEntryTests(unittest.TestCase):
+    def tree(self):
+        occurrence = Fake(fullPathName="Arm:1", isVisible=False, isReferencedComponent=True,
+                          component=Fake(name="Arm"), bRepBodies=Indexed([fake_body("A"), fake_body("B", False)]))
+        return Fake(name="Root", bRepBodies=Indexed([fake_body("R")]), allOccurrences=Indexed([occurrence]))
+
+    def test_root_bodies_then_occurrences(self):
+        entries = list(bodies.iter_body_entries(self.tree()))
+        self.assertEqual([(e["occurrence_path"], e["body"], e["index"]) for e in entries],
+                         [("root", "R", 0), ("Arm:1", "A", 0), ("Arm:1", "B", 1)])
+
+    def test_root_entry(self):
+        entry = next(bodies.iter_body_entries(self.tree()))
+        self.assertEqual((entry["component"], entry["linked"], entry["occurrence_visible"]), ("Root", False, None))
+
+    def test_occurrence_entry(self):
+        entry = list(bodies.iter_body_entries(self.tree()))[1]
+        self.assertEqual((entry["component"], entry["linked"], entry["occurrence_visible"]), ("Arm", True, False))
+
+    def test_design_with_nothing_readable(self):
+        self.assertEqual(list(bodies.iter_body_entries(Raises())), [])
+
+    def test_is_hidden(self):
+        self.assertFalse(bodies.is_hidden({"visible": True, "occurrence_visible": None}))
+        self.assertFalse(bodies.is_hidden({"visible": None, "occurrence_visible": True}))
+        self.assertTrue(bodies.is_hidden({"visible": False, "occurrence_visible": True}))
+        self.assertTrue(bodies.is_hidden({"visible": True, "occurrence_visible": False}))
+
+    def test_bbox(self):
+        low, high = Fake(x=0, y=1, z=2), Fake(x=3, y=4, z=5)
+        self.assertEqual(bodies.bbox(Fake(boundingBox=Fake(minPoint=low, maxPoint=high))), ((0, 1, 2), (3, 4, 5)))
+        self.assertIsNone(bodies.bbox(Fake()))
+
+    def test_native(self):
+        target = Fake()
+        self.assertIs(bodies.native(Fake(nativeObject=target)), target)
+        plain = Fake(nativeObject=None)
+        self.assertIs(bodies.native(plain), plain)
+        unreadable = Raises()
+        self.assertIs(bodies.native(unreadable), unreadable)
+
+    def test_native_keeps_a_falsy_object(self):
+        class Falsy:
+            def __bool__(self):
+                return False
+
+        target = Falsy()
+        self.assertIs(bodies.native(Fake(nativeObject=target)), target)
 
 
 if __name__ == "__main__":
