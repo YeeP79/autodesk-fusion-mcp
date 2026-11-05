@@ -62,6 +62,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "timeline_insert",
         "compare_files",
         "compare_bodies",
+        "extrude_profile",
         "apply_thread",
     }
 

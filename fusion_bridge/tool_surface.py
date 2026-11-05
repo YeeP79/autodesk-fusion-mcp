@@ -51,6 +51,7 @@ CLOSE_DOCUMENT = "close_document"
 UPDATE_REFERENCES = "update_references"
 PROBE_GEOMETRY = "probe_geometry"
 FIND_ENTITIES = "find_entities"
+EXTRUDE_PROFILE = "extrude_profile"
 TIMELINE_INSERT = "timeline_insert"
 COMPARE_FILES = "compare_files"
 COMPARE_BODIES = "compare_bodies"
@@ -1420,6 +1421,94 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": EXTRUDE_PROFILE,
+        "description": (
+            "Extrude a sketch profile as a new body, or into named bodies by join, cut or intersect, and report "
+            "what every body in the design did. All points and vectors are world coordinates in 'units' (default "
+            "in). cut, join and intersect need target_bodies: Fusion's implicit choice takes every body in the "
+            "path, other components' included, so it is refused, and new_body refuses them. Name the sketch by "
+            "sketch_token (sketch_profile's sketch.entity_token) or sketch_name with component; a sketch in a "
+            "sub-component with several instances also needs occurrence_path. The feature lands in the sketch's "
+            "component. Profile tokens are not accepted: profile_select picks only (the default; refused when "
+            "there are several, listing them), containing_point, containing_points, most_loops or largest. Each "
+            "dimension is a number or an *_expression with its own unit ('wall*2', '1.5 in'), never both; a bare "
+            "'2' is refused. A one-sided extent (distance, to_entity, through_all without both_sides) needs "
+            "direction, within 1 degree of the sketch normal either way, or side relative to that normal. "
+            "symmetric takes neither, with full_length default true: distance is the whole length. two_sides may "
+            "take either to say where distance goes; side_two_distance goes the other way. to_entity stops at "
+            "'to' (EntityRef of a face or vertex, or a token of a construction plane) or 'to_body'; it refuses "
+            "rather than fall back to a distance. Taper is not for two_sides or through_all; its sign is Fusion's "
+            "own, so read the result. A blind distance cut ending within 0.001 in of a parallel target face is "
+            "refused: it leaves a floor. dry_run (default false) adds nothing and returns status planned with "
+            "plan {would_intersect, in_path_not_targeted, expected_volume, side, abutment, plan_basis, "
+            "join_route}; plan_basis is participants when Fusion listed the bodies, else bbox, a box check. "
+            "After the add, a body outside the targets that lost volume, vanished or grew is collateral: with "
+            "on_collateral undo (default) the feature is deleted, status undone, 'collateral' names them; keep "
+            "leaves it, status suspect. Other instances of a target's component are not collateral but warn. A "
+            "join that reaches past its targets is undone and redone as a new body plus a Combine, and join_route "
+            "says which ran. A build on the wrong side is deleted and rebuilt once on the other. Result: status "
+            "(built, planned, suspect, undone, refused; ok only for built and planned), feature, bodies {touched "
+            "[{ref, role, volume_before, volume_after, delta, percent, faces_before, faces_after}], created, "
+            "consumed, outside_target}, baseline_token for check_solids, profile {count, area, loop_count, "
+            "plane_normal_world}, extrude {side_used, direction_world, requested_depth, measured_depth, "
+            "expected_volume, volume_check, rebuilt_other_side}, faces {start, end, side} as EntityRefs, "
+            "targets_unchanged, in_path_not_targeted, resolved, warnings; refusals when refused."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "sketch_token": {"type": "string", "description": "Entity token of the sketch."},
+                "sketch_name": {"type": "string", "description": "Sketch name, in 'component'."},
+                "component": {"type": "string", "description": "With sketch_name. Default root."},
+                "occurrence_path": {"type": "string",
+                                    "description": "The instance a sub-component's sketch is placed by."},
+                "profile_select": {"type": "string",
+                                   "enum": ["only", "containing_point", "containing_points", "most_loops", "largest"],
+                                   "description": "Default only."},
+                "containing_point": {**NUMBERS_SCHEMA, "description": "World [x, y, z] in the profile."},
+                "containing_points": {"type": "array", "items": NUMBERS_SCHEMA,
+                                      "description": "World points, one per profile to take."},
+                "operation": {"type": "string", "enum": ["new_body", "join", "cut", "intersect"]},
+                "target_bodies": {"type": "array", "items": INDEXED_BODY_REF_SCHEMA,
+                                  "description": "Required for join, cut, intersect; refused for new_body."},
+                "extent": {
+                    "type": "object", "additionalProperties": False, "required": ["type"],
+                    "properties": {
+                        "type": {"type": "string",
+                                 "enum": ["distance", "symmetric", "two_sides", "through_all", "to_entity"]},
+                        "distance": {"type": "number", "description": "Positive; direction or side says which way."},
+                        "distance_expression": {"type": "string"},
+                        "side_two_distance": {"type": "number", "description": "two_sides."},
+                        "side_two_distance_expression": {"type": "string"},
+                        "full_length": {"type": "boolean",
+                                        "description": "symmetric: distance is the whole length. Default true."},
+                        "both_sides": {"type": "boolean", "description": "through_all, both ways. Default false."},
+                        "to": {**ENTITY_REF_SCHEMA, "description": "to_entity: a face, vertex or construction plane."},
+                        "to_body": {**INDEXED_BODY_REF_SCHEMA, "description": "to_entity: the near side of a body."},
+                        "to_offset": {"type": "number", "description": "to_entity: offset from it, either sign."},
+                        "to_offset_expression": {"type": "string"},
+                        "chained": {"type": "boolean",
+                                    "description": "to_entity: use connected faces, not the extended face. "
+                                                   "Default false."},
+                    },
+                },
+                "direction": {**NUMBERS_SCHEMA, "description": "World [x, y, z] along the sketch normal."},
+                "side": {"type": "string", "enum": ["positive", "negative"],
+                         "description": "Relative to the sketch normal."},
+                "taper_deg": {"type": "number"},
+                "taper_expression": {"type": "string"},
+                "start_offset": {"type": "number", "description": "Start plane offset along the sketch normal."},
+                "start_offset_expression": {"type": "string"},
+                "body_name": {"type": "string", "description": "new_body: the new body's name."},
+                "feature_name": {"type": "string", "description": "Timeline name."},
+                "on_collateral": {"type": "string", "enum": ["undo", "keep"], "description": "Default undo."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "dry_run": {"type": "boolean", "description": "Plan only, add nothing (default false)."},
+            },
+            "required": ["operation", "extent"],
+        },
+    },
+    {
         "name": TIMELINE_INSERT,
         "description": (
             "Run Python with the timeline marker rolled back before a named item, then restore it, so new "
@@ -1576,6 +1665,7 @@ def build_tool_handlers(
     update_references,
     probe_geometry,
     find_entities,
+    extrude_profile,
     timeline_insert,
     compare_files,
     compare_bodies,
@@ -1632,6 +1722,7 @@ def build_tool_handlers(
         UPDATE_REFERENCES: update_references,
         PROBE_GEOMETRY: probe_geometry,
         FIND_ENTITIES: find_entities,
+        EXTRUDE_PROFILE: extrude_profile,
         TIMELINE_INSERT: timeline_insert,
         COMPARE_FILES: compare_files,
         COMPARE_BODIES: compare_bodies,

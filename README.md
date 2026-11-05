@@ -103,6 +103,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `update_references` | List a document's references with loaded and latest versions; optionally get the latest and verify |
 | `probe_geometry` | Read-only sampling in world coordinates: point containment, ray hits, grids, and solid intervals along or around an axis |
 | `find_entities` | Find faces and edges by type, direction, size, position, feature or convexity; returns EntityRefs every build tool accepts |
+| `extrude_profile` | Extrude a sketch profile as a new body, or join, cut or intersect into named bodies; refuses Fusion's implicit all-bodies behavior, measures every body before and after, undoes a feature that reached outside its targets, and returns the new faces as EntityRefs |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |
@@ -313,10 +314,10 @@ New tools must use `fusion_bridge/common/` instead of private copies of its help
 | `args.py` | Typed argument checks, unknown-key rejection, `error_pair` |
 | `api.py` | `safe`, `present`, `attempt` reads; `items` (skips what it cannot read) and `strict_items` (raises); both handle count/item collections and Fusion vectors |
 | `geometry.py` | Vector math, unit conversion |
-| `bodies.py` | Body enumeration, `find_occurrence`, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy`, face records, snapshots, diffs and the baseline store |
+| `bodies.py` | Body enumeration, `find_occurrence`, `occurrence_frame`, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy`, face records, snapshots, diffs and the baseline store |
 | `timeline.py` | Timeline health, `read_rows`, `find_row`, marker and broken-feature refusals, the rolled-back window flag |
-| `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
-| `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `add_feature`, `snapshot`, `baseline`, `undo`, `body_changes`, `envelope` |
+| `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `in_context`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
+| `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `add_feature`, `snapshot`, `baseline`, `undo`, `body_changes`, `lost_outside`, `grew_outside`, `envelope` |
 | `documents.py` | Open documents, instances of a file, the event pump |
 | `cloud.py` | Cloud paths, projects, folders, files, the project tree walk |
 | `app_log.py` | Locating and scanning Fusion's log, the server's reason for a failed cloud write |
