@@ -52,6 +52,7 @@ UPDATE_REFERENCES = "update_references"
 PROBE_GEOMETRY = "probe_geometry"
 TIMELINE_INSERT = "timeline_insert"
 COMPARE_FILES = "compare_files"
+COMPARE_BODIES = "compare_bodies"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -104,6 +105,13 @@ BODY_REF_SCHEMA = {
     "properties": {"occurrence_path": {"type": "string", "description": "Occurrence fullPathName, or 'root'."},
                    "body_name": {"type": "string"}},
     "required": ["occurrence_path", "body_name"], "additionalProperties": False,
+}
+
+INDEXED_BODY_REF_SCHEMA = {
+    **BODY_REF_SCHEMA,
+    "properties": {**BODY_REF_SCHEMA["properties"],
+                   "body_index": {"type": "integer", "minimum": 0,
+                                  "description": "Index within the occurrence; required when names repeat."}},
 }
 
 _COORD_SCHEMA = {"type": "array", "items": {"type": "number"},
@@ -1313,6 +1321,37 @@ TOOL_DEFINITIONS = [
             "required": ["file_a", "file_b"],
         },
     },
+    {
+        "name": COMPARE_BODIES,
+        "description": (
+            "Are two bodies of the active design the same solid, and where do they differ? Read-only: three "
+            "booleans (overlap, a-b, b-a) on temporary copies, nothing enters the timeline. Linked and hidden "
+            "bodies are allowed; surface bodies are refused. verdict 'same' needs the symmetric difference within "
+            "volume_tolerance and the box shift within length_tolerance; equal volume alone proves nothing. Lumps "
+            "of each difference say where. Failed or inconsistent booleans fall back to a containment grid "
+            "(method 'sampled', error bar in warnings, 'same' only if the whole bar fits the tolerance); when "
+            "neither can be trusted the verdict is 'unknown', never 'same'. Volumes in the caller's units; "
+            "b's bbox is reported at its translated position."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "a": {**INDEXED_BODY_REF_SCHEMA, "description": "First body."},
+                "b": {**INDEXED_BODY_REF_SCHEMA, "description": "Second body; must differ from a."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "volume_tolerance": {"type": "number", "minimum": 0,
+                                     "description": "In units^3. Default the equivalent of 0.0001 in^3."},
+                "length_tolerance": {"type": "number", "minimum": 0,
+                                     "description": "In units. Default the equivalent of 0.001 in."},
+                "max_lumps": {"type": "integer", "minimum": 0, "maximum": 500,
+                              "description": "Lumps listed per difference, largest first. Default 20."},
+                "sample_fallback": {"type": "boolean", "description": "Sample when the booleans fail. Default true."},
+                "translate_b": {"type": "array", "items": {"type": "number"},
+                                "description": "[x, y, z] to move b by first, to compare against a copy sitting elsewhere."},
+            },
+            "required": ["a", "b"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -1366,6 +1405,7 @@ def build_tool_handlers(
     probe_geometry,
     timeline_insert,
     compare_files,
+    compare_bodies,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -1419,6 +1459,7 @@ def build_tool_handlers(
         PROBE_GEOMETRY: probe_geometry,
         TIMELINE_INSERT: timeline_insert,
         COMPARE_FILES: compare_files,
+        COMPARE_BODIES: compare_bodies,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")

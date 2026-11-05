@@ -60,6 +60,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "probe_geometry",
         "timeline_insert",
         "compare_files",
+        "compare_bodies",
     }
 
     def test_all_expected_tools_present(self):

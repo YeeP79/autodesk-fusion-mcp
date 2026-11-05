@@ -119,6 +119,7 @@ coordinates) or a `model_view` that frames the visible bodies with a chosen
 `up_axis`, and warns when the image looks blank.
 | `timeline_insert` | Run Python with the marker rolled back before a named timeline item, then always restore it and report what changed (dry run by default) |
 | `compare_files` | Compare two design files by occurrences, bodies, volume, component names and timeline length, closing only what it opened |
+| `compare_bodies` | Read-only: are two bodies the same solid, and where do they differ, by booleans on temporary copies with a sampled fallback; `unknown` rather than a false `same` |
 
 ### Generic API example
 
