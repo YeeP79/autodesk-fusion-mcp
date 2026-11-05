@@ -4,6 +4,7 @@ import ast
 import json
 import math
 import os
+import types
 import unittest
 from unittest import mock
 
@@ -447,6 +448,26 @@ class SplitSiblingTests(unittest.TestCase):
         self.assertTrue(er.same_cylinder(a, ((0, 0, 9), (0, 0, -2), 1.0)))
         self.assertFalse(er.same_cylinder(a, ((0.01, 0, 0), (0, 0, 1), 1.0)))
         self.assertFalse(er.same_cylinder(a, ((0, 0, 0), (0, 0, 0), 1.0)))
+
+
+class OwnerEntryTests(unittest.TestCase):
+    def setUp(self):
+        self.native = object()
+        self.one = types.SimpleNamespace(nativeObject=self.native)
+        self.two = types.SimpleNamespace(nativeObject=self.native)
+        self.entries = [{"occurrence_path": "Sub:1", "_body": self.one}, {"occurrence_path": "Sub:2", "_body": self.two}]
+
+    def test_a_proxy_takes_its_own_occurrence(self):
+        face = types.SimpleNamespace(body=self.two, assemblyContext=types.SimpleNamespace(fullPathName="Sub:2"))
+        self.assertIs(er.owner_entry(face, self.entries), self.entries[1])
+
+    def test_a_native_entity_takes_the_first_instance(self):
+        face = types.SimpleNamespace(body=self.native, assemblyContext=None)
+        self.assertIs(er.owner_entry(face, self.entries), self.entries[0])
+
+    def test_a_body_not_in_the_design(self):
+        face = types.SimpleNamespace(body=object(), assemblyContext=None)
+        self.assertIsNone(er.owner_entry(face, self.entries))
 
 
 class Curve:

@@ -65,6 +65,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "extrude_profile",
         "combine_bodies",
         "construction_plane",
+        "pattern_features",
         "apply_thread",
         "audit_design",
     }

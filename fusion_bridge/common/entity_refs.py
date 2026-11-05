@@ -200,6 +200,17 @@ def in_context(entity, entry):
     return entity if mapped is None else mapped
 
 
+def owner_entry(entity, entries):
+    """The entry of the body a face or edge is on, in its own occurrence if it has one; else None.
+
+    A native entity has no occurrence, so it takes the first instance of its body.
+    """
+    body = native(safe(entity, "body"))
+    found = [e for e in entries if same_entity(body, native(e["_body"]))]
+    path = path_of(entity)
+    return next((e for e in found if e["occurrence_path"] == path), found[0] if found else None)
+
+
 def same_entity(a, b):
     """``==`` on two wrappers; a stale one raises, and is not the same entity."""
     try:

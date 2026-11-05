@@ -58,6 +58,7 @@ COMPARE_BODIES = "compare_bodies"
 AUDIT_DESIGN = "audit_design"
 COMBINE_BODIES = "combine_bodies"
 CONSTRUCTION_PLANE = "construction_plane"
+PATTERN_FEATURES = "pattern_features"
 APPLY_THREAD = "apply_thread"
 
 # Resource constants
@@ -146,6 +147,12 @@ ENTITY_REF_SCHEMA = {
                    "point": {**NUMBERS_SCHEMA, "description": "World [x, y, z] on the entity."},
                    "body": INDEXED_BODY_REF_SCHEMA},
     "additionalProperties": False,
+}
+PATTERN_DIRECTION_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "description": "Exactly one key.",
+    "properties": {"axis": {"type": "string", "enum": ["x", "y", "z"], "description": "The owning component's axis."},
+                   "edge": ENTITY_REF_SCHEMA, "sketch_line_token": {"type": "string"}},
 }
 _RANGE_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -1680,6 +1687,70 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": PATTERN_FEATURES,
+        "description": (
+            "Repeat features, bodies or faces of the active design and prove how many instances came out. The "
+            "pattern lands in the seeds' component. rectangular: direction_one, count_one, spacing_one (negative "
+            "reverses), and optionally direction_two, count_two, spacing_two; an unused direction two is still set, "
+            "on a placeholder with quantity 1, because left unset Fusion builds extra instances. A direction is a "
+            "component axis, a straight edge or a sketch line. circular: axis (a component axis, an edge, a circle, "
+            "or a face with an axis), count, total_angle_deg (default 360; a full turn divides by count, a partial "
+            "total by count - 1), symmetric. Direction and axis entities must be in the seeds' component.\n"
+            "Result pattern: asked_for, elements (what Fusion made), bodies_made, volume_change, instances_reached "
+            "(volume_change / seed_volume_delta + 1, null without a delta), direction_world, direction_two_set. A "
+            "cut makes no bodies, so pass seed_volume_delta to prove every instance reached material. positions "
+            "need seed_point; positions_basis says predicted or read from the built elements. Any count that "
+            "disagrees is 'suspect'. Only the seeds' bodies may change: anything else is undone by on_collateral. "
+            "dry_run (default false) adds nothing and returns plan, world directions and predicted positions, "
+            "warning of any position outside the target's box. isError is 'not ok': anything but built or planned."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "type": {"type": "string", "enum": ["rectangular", "circular"]},
+                "entities": {
+                    "type": "array",
+                    "description": "Seeds, all one kind, each with exactly one key. A boss and its bore go together.",
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {"feature": {"type": "string", "description": "Timeline name."},
+                                       "feature_token": {"type": "string"},
+                                       "body": INDEXED_BODY_REF_SCHEMA, "face": ENTITY_REF_SCHEMA},
+                    },
+                },
+                "direction_one": PATTERN_DIRECTION_SCHEMA,
+                "count_one": {"type": "integer", "description": "Instances along direction one, the seed included."},
+                "spacing_one": {"type": "number", "description": "In 'units'. Negative reverses."},
+                "spacing_one_expression": {"type": "string", "description": "Instead of spacing_one, with a unit."},
+                "direction_two": PATTERN_DIRECTION_SCHEMA,
+                "count_two": {"type": "integer"},
+                "spacing_two": {"type": "number"},
+                "spacing_two_expression": {"type": "string"},
+                "axis": {
+                    "type": "object", "additionalProperties": False,
+                    "description": "Circular: exactly one key.",
+                    "properties": {"axis": {"type": "string", "enum": ["x", "y", "z"]},
+                                   "edge": ENTITY_REF_SCHEMA, "face": ENTITY_REF_SCHEMA},
+                },
+                "count": {"type": "integer", "description": "Circular: instances, the seed included."},
+                "total_angle_deg": {"type": "number", "description": "Default 360. Negative reverses."},
+                "total_angle_expression": {"type": "string", "description": "Instead of total_angle_deg, with a unit."},
+                "symmetric": {"type": "boolean", "description": "Default false."},
+                "compute": {"type": "string", "enum": ["adjust", "identical", "optimized"],
+                            "description": "Default adjust; always set explicitly."},
+                "seed_point": {**NUMBERS_SCHEMA, "description": "World [x, y, z] on the seed, for positions."},
+                "seed_volume_delta": {"type": "number",
+                                      "description": "The seed's own volume change in units^3, e.g. a cut's delta."},
+                "feature_name": {"type": "string", "description": "Timeline name."},
+                "on_collateral": {"type": "string", "enum": ["undo", "keep"],
+                                  "description": "A body outside the seeds' changed. Default undo."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "dry_run": {"type": "boolean", "description": "Default false."},
+            },
+            "required": ["type", "entities"],
+        },
+    },
+    {
         "name": APPLY_THREAD,
         "description": (
             "Read Fusion's thread library (read-only for now; applying a thread is not available yet). Actions:\n"
@@ -1822,6 +1893,7 @@ def build_tool_handlers(
     audit_design,
     combine_bodies,
     construction_plane,
+    pattern_features,
     apply_thread,
 ):
     """Build a dict mapping tool name to handler function.
@@ -1882,6 +1954,7 @@ def build_tool_handlers(
         AUDIT_DESIGN: audit_design,
         COMBINE_BODIES: combine_bodies,
         CONSTRUCTION_PLANE: construction_plane,
+        PATTERN_FEATURES: pattern_features,
         APPLY_THREAD: apply_thread,
     }
     if set(handlers) != _TOOL_NAMES:
