@@ -80,13 +80,6 @@ def iso_date(epoch_seconds):
         return None
 
 
-def latest_file_id(version_id):
-    """Strip ``?version=N`` so ``Data.findFileById`` returns the latest version."""
-    if not isinstance(version_id, str) or not version_id:
-        return None
-    return version_id.split("?", 1)[0]
-
-
 def format_version_list(document_name, records, loaded_number, latest_number, limit):
     """Build the document_versions payload from plain version records.
 
@@ -329,7 +322,9 @@ def restore_version(arguments):
 
         # Keep only strings across the close: Document objects (this one and
         # any it links) become invalid once Fusion closes them.
-        file_id = latest_file_id(_safe(lambda: data_file.versionId))
+        # DataFile.id (dm.lineage) is the version-independent id findFileById
+        # takes; the fs.file form from versionId fails with "Invalid Version URI".
+        file_id = _safe(lambda: data_file.id)
         before = [n for n in _open_document_names(app) if n != name]
 
         if not files[version_number].promote():

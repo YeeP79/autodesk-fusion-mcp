@@ -36,7 +36,7 @@ class FakeMilestone:
 class FakeCloud:
     """Server-side version list for one lineage, shared by every DataFile view."""
 
-    def __init__(self, count, lineage="urn:adsk.wipprod:fs.file:vf.ABC", read_only=False):
+    def __init__(self, count, lineage="urn:adsk.wipprod:dm.lineage:ABC", read_only=False):
         self.lineage = lineage
         self.read_only = read_only
         self.promote_ok = True
@@ -65,7 +65,8 @@ class FakeDataFile:
         self.milestone = FakeMilestone(milestone) if milestone else None
         self.createdBy = FakeUser("Ryan Hartman")
         self.lastUpdatedBy = None
-        self.versionId = f"{cloud.lineage}?version={number}"
+        self.id = cloud.lineage
+        self.versionId = f"urn:adsk.wipprod:fs.file:vf.ABC?version={number}"
 
     @property
     def isReadOnly(self):
@@ -143,6 +144,8 @@ class FakeData:
 
     def findFileById(self, file_id):
         self.lookups.append(file_id)
+        if ":fs.file:" in file_id:  # seen live: the version-file form is refused
+            raise RuntimeError("1 : Invalid Version URI")
         cloud = self._clouds.get(file_id)
         return cloud.latest if cloud else None
 
@@ -224,12 +227,6 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(dv.iso_date(True), None)
         self.assertEqual(dv.iso_date(1_700_000_000), "2023-11-14T22:13:20Z")
         self.assertIsNone(dv.iso_date(1e20))
-
-    def test_latest_file_id(self):
-        self.assertEqual(dv.latest_file_id("urn:x:fs.file:vf.A?version=3"), "urn:x:fs.file:vf.A")
-        self.assertEqual(dv.latest_file_id("urn:x:fs.file:vf.A"), "urn:x:fs.file:vf.A")
-        self.assertIsNone(dv.latest_file_id(""))
-        self.assertIsNone(dv.latest_file_id(None))
 
     def test_closed_documents_is_multiset_difference(self):
         self.assertEqual(dv.closed_documents(["A", "B", "B", "C"], ["B", "C"]), ["A", "B"])
