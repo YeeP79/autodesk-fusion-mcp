@@ -78,6 +78,13 @@ def int_arg(arguments, key, default, low, high):
     return value
 
 
+def vector_arg(value, where):
+    """An ``[x, y, z]`` of finite numbers as a tuple of floats."""
+    if not isinstance(value, list) or len(value) != 3 or not all(is_finite_number(c) for c in value):
+        raise ValueError(f"'{where}' must be an array of three finite numbers [x, y, z]")
+    return tuple(float(c) for c in value)
+
+
 def text_arg(arguments, key, *, required=False, blank_ok=False, strip=False, suffix=""):
     """A string argument, or None when it is absent and not *required*.
 

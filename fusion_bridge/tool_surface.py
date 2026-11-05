@@ -55,6 +55,7 @@ EXTRUDE_PROFILE = "extrude_profile"
 TIMELINE_INSERT = "timeline_insert"
 COMPARE_FILES = "compare_files"
 COMPARE_BODIES = "compare_bodies"
+SYMMETRY_REPORT = "symmetry_report"
 AUDIT_DESIGN = "audit_design"
 COMBINE_BODIES = "combine_bodies"
 CONSTRUCTION_PLANE = "construction_plane"
@@ -1680,6 +1681,49 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": SYMMETRY_REPORT,
+        "description": (
+            "How far are the two sides of the active design from a true mirror? Read-only. Pass the plane as "
+            "'plane', 'plane_token' or 'point' + 'normal'. Each visible solid is paired with the body that best "
+            "fits its mirror image, by center of mass, bounding box and volume; names are never used, and each "
+            "occurrence of a component counts. A body through the plane may pair with itself (on_plane). Pairs "
+            "that pass on numbers are then checked closest first by reflecting a temporary copy and comparing "
+            "by booleans, nothing enters the timeline; basis says which decided a pair, and if the kernel "
+            "refuses a reflection, confirmation.available is false and everything rests on numbers.\n"
+            "status: true_mirror (within tolerance, or the booleans find the solids the same), near (within 10x "
+            "tolerance, or the booleans found a difference the numbers did not), different (matched, further "
+            "off). A body with no partner within its own size and half its volume is unmatched. Volume counts "
+            "as a length: the difference share times the body's size (volume_length), so on a big solid a small "
+            "feature can sit inside tolerance: tighten it to look harder. bbox is null for a plane off the world "
+            "axes.\n"
+            "Result: summary (bodies, pairs, true_mirror, near, different, unmatched, on_plane), complete, plane, "
+            "tolerance, confirmation, pairs worst first (a is further along the normal; center_offset is b minus "
+            "a's mirror image), unmatched by side (positive, negative, on_plane), skipped, warnings. Stops at "
+            "time_budget_s; complete: false means unmatched bodies may have partners that were not read."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "plane": {"type": "string", "enum": ["xy", "xz", "yz"], "description": "A world plane through the origin."},
+                "plane_token": {"type": "string", "description": "entityToken of a construction plane or planar face."},
+                "point": {"type": "array", "items": {"type": "number"},
+                          "description": "[x, y, z] on the plane, in units; goes with normal."},
+                "normal": {"type": "array", "items": {"type": "number"}, "description": "[x, y, z] normal of the plane."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "tolerance": {"type": "number", "description": "Length in units. Default the equivalent of 0.01 in."},
+                "include_hidden": {"type": "boolean", "description": "Include hidden bodies, often stale. Default false."},
+                "component_contains": {"type": "string",
+                                       "description": "Only bodies whose component name or occurrence path holds "
+                                                      "this text, ignoring case."},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 1000,
+                                "description": "Pairs listed, and bodies per unmatched side. The summary counts "
+                                               "all. Default 100."},
+                "time_budget_s": {"type": "number", "minimum": 1, "maximum": 110,
+                                  "description": "Stop after this long. Default 90."},
+            },
+        },
+    },
+    {
         "name": APPLY_THREAD,
         "description": (
             "Read Fusion's thread library (read-only for now; applying a thread is not available yet). Actions:\n"
@@ -1828,6 +1872,7 @@ def build_tool_handlers(
     timeline_insert,
     compare_files,
     compare_bodies,
+    symmetry_report,
     audit_design,
     combine_bodies,
     construction_plane,
@@ -1888,6 +1933,7 @@ def build_tool_handlers(
         TIMELINE_INSERT: timeline_insert,
         COMPARE_FILES: compare_files,
         COMPARE_BODIES: compare_bodies,
+        SYMMETRY_REPORT: symmetry_report,
         AUDIT_DESIGN: audit_design,
         COMBINE_BODIES: combine_bodies,
         CONSTRUCTION_PLANE: construction_plane,
