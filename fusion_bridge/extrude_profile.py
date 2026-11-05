@@ -123,6 +123,10 @@ ABUTMENT_TOLERANCE_CM = 0.00254
 # check was 25 nm, 250 times wider.
 TOUCHING_CM = 1e-8
 DEPTH_TOLERANCE_CM = REF_TOLERANCE_CM
+# Fusion's words when a through_all cannot see a body in a sub-component, whichever
+# way the input is built (live: native or proxy, active or not, any participants).
+THROUGH_ALL_REFUSAL = "body not found to extrude through"
+THROUGH_MARGIN_CM = 0.254
 # Profile area comes from areaProperties, which is accurate only to a stated margin.
 VOLUME_CHECK_REL = 5e-3
 
@@ -683,6 +687,7 @@ class Job:
         """How far the extrude runs each way along its direction; None runs until something stops it."""
         kind, extent = self.extent["type"], self.extent
         self.forward, self.back = None, 0.0
+        self.measured_through = None
         if kind == "distance":
             self.forward = self._length(extent["distance"], "distance")
         elif kind == "symmetric":
@@ -795,9 +800,10 @@ class Job:
         features = self.component.features.extrudeFeatures
         try:
             feature_input = self.api.profile_input(features, profiles, operation)
-            done = self.api.set_extent(feature_input, self.extent, sign, self.request["taper"], self.to_entity)
+            extent = self.measured_through or self.extent
+            done = self.api.set_extent(feature_input, extent, sign, self.request["taper"], self.to_entity)
             if done is False:
-                raise Refused([f"Fusion would not set the {self.extent['type']} extent"])
+                raise Refused([f"Fusion would not set the {extent['type']} extent"])
             if self.request["start_offset"] is not None:
                 self.api.start_offset(feature_input, self.request["start_offset"])
             if self.occurrence is not None:
@@ -898,6 +904,8 @@ class Job:
                 "requested_depth": to_units(requested, self.units),
                 "measured_depth": to_units(measured, self.units),
                 "expected_volume": self._expected_volume(), "volume_check": volume_check,
+                "through_all_route": None if self.extent["type"] != "through_all"
+                else "measured" if self.measured_through else "fusion",
                 "rebuilt_other_side": self.rebuilt}
 
     # -- Reading what a feature made ---------------------------------------------
@@ -988,9 +996,40 @@ class Job:
             return {"feature": None, "status": "refused", "refusal": str(exc), "health": None, "warnings": []}
         return add_feature(lambda: features.add(feature_input))
 
+    def _through_all_lost_its_targets(self, built):
+        """Did Fusion refuse a through_all that only fails because the targets are in a sub-component?"""
+        return (self.extent["type"] == "through_all" and built["status"] == "refused"
+                and THROUGH_ALL_REFUSAL in (built["refusal"] or "")
+                and (self.in_sub or any(t["occurrence_path"] != ROOT_PATH for t in self.targets)))
+
+    def _measure_through(self):
+        """A distance extent past every target, for a through_all Fusion refused; None without boxes."""
+        corners = [c for t in self.targets if t["bbox"] is not None for c in box_corners(t["bbox"])]
+        if not corners:
+            return None
+        low, high = span_along(corners, self.origin, self._direction())
+
+        def length(reach):
+            return (max(reach, 0.0) + THROUGH_MARGIN_CM) / CM_PER_UNIT[self.units]
+
+        arguments = {"type": "distance", "distance": round(length(high), 4)}
+        if self.extent["both_sides"]:
+            arguments.update(type="two_sides", side_two_distance=round(length(-low), 4))
+        extent = {"type": arguments["type"], "distance": read_value(arguments, "distance", self.units, minimum=0)}
+        if self.extent["both_sides"]:
+            extent["side_two_distance"] = read_value(arguments, "side_two_distance", self.units, minimum=0)
+        return extent
+
     def _build(self, operation):
         """Add, measure, and rebuild once on the other side if it came out wrong."""
         built = self._add(operation, self.sign)
+        if self._through_all_lost_its_targets(built):
+            self.measured_through = self._measure_through()
+            if self.measured_through is not None:
+                self.warnings.append("Fusion refused through_all here, as it does in a sub-component, so this cut "
+                                     "runs a measured distance past the targets; it will not follow them if they "
+                                     "grow")
+                built = self._add(operation, self.sign)
         if built["status"] != "built":
             return built
         built["measure"] = self._measure(built["feature"], operation, self.sign)
