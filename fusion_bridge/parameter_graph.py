@@ -1,9 +1,10 @@
 """Fusion-free parameter expression parsing and dependency traversal.
 
-Fusion exposes ``Parameter.dependentParameters`` / ``dependencyParameters``,
-which the ``parameters`` tool prefers. This module is the fallback (and the
-cross-check): it pulls parameter references out of expression strings and
-walks a dependents graph given as a callable, so it is testable with fakes.
+Fusion's ``Parameter.dependentParameters`` is transitive, so it cannot say what
+references a parameter directly. This module can: it pulls parameter references
+out of expression strings and walks a dependents graph given as a callable, so
+it is testable with fakes. The ``parameters`` tool uses it for direct dependents
+and trees, and as the cross-check on the API's list.
 """
 
 import re
@@ -37,13 +38,14 @@ _TOKEN = re.compile(
 )
 
 
-def expression_identifiers(expression):
+def expression_identifiers(expression, known_names=()):
     """Return the identifiers in ``expression`` that may name parameters.
 
     Skips quoted text literals, numbers, function calls (an identifier
     followed by ``(``), unit names, units written after a number or ``)``
-    (``2in``, ``2 mm``, ``(a + b) mm``) and named constants. Order of first
-    appearance is kept; duplicates are dropped.
+    (``2in``, ``2 mm``, ``(a + b) mm``) and named constants. A name in
+    ``known_names`` is kept even if it spells a unit or constant (a parameter
+    called ``h``). Order of first appearance is kept; duplicates are dropped.
     """
     if not isinstance(expression, str) or not expression:
         return []
@@ -72,7 +74,7 @@ def expression_identifiers(expression):
         if previous is not None and (previous[0] in ("number", "unit") or previous[1] == ")"):
             tokens[index] = ("unit", text, end)
             continue
-        if text in UNIT_WORDS or text in CONSTANTS:
+        if (text in UNIT_WORDS or text in CONSTANTS) and text not in known_names:
             continue
         if text not in found:
             found.append(text)
@@ -82,7 +84,7 @@ def expression_identifiers(expression):
 def parameter_references(expression, known_names, self_name=None):
     """Identifiers in ``expression`` that are existing parameter names."""
     return [
-        name for name in expression_identifiers(expression)
+        name for name in expression_identifiers(expression, known_names)
         if name in known_names and name != self_name
     ]
 

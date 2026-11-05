@@ -376,8 +376,10 @@ TOOL_DEFINITIONS = [
         "description": (
             "Read the active design's parameters and what they drive, or set user parameter expressions. "
             "action 'list' (default): user parameters with expression, value in the parameter's own unit, "
-            "comment, favorite, direct dependents and the features/sketches they drive (transitively, "
-            "depth-capped); include_model adds model parameters with owning feature/sketch and role. "
+            "comment, favorite, dependents (direct: their expressions reference it), all_dependents "
+            "(everything downstream) and the features/sketches they drive (transitively, depth-capped); "
+            "dependency_check compares Fusion's transitive list with the parsed one. include_model adds "
+            "model parameters with owning feature/sketch and role. "
             "Filter with name_contains / comment_contains; rows are capped by limit with truncation info. "
             "Pass name for one parameter in detail: what it references and its full dependents tree. "
             "action 'set': updates = [{name, expression}] for USER parameters only (model parameters are "
