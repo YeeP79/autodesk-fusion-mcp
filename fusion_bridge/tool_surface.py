@@ -379,11 +379,14 @@ TOOL_DEFINITIONS = [
             "features) or deleting everything after a timeline index. Every name must resolve to exactly "
             "one item, optionally scoped to a component; ambiguous or missing names refuse the whole call "
             "with candidates. Items in linked (external) components are never touched. Later items that "
-            "consume a target (sketch profiles/paths, created bodies, construction geometry) are dependents: "
-            "the call refuses unless include_dependents=true, which deletes them too. Items that only use a "
-            "body the target modified are reported as possibly_affected and kept. dry_run defaults to true "
-            "and returns the plan (delete order, latest first) without changing anything. After deleting, "
-            "returns timeline health counts and items that went to error."
+            "consume a target (sketch profiles/paths, construction geometry) or work on a body it created "
+            "(fillets, cuts, combines and anything else on that body) are dependents: the call refuses "
+            "unless include_dependents=true, which deletes them too. Items that only use a body the target "
+            "modified, or whose inputs could not be read, are reported as possibly_affected (each unread one "
+            "with a reason) and kept, though Fusion may still remove them. dry_run defaults to true and "
+            "returns the plan (delete order, latest first) without changing anything. After deleting, "
+            "returns timeline health counts, items that went to error, and also_removed: every item that "
+            "disappeared without being in the plan. A non-empty also_removed marks the result as an error."
         ),
         "inputSchema": {
             "type": "object", "additionalProperties": False,
