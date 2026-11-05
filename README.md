@@ -221,8 +221,16 @@ writing); every other document opens read-only and saving it does nothing.
   editable.
 - The walk covers the active hub only (`app.data.dataProjects`). It is a
   cloud walk and can take a while: it stops after `max_files` designs
-  (default 500) and `max_depth` folder levels (default 8), reports
-  `walk.truncated`, and returns `elapsed_seconds`.
+  (default 500), `max_depth` folder levels (default 8) or `time_budget_s`
+  seconds (default 90, below the 120 s main-thread limit), reports
+  `walk.truncated` with `truncated_reason` (`max_files` or `time_budget`), and
+  returns `elapsed_seconds`. Read-only files cost only their name, id and
+  read-only flag; versions, dates and links are read for editable files only.
+- `in_personal_use_list` matches walked files against
+  `personalUseLimits.editableFiles` by lineage id (`dm.lineage:` and `vf.`
+  version urns compare equal), falling back to project + name when the name is
+  unique there (`matched_by: project_and_name`). When the two disagree the
+  report adds `personal_use_list_ids_sample` and `walk_ids_sample` (raw ids).
 
 **Switching a file between editable and read-only must be done by you**, in
 the Data Panel (right-click the file, **Make Editable** / **Make Read-Only**). What the installed

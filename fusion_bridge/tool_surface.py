@@ -680,7 +680,8 @@ TOOL_DEFINITIONS = [
             "version and heuristic 'safe to release' hints: not open, not changed for stale_days, "
             "and which designs link it. Never changes anything: the API cannot toggle read-only; "
             "the user does it in the Data Panel (right-click > Make Read-Only / Make Editable). "
-            "The cloud walk can be slow; capped by max_files/max_depth, elapsed time reported."
+            "The cloud walk can be slow; capped by max_files/max_depth and a time budget "
+            "(walk.truncated_reason 'max_files' or 'time_budget'), elapsed time reported."
         ),
         "inputSchema": {
             "type": "object", "additionalProperties": False,
@@ -697,6 +698,8 @@ TOOL_DEFINITIONS = [
                                "description": "A file unchanged for this many days counts as stale (default 14)."},
                 "include_read_only": {"type": "boolean",
                                       "description": "Also list read-only designs found by the walk (default false)."},
+                "time_budget_s": {"type": "number", "minimum": 1, "maximum": 110,
+                                  "description": "Stop the walk after this many seconds (default 90; Fusion's main thread allows 120 per call)."},
             },
         },
     },
