@@ -5,7 +5,7 @@ tokens and metadata belong to a single POST, including on reused connections.
 """
 
 import json
-import select
+import selectors
 import socket
 import threading
 import time
@@ -195,10 +195,14 @@ class ModernHTTPMixin:
         return {"content": [{"type": "text", "text": text}], "isError": True}
 
     def _client_disconnected(self):
+        # selectors, not select.select: Fusion holds well over 1024 files once it
+        # has run for a while, and select() raises ValueError on higher fds.
         try:
-            readable, _, _ = select.select([self.connection], [], [], 0)
+            with selectors.DefaultSelector() as selector:
+                selector.register(self.connection, selectors.EVENT_READ)
+                readable = selector.select(0)
             return bool(readable) and self.connection.recv(1, socket.MSG_PEEK) == b""
-        except OSError:
+        except (OSError, ValueError):
             return True
 
     def _handle_subscription(self, message, params):
