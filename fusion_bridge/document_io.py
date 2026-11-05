@@ -452,6 +452,13 @@ def _cloud_latest_version(app, file_id):
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _current_file_id(document, fallback):
+    """The document's DataFile id now: it is a local file path until the first upload lands."""
+    data_file = _safe(document, "dataFile")
+    value = _safe(data_file, "id") if data_file is not None else None
+    return value if isinstance(value, str) and value else fallback
+
+
 def newest_app_log(pattern=APP_LOG_GLOB):
     """Path of the most recently written Fusion app log, or None."""
     paths = glob.glob(pattern)
@@ -535,7 +542,7 @@ def save_document(arguments):
             now = time.monotonic()
             latest = None
             if last_cloud is None or now - last_cloud >= _CLOUD_POLL_INTERVAL_S:
-                latest = _cloud_latest_version(app, file_id)
+                latest = _cloud_latest_version(app, _current_file_id(document, file_id))
                 last_cloud = now
             if verifier.observe(now - started, _safe(document, "isModified"), latest):
                 break
