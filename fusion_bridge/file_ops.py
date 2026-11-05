@@ -12,6 +12,12 @@ Rules this module enforces:
 - Folder names are case-insensitive: renaming to a sibling's name in another
   case fails in Fusion (CB_NAE), so it is refused up front. A case-only rename
   of the same folder goes through a temporary name in two explicit steps.
+- The server locks a folder briefly after a rename, so renaming it again at once
+  is refused (423 LOCK_RESOURCE_IS_LOCKED, seen by Fusion as an opaque
+  ``InternalValidationError``). The rename waits for the lock with events pumped,
+  on a fresh folder object, and gives up after a bounded number of tries.
+- Cloud writes raise that same opaque error for every server refusal, so each
+  failure carries the server's reason from the app log (``server_log``).
 - A file open in Fusion is never moved or renamed, and nothing is ever closed
   (closing a document also closes the documents it links). Such files are
   refused and listed.
@@ -25,13 +31,20 @@ import json
 import time
 import traceback
 
+import adsk
+
 from . import data_tree, project_tree
 from .dispatch import get_app, log
+from .server_log import INTERNAL_ERROR, LOCKED_CODE, LOCKED_STATUS, ServerLog, current_log
 
 MAX_FILES_PER_CALL = 50
 LINK_CHECK_MAX_FILES = 100
 ID_PREFIX = "urn:"
 _TEMP_SUFFIX = "__case_rename_tmp"
+# Live, a rename sent right after a rename was locked; one sent ~0.4 s after that worked.
+_STEP_SETTLE_S = 1.0
+_LOCK_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 3.0)
+_PUMP_INTERVAL_S = 0.05
 
 NOTES = [
     "Files are matched by path (case-insensitive) or by id ('urn:...'); ambiguous paths are refused.",
@@ -52,6 +65,40 @@ class Refusal(Exception):
 
 def _problem(kind, message, **extra):
     return dict({"problem": kind, "message": message}, **extra)
+
+
+def _wait(seconds):
+    """Wait on the main thread with Fusion's events pumped, so its data updates keep landing."""
+    deadline = time.monotonic() + seconds
+    while True:
+        adsk.doEvents()
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(left, _PUMP_INTERVAL_S))
+
+
+def _failure(exc, resource_id, server_log, offset):
+    """Describe a failed cloud write, with the server's reason for Fusion's opaque error."""
+    text = f"{type(exc).__name__}: {exc}"
+    failure = {"error": text}
+    if INTERNAL_ERROR not in text:
+        return failure
+    reason = server_log.reason(offset, resource_id)
+    failure["server"] = reason
+    if reason is None:
+        failure["note"] = "No matching failed request found in Fusion's app log."
+    else:
+        failure["reason"] = reason["message"] or f"HTTP {reason['status']}"
+    return failure
+
+
+def _is_lock(failure):
+    """True for the server's rename lock. With no log entry to go on, assume it may be."""
+    server = failure.get("server")
+    if server is None:
+        return INTERNAL_ERROR in failure["error"]
+    return server["status"] == LOCKED_STATUS or server["error_code"] == LOCKED_CODE
 
 
 def _file_key(name, extension):
@@ -367,26 +414,28 @@ def plan_move(project, specs, target_project, to_segments, *, create_missing, fi
     return plan, problems, (files, target, missing)
 
 
-def execute_move(files, target, missing):
+def execute_move(files, target, missing, server_log=None):
     """Create missing folders, then move files one by one, stopping at the first failure."""
+    server_log = server_log or ServerLog()
     created, moved = [], []
-    try:
-        for seg in missing:
+    for seg in missing:
+        offset = server_log.mark()
+        try:
             target = target.dataFolders.add(seg)
             created.append(seg)
-    except Exception as exc:
-        return {"folders_created": created, "moved": moved,
-                "failed": {"step": f"create folder {seg!r}", "error": f"{type(exc).__name__}: {exc}"},
-                "not_attempted": [f.id for f in files]}
-    for i, data_file in enumerate(files):
-        try:
-            ok = data_file.move(target)
-            error = None if ok else "DataFile.move returned false"
         except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-        if error:
             return {"folders_created": created, "moved": moved,
-                    "failed": {"id": data_file.id, "name": data_file.name, "error": error},
+                    "failed": dict(_failure(exc, target.id, server_log, offset), step=f"create folder {seg!r}"),
+                    "not_attempted": [f.id for f in files]}
+    for i, data_file in enumerate(files):
+        offset = server_log.mark()
+        try:
+            failure = None if data_file.move(target) else {"error": "DataFile.move returned false"}
+        except Exception as exc:
+            failure = _failure(exc, data_file.id, server_log, offset)
+        if failure:
+            return {"folders_created": created, "moved": moved,
+                    "failed": dict(failure, id=data_file.id, name=data_file.name),
                     "not_attempted": [f.id for f in files[i + 1:]]}
         moved.append(data_file.id)
     return {"folders_created": created, "moved": moved}
@@ -434,29 +483,85 @@ def plan_folder_rename(folder, new_name, resolver):
     return plan, problems
 
 
-def execute_folder_rename(folder, steps):
-    """Set each name in *steps*, verifying by read-back; on a failed second step try to restore."""
-    original = folder.name
-    done = []
-    for name in steps:
+def _refetch_folder(folder):
+    """A fresh DataFolder from its parent, or *folder* if that cannot be read."""
+    try:
+        for sibling in data_tree.items(folder.parentFolder.dataFolders):
+            if sibling.id == folder.id:
+                return sibling
+    except Exception as exc:
+        log(f"[MCP] rename_folder: could not re-fetch folder: {exc}")
+    return folder
+
+
+def _set_folder_name(folder, name, server_log, wait):
+    """Set *folder*'s name, waiting out the server's lock.
+
+    Returns ``(folder, failure, retries)``; *folder* may be a fresher object and
+    *failure* is None on success. Read-back is what counts as success.
+    """
+    retries = 0
+    failure = None
+    for delay in (0.0,) + _LOCK_RETRY_DELAYS_S:
+        if delay:
+            wait(delay)
+            folder = _refetch_folder(folder)
+            retries += 1
+        offset = server_log.mark()
         try:
             folder.name = name
-            error = None if folder.name == name else f"name reads back as {folder.name!r}"
+            if folder.name == name:
+                return folder, None, retries
+            failure = {"error": f"name reads back as {folder.name!r}"}
+            break
         except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-        if error:
-            result = {"steps_done": done, "failed": {"to": name, "error": error}, "name_now": folder.name}
+            failure = _failure(exc, folder.id, server_log, offset)
+            if not _is_lock(failure):
+                break
+    failure["attempts"] = retries + 1
+    return folder, failure, retries
+
+
+def _rename_failure_message(name, failure, restored, name_now):
+    why = failure.get("reason") or failure["error"]
+    message = f"Could not rename the folder to {name!r} after {failure['attempts']} attempt(s): {why}."
+    if restored is None:
+        return message
+    if restored:
+        return f"{message} The original name {name_now!r} was restored."
+    return f"{message} Restoring failed too: the folder is now named {name_now!r}."
+
+
+def execute_folder_rename(folder, steps, server_log=None, wait=None):
+    """Set each name in *steps*, verifying by read-back; on a failed second step try to restore."""
+    server_log = server_log or ServerLog()
+    wait = wait or _wait
+    original = folder.name
+    done = []
+    lock_retries = 0
+    for name in steps:
+        if done:
+            wait(_STEP_SETTLE_S)
+            folder = _refetch_folder(folder)
+        folder, failure, retries = _set_folder_name(folder, name, server_log, wait)
+        lock_retries += retries
+        if failure:
+            result = {"steps_done": done, "failed": dict(failure, to=name), "name_now": folder.name}
+            restored = None
             if done:
-                try:
-                    folder.name = original
-                    result["restored"] = folder.name == original
-                except Exception as exc:
-                    result["restored"] = False
-                    result["restore_error"] = f"{type(exc).__name__}: {exc}"
+                folder, restore_failure, _ = _set_folder_name(folder, original, server_log, wait)
+                restored = restore_failure is None
+                result["restored"] = restored
+                if restore_failure:
+                    result["restore_error"] = restore_failure
                 result["name_now"] = folder.name
+            result["message"] = _rename_failure_message(name, failure, restored, result["name_now"])
             return result
         done.append(name)
-    return {"steps_done": done, "name_now": folder.name}
+    result = {"steps_done": done, "name_now": folder.name}
+    if lock_retries:
+        result["lock_retries"] = lock_retries
+    return result
 
 
 def plan_file_rename(data_file, new_name, open_ids, resolver):
@@ -529,22 +634,24 @@ def top_level_paths(empty):
     return [path for f, path in empty if f.parentFolder is None or f.parentFolder.id not in ids]
 
 
-def execute_delete_folders(empty):
+def execute_delete_folders(empty, server_log=None):
     """Delete *empty* in order, re-checking each is still empty; stop at the first failure."""
+    server_log = server_log or ServerLog()
     deleted_ids, deleted = set(), []
     for i, (folder, path) in enumerate(empty):
+        offset = server_log.mark()
         try:
             files = data_tree.items(folder.dataFiles)
             remaining = [s for s in data_tree.items(folder.dataFolders) if s.id not in deleted_ids]
             if files or remaining:
-                error = (f"no longer empty ({len(files)} files, {len(remaining)} subfolders); "
-                         "something changed since planning")
+                failure = {"error": (f"no longer empty ({len(files)} files, {len(remaining)} subfolders); "
+                                     "something changed since planning")}
             else:
-                error = None if folder.deleteMe() else "DataFolder.deleteMe returned false"
+                failure = None if folder.deleteMe() else {"error": "DataFolder.deleteMe returned false"}
         except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-        if error:
-            return {"deleted": deleted, "failed": {"path": path, "error": error},
+            failure = _failure(exc, folder.id, server_log, offset)
+        if failure:
+            return {"deleted": deleted, "failed": dict(failure, path=path),
                     "not_attempted": [p for _, p in empty[i + 1:]]}
         deleted_ids.add(folder.id)
         deleted.append(path)
@@ -730,7 +837,7 @@ def _move_body(app, projects, project, options):
                         "link_check": _dry_run_links(files, resolver), "notes": NOTES,
                         "next": "Re-run with dry_run=false to apply."})
     outcome, report = _apply_with_link_check(
-        files, {f.id for f in files}, data, lambda: execute_move(files, target, missing), resolver)
+        files, {f.id for f in files}, data, lambda: execute_move(files, target, missing, current_log()), resolver)
     failed = "failed" in outcome
     return _result({"tool": "move_files", "dry_run": False, "changed": bool(outcome["moved"] or
                                                                             outcome["folders_created"]),
@@ -758,7 +865,8 @@ def _rename_folder_body(app, projects, project, options):
                         "link_check": _dry_run_links(files, resolver),
                         "next": "Re-run with dry_run=false to apply."})
     outcome, report = _apply_with_link_check(
-        files, {f.id for f in files}, app.data, lambda: execute_folder_rename(folder, plan["steps"]), resolver)
+        files, {f.id for f in files}, app.data,
+        lambda: execute_folder_rename(folder, plan["steps"], current_log()), resolver)
     failed = "failed" in outcome
     return _result({"tool": "rename_folder", "dry_run": False, "changed": bool(outcome["steps_done"]),
                     "plan": plan, "result": outcome, "link_check": report}, failed or not report["ok"])
@@ -784,12 +892,14 @@ def _rename_file_body(app, projects, project, options):
                         "next": "Re-run with dry_run=false to apply."})
 
     def change():
+        server_log = current_log()
+        offset = server_log.mark()
         try:
             data_file.name = options["new_name"]
             if data_file.name != options["new_name"]:
                 return {"renamed": False, "failed": {"error": f"name reads back as {data_file.name!r}"}}
         except Exception as exc:
-            return {"renamed": False, "failed": {"error": f"{type(exc).__name__}: {exc}"}}
+            return {"renamed": False, "failed": _failure(exc, data_file.id, server_log, offset)}
         return {"renamed": True}
 
     outcome, report = _apply_with_link_check([data_file], {data_file.id}, data, change, resolver)
@@ -815,7 +925,7 @@ def _remove_empty_body(app, projects, project, options):
     if options["dry_run"]:
         return _result({"tool": "remove_empty_folders", "dry_run": True, "changed": False, "plan": plan,
                         "next": "Re-run with dry_run=false to delete them (children first)."})
-    outcome = execute_delete_folders(empty)
+    outcome = execute_delete_folders(empty, current_log())
     return _result({"tool": "remove_empty_folders", "dry_run": False, "changed": bool(outcome["deleted"]),
                     "plan": plan, "result": outcome}, "failed" in outcome)
 

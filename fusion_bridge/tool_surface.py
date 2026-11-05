@@ -783,7 +783,9 @@ TOOL_DEFINITIONS = [
             "Rename a cloud folder. dry_run defaults to true. Folder names are case-insensitive in Fusion: "
             "refuses when a sibling already has the new name in any case. A case-only rename of the same folder "
             "is done in two steps through a temporary name, reported step by step (and restored if the second "
-            "step fails). Files inside are link-checked before and after."
+            "step fails). The server locks a folder for a moment after a rename, so it waits and retries a few "
+            "seconds; a refusal reports the server's reason from Fusion's app log. Files inside are link-checked "
+            "before and after."
         ),
         "inputSchema": {
             "type": "object", "additionalProperties": False,

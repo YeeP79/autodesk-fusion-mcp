@@ -2,12 +2,92 @@
 refusals, execution and the link check over fake Data* objects (no Fusion)."""
 
 import json
+import os
+import tempfile
 import unittest
 from unittest import mock
 
 import _fusion_test_bootstrap  # noqa: F401  (installs adsk mock + parent pkg shim)
 
+import adsk
+
 from fusion_bridge import data_tree, file_ops, tool_surface
+from fusion_bridge.server_log import ServerLog
+
+OPAQUE = "2 : InternalValidationError : res"
+
+
+def log_entry(status, url, code, message, body="[Empty body]", method="POST"):
+    """A failed request as Fusion writes it to the app log."""
+    response = json.dumps({"errorCode": code, "errorClass": "ApiError", "message": message})
+    return (f"20261105T113355 E .24563490 {method} {status} {url} - workflow:WIPRequest2 attempt:0 "
+            "requestId:f360_WIPRequest2__1-abc dt=0.34\n"
+            "Request Content-Type: application/json\n"
+            f"Request Body: {body}\n"
+            "Response Content-Type: application/json\n"
+            f"Response Body: {response}\n"
+            "20261105T113355 I 31442672 PushNotification broadcasting 0811\n")
+
+
+def lock_entry(token):
+    return log_entry(423, f"https://api/storage/v3/entities/urn%3Aadsk.wipprod%3Afs.folder%3A{token}/rename?newName=Sub",
+                     "LOCK_RESOURCE_IS_LOCKED", "Resource is locked by other operation.")
+
+
+class TempLog:
+    """A real file for ServerLog, so marks and offsets are exercised."""
+
+    def __enter__(self):
+        handle, self.path = tempfile.mkstemp(suffix=".log")
+        os.close(handle)
+        self.log = ServerLog(self.path)
+        return self
+
+    def __exit__(self, *exc):
+        os.remove(self.path)
+
+    def write(self, text):
+        with open(self.path, "a", encoding="utf-8") as fh:
+            fh.write(text)
+
+
+class RefusingFolder:
+    """Stands in for a FakeFolder whose name setter raises the opaque error a set number of times."""
+
+    def __init__(self, folder, refusals, on_refuse=lambda: None):
+        self.folder = folder
+        self.refusals = refusals
+        self.on_refuse = on_refuse
+        self.attempts = []
+
+    def __enter__(self):
+        real = FakeFolder.name
+        outer = self
+
+        def setter(folder, value):
+            if folder is outer.folder:
+                outer.attempts.append(value)
+                if outer.refusals(value, len(outer.attempts)):
+                    outer.on_refuse()
+                    raise RuntimeError(OPAQUE)
+            real.fset(folder, value)
+
+        self._patch = mock.patch.object(FakeFolder, "name", property(real.fget, setter))
+        self._patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._patch.stop()
+
+
+def fail_with(log, entry):
+    log.write(entry)
+    raise RuntimeError(OPAQUE)
+
+
+def attempts_seen(n):
+    """True for the first try at the restore: attempt numbers run step 1, 5 tries of step 2, restore."""
+    return n == 2 + len(file_ops._LOCK_RETRY_DELAYS_S) + 1
 
 
 # -- Fakes shaped like DataProject / DataFolder / DataFile, with mutations ----
@@ -319,6 +399,89 @@ class ExecuteMoveTests(unittest.TestCase):
         self.assertEqual(out["not_attempted"], ["urn:shaft"])
 
 
+class ServerReasonTests(unittest.TestCase):
+    """Every cloud write reports the server's reason for the opaque error."""
+
+    def test_failed_move(self):
+        car, _, files = _sample()
+        entry = log_entry(403, "https://api/storage/v3/move", "FORBIDDEN", "Not allowed",
+                          body=json.dumps({"urn": files["shaft"].id}))
+        with TempLog() as log, mock.patch.object(FakeFile, "move", side_effect=lambda t: fail_with(log, entry)):
+            out = file_ops.execute_move([files["shaft"]], car.rootFolder, [], log.log)
+        self.assertEqual(out["failed"]["reason"], "Not allowed")
+        self.assertEqual(out["failed"]["id"], "urn:shaft")
+
+    def test_failed_folder_create(self):
+        car, _, files = _sample()
+        entry = log_entry(409, "https://api/storage/v3/folders", "CONTAINER_CHILD_NAME_EXISTS", "Name exists",
+                          body=json.dumps([{"parentFolderUrn": car.rootFolder.id}]))
+        collection = mock.Mock()
+        with TempLog() as log:
+            collection.add.side_effect = lambda seg: fail_with(log, entry)
+            with mock.patch.object(FakeFolder, "dataFolders", collection):
+                out = file_ops.execute_move([files["shaft"]], car.rootFolder, ["New"], log.log)
+        self.assertEqual(out["failed"]["server"]["error_code"], "CONTAINER_CHILD_NAME_EXISTS")
+        self.assertEqual(out["failed"]["step"], "create folder 'New'")
+
+    def test_failed_folder_delete(self):
+        car, _, _ = _sample()
+        folder = car.rootFolder.folder("Empty", "urn:folder:co.empty")
+        entry = log_entry(400, "https://api/storage/v3/folders/delete", "GEN_RELATED_OBJECTS", "Has relationships",
+                          body=json.dumps({"urn": folder.id}))
+        with TempLog() as log, mock.patch.object(FakeFolder, "deleteMe", side_effect=lambda: fail_with(log, entry)):
+            out = file_ops.execute_delete_folders([(folder, "Car/Empty")], log.log)
+        self.assertEqual(out["failed"]["reason"], "Has relationships")
+        self.assertEqual(out["failed"]["path"], "Car/Empty")
+
+    def test_plain_errors_skip_the_log(self):
+        car, _, files = _sample()
+        log = mock.Mock()
+        with mock.patch.object(FakeFile, "move", side_effect=RuntimeError("offline")):
+            out = file_ops.execute_move([files["shaft"]], car.rootFolder, [], log)
+        self.assertEqual(out["failed"]["error"], "RuntimeError: offline")
+        log.reason.assert_not_called()
+
+    def test_older_failure_is_not_borrowed(self):
+        with TempLog() as log:
+            log.write(lock_entry("co.a"))
+            offset = log.log.mark()
+            self.assertIsNone(log.log.reason(offset, "urn:x:co.a", polls=1))
+            log.write(lock_entry("co.a"))
+            self.assertEqual(log.log.reason(offset, "urn:x:co.a", polls=1)["status"], 423)
+
+    def test_other_resources_and_reads_are_ignored(self):
+        with TempLog() as log:
+            offset = log.log.mark()
+            log.write(lock_entry("co.other"))
+            log.write(log_entry(404, "https://api/storage/v3/folders/urn:x:co.a/parents", "NOT_FOUND", "gone",
+                                method="GET"))
+            self.assertIsNone(log.log.reason(offset, "urn:x:co.a", polls=1))
+
+    def test_file_ids_match_their_version_urls(self):
+        with TempLog() as log:
+            offset = log.log.mark()
+            log.write(log_entry(423, "https://api/entities/urn%3Aadsk.wipprod%3Afs.file%3Avf.Abc%3Fversion%3D7/rename",
+                                "LOCK_RESOURCE_IS_LOCKED", "locked"))
+            self.assertEqual(log.log.reason(offset, "urn:adsk.wipprod:dm.lineage:Abc", polls=1)["message"], "locked")
+            self.assertEqual(log.log.reason(offset, "urn:adsk.wipprod:fs.file:vf.Abc?version=7", polls=1)["status"], 423)
+
+    def test_unparseable_body_and_missing_log(self):
+        with TempLog() as log:
+            offset = log.log.mark()
+            log.write("20261105T113355 E 1 POST 500 https://api/co.a - requestId:r1\nResponse Body: <html>oops\n")
+            reason = log.log.reason(offset, "urn:x:co.a", polls=1)
+        self.assertEqual((reason["status"], reason["message"], reason["error_code"]), (500, "<html>oops", None))
+        self.assertIsNone(ServerLog().reason(ServerLog().mark(), "urn:x:co.a"))
+        missing = ServerLog("/nonexistent/AppLogFile.log")
+        self.assertIsNone(missing.mark())
+        self.assertEqual(missing.since(0), "")
+
+    def test_wait_pumps_events(self):
+        with mock.patch.object(adsk, "doEvents", create=True) as pump:
+            file_ops._wait(0)
+        pump.assert_called_once_with()
+
+
 # -- Link check --------------------------------------------------------------
 
 
@@ -386,6 +549,9 @@ class LinkCheckTests(unittest.TestCase):
 
 class FolderRenameTests(unittest.TestCase):
     def setUp(self):
+        patcher = mock.patch.object(file_ops, "_wait")
+        self.wait = patcher.start()
+        self.addCleanup(patcher.stop)
         self.car, _, _ = _sample()
         self.chassis = self.car.rootFolder._folders[0]
         self.drive = self.car.rootFolder._folders[1]
@@ -432,6 +598,97 @@ class FolderRenameTests(unittest.TestCase):
         self.assertIn("cloud error", out["failed"]["error"])
         self.assertTrue(out["restored"])
         self.assertEqual(out["name_now"], "drivetrain")
+
+    def _case_rename(self, refusals, on_refuse=lambda: None, server_log=None):
+        steps = ["drivetrain_tmp", "Drivetrain"]
+        with RefusingFolder(self.drive, refusals, on_refuse) as folder:
+            out = file_ops.execute_folder_rename(self.drive, steps, server_log)
+        return out, folder.attempts
+
+    def test_server_lock_is_waited_out(self):
+        # Live: step 2 got POST 423 LOCK_RESOURCE_IS_LOCKED about 0.5 s after step 1.
+        with TempLog() as log:
+            out, attempts = self._case_rename(lambda name, n: n == 2, lambda: log.write(lock_entry(self.drive.id)),
+                                              log.log)
+        self.assertEqual(attempts, ["drivetrain_tmp", "Drivetrain", "Drivetrain"])
+        self.assertEqual(out, {"steps_done": ["drivetrain_tmp", "Drivetrain"], "name_now": "Drivetrain",
+                               "lock_retries": 1})
+        self.assertEqual(self.wait.call_args_list[0], mock.call(file_ops._STEP_SETTLE_S))
+
+    def test_lock_that_never_clears_is_bounded_and_said_plainly(self):
+        with TempLog() as log:
+            out, attempts = self._case_rename(lambda name, n: name == "Drivetrain",
+                                              lambda: log.write(lock_entry(self.drive.id)), log.log)
+        tries = 1 + len(file_ops._LOCK_RETRY_DELAYS_S)
+        self.assertEqual(attempts.count("Drivetrain"), tries)
+        failed = out["failed"]
+        self.assertEqual((failed["attempts"], failed["to"]), (tries, "Drivetrain"))
+        self.assertEqual(failed["error"], f"RuntimeError: {OPAQUE}")
+        self.assertEqual(failed["server"]["status"], 423)
+        self.assertEqual(failed["server"]["error_code"], "LOCK_RESOURCE_IS_LOCKED")
+        self.assertTrue(out["restored"])
+        self.assertEqual(out["name_now"], "drivetrain")
+        self.assertIn("Resource is locked by other operation", out["message"])
+        self.assertIn("restored", out["message"])
+
+    def test_restore_also_waits_out_the_lock(self):
+        with TempLog() as log:
+            out, attempts = self._case_rename(
+                lambda name, n: name == "Drivetrain" or (name == "drivetrain" and attempts_seen(n)),
+                lambda: log.write(lock_entry(self.drive.id)), log.log)
+        self.assertTrue(out["restored"])
+        self.assertEqual(attempts[-2:], ["drivetrain", "drivetrain"])
+
+    def test_restore_failure_reported(self):
+        with TempLog() as log:
+            out, _ = self._case_rename(lambda name, n: n > 1, lambda: log.write(lock_entry(self.drive.id)), log.log)
+        self.assertFalse(out["restored"])
+        self.assertEqual(out["name_now"], "drivetrain_tmp")
+        self.assertEqual(out["restore_error"]["server"]["status"], 423)
+        self.assertIn("now named 'drivetrain_tmp'", out["message"])
+
+    def test_other_server_refusals_are_not_retried(self):
+        url = f"https://api/storage/v3/entities/{self.drive.id}/rename?newName=Sub"
+        entry = log_entry(409, url, "CONTAINER_CHILD_NAME_EXISTS", "Another object with the same name already exists")
+        with TempLog() as log:
+            out, attempts = self._case_rename(lambda name, n: n == 2, lambda: log.write(entry), log.log)
+        self.assertEqual(len(attempts), 3, "the failed step once, then the restore")
+        self.assertEqual(out["failed"]["attempts"], 1)
+        self.assertEqual(out["failed"]["reason"], "Another object with the same name already exists")
+
+    def test_no_log_evidence_still_retries_and_says_so(self):
+        out, attempts = self._case_rename(lambda name, n: name == "Drivetrain")
+        self.assertEqual(attempts.count("Drivetrain"), 1 + len(file_ops._LOCK_RETRY_DELAYS_S))
+        self.assertIsNone(out["failed"]["server"])
+        self.assertIn("No matching failed request", out["failed"]["note"])
+
+    def test_other_errors_are_not_retried(self):
+        with mock.patch.object(FakeFolder, "name", new_callable=mock.PropertyMock) as prop:
+            prop.side_effect = ["drivetrain", RuntimeError("cloud error"), "drivetrain"]
+            out = file_ops.execute_folder_rename(self.drive, ["Frame"])
+        self.assertEqual(out["failed"]["attempts"], 1)
+        self.assertNotIn("server", out["failed"])
+
+    def test_read_back_mismatch_fails(self):
+        with mock.patch.object(FakeFolder, "name", new_callable=mock.PropertyMock) as prop:
+            prop.return_value = "drivetrain"
+            out = file_ops.execute_folder_rename(self.drive, ["Frame"])
+        self.assertIn("reads back", out["failed"]["error"])
+
+    def test_folder_is_refetched_between_steps(self):
+        fresh = mock.Mock(id=self.drive.id)
+        fresh.name = "x"
+        parent = self.drive.parentFolder
+        with mock.patch.object(file_ops.data_tree, "items", return_value=[fresh]):
+            self.assertIs(file_ops._refetch_folder(self.drive), fresh)
+        self.assertIs(parent, self.drive.parentFolder)
+
+    def test_refetch_falls_back_to_the_held_folder(self):
+        with mock.patch.object(file_ops.data_tree, "items", side_effect=RuntimeError("offline")), \
+                mock.patch.object(file_ops, "log"):
+            self.assertIs(file_ops._refetch_folder(self.drive), self.drive)
+        with mock.patch.object(file_ops.data_tree, "items", return_value=[]):
+            self.assertIs(file_ops._refetch_folder(self.drive), self.drive)
 
     def test_no_change_and_root(self):
         plan, problems = self._plan(self.drive, "drivetrain")
@@ -510,6 +767,10 @@ class EmptyFolderTests(unittest.TestCase):
 
 class HandlerTests(unittest.TestCase):
     def setUp(self):
+        for name, value in (("_wait", mock.Mock()), ("current_log", lambda: ServerLog())):
+            patcher = mock.patch.object(file_ops, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.car, self.shop, self.files = _sample()
         self.data = FakeData([self.car, self.shop])
         self.docs = []
