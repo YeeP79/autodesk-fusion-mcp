@@ -604,5 +604,24 @@ class OpenDocumentHandlerTests(unittest.TestCase):
         self.assertIn("No folder named 'Rear'", result["content"][0]["text"])
 
 
+class CurrentFileIdTests(unittest.TestCase):
+    """A file saved for the first time has a local path as its id until the upload lands (seen live)."""
+
+    class _File:
+        def __init__(self, file_id):
+            self.id = file_id
+
+    class _Doc:
+        def __init__(self, data_file):
+            self.dataFile = data_file
+
+    def test_reads_the_id_the_document_has_now(self):
+        doc = self._Doc(self._File("urn:adsk.wipprod:dm.lineage:A"))
+        self.assertEqual(dio._current_file_id(doc, "/local/_a.f3d"), "urn:adsk.wipprod:dm.lineage:A")
+
+    def test_falls_back_when_the_document_has_no_data_file(self):
+        self.assertEqual(dio._current_file_id(self._Doc(None), "/local/_a.f3d"), "/local/_a.f3d")
+
+
 if __name__ == "__main__":
     unittest.main()
