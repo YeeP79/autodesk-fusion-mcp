@@ -28,6 +28,20 @@ POINT_SCHEMA = {
     "type": "object", "properties": {axis: {"type": "number", "minimum": -1e12, "maximum": 1e12} for axis in ("x", "y", "z")},
     "required": ["x", "y", "z"], "additionalProperties": False,
 }
+MODEL_VIEWS = ["top", "bottom", "front", "back", "left", "right", "iso"]
+CAPTURE_CAMERA_SCHEMA = {
+    "type": "object",
+    "description": "Temporary camera in model coordinates. Excludes view, model_view and fit.",
+    "properties": {
+        "eye": POINT_SCHEMA, "target": POINT_SCHEMA,
+        "up": {**POINT_SCHEMA, "description": "Screen-up direction; a direction, so units do not apply."},
+        "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Units of eye, target and extents (default: cm)."},
+        "extents": {"type": "number", "minimum": 1e-9, "maximum": 1e12,
+                    "description": "Radius around target kept in view, across the image's smaller side. Omit to keep the current extents."},
+        "projection": {"type": "string", "enum": PROJECTIONS, "description": "Omit to keep the current projection."},
+    },
+    "required": ["eye", "target", "up"], "additionalProperties": False,
+}
 CAMERA_SCHEMA = {
     "type": "object",
     "description": "Camera snapshot from get_viewport. Coordinates/extents in cm; perspective_angle in degrees. Use alone to restore a camera.",
@@ -137,7 +151,11 @@ TOOL_DEFINITIONS = [
     {
         "name": CAPTURE_VIEWPORT,
         "description": (
-            "Capture the active Fusion viewport as a PNG. Optional view and fit are temporary: "
+            "Capture the active Fusion viewport as a PNG. camera aims from model coordinates; model_view "
+            "frames the visible bodies from a named side of the model, honoring up_axis (standard views "
+            "assume Y-up, so a front view of a Z-up model shows its plan). Either adds a text item with the "
+            "camera used. A nearly uniform image adds a text item with warnings; the capture still succeeds. "
+            "Optional view, fit, camera and model_view are temporary: "
             "the original camera is restored even on failure. Background can be viewport, "
             "transparent, or #RRGGBB. Crop uses pixels in the rendered image, origin top-left. "
             "Returns only the cropped region when crop is provided; limit 16 megapixels."
@@ -156,6 +174,10 @@ TOOL_DEFINITIONS = [
                     "description": "Rendered image height in pixels (default: 600; 0 uses viewport height)",
                 },
                 "view": {"type": "string", "enum": STANDARD_VIEWS, "description": "Temporary ViewCube-relative standard view; omit to keep current view."},
+                "camera": CAPTURE_CAMERA_SCHEMA,
+                "model_view": {"type": "string", "enum": MODEL_VIEWS,
+                               "description": "Temporary orthographic view framing the visible bodies. Excludes view, camera and fit."},
+                "up_axis": {"type": "string", "enum": ["z", "y"], "description": "Model up axis for model_view (default: z)."},
                 "fit": {"type": "boolean", "description": "Temporarily fit all graphics before capture (default: false)."},
                 "background": {"type": "string", "description": "viewport (default), transparent, or a solid #RRGGBB color."},
                 "anti_aliasing": {"type": "boolean", "description": "Smooth rendered edges (default: true)."},

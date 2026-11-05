@@ -84,6 +84,10 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `list_scripts` | List saved scripts with metadata |
 | `delete_script` | Delete a saved script |
 
+`capture_viewport` also takes a temporary `camera` (eye, target and up in model
+coordinates) or a `model_view` that frames the visible bodies with a chosen
+`up_axis`, and warns when the image looks blank.
+
 ### Generic API example
 
 ```json
