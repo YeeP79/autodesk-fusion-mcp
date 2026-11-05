@@ -54,6 +54,7 @@ FIND_ENTITIES = "find_entities"
 TIMELINE_INSERT = "timeline_insert"
 COMPARE_FILES = "compare_files"
 COMPARE_BODIES = "compare_bodies"
+AUDIT_DESIGN = "audit_design"
 APPLY_THREAD = "apply_thread"
 
 # Resource constants
@@ -1524,6 +1525,63 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": AUDIT_DESIGN,
+        "description": (
+            "Read-only health report for the active design: one pass over the file, timeline, links, bodies, "
+            "joints, sketches and parameters, worst first, each finding with where it is, why it matters and "
+            "the tool to go to next. A profile picks the rules and their severity: general, assembly (positions "
+            "and links; skips sketches, parameters and the per-face scan) or export-ready (stricter on anything "
+            "that would leave the file wrong). Narrow with 'checks' or 'groups', not both. Result: ok, summary "
+            "by severity and group, findings (capped at max_findings), then skipped. ok needs no errors or "
+            "warnings AND complete: true; gathering stops at time_budget_s and skipped says what was not read, "
+            "so a clean report on half a design is not ok. Interference is not run: use check_solids.\n"
+            "Every run returns a baseline_token (session-only); pass it to a later run on the same file for "
+            "changes (new, resolved, unchanged) and a 'change' on each finding. Only checks that ran in full "
+            "both times are compared; the rest are not_compared, never resolved.\n"
+            "extra_findings merges findings from another tool, in the same shape, past any filter. They keep "
+            "their own severity. Pass [] for 'looked, found nothing' so a baseline can call earlier ones resolved."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "profile": {"type": "string", "enum": ["general", "assembly", "export-ready"],
+                            "description": "Default general."},
+                "checks": {"type": "array", "items": {"type": "string"},
+                           "description": "Only these checks, by name (an unknown name is refused and the "
+                                          "names listed). One the profile switches off is listed under skipped."},
+                "groups": {"type": "array",
+                           "items": {"type": "string", "enum": ["file", "timeline", "links", "bodies", "joints",
+                                                                "sketches", "parameters"]},
+                           "description": "Only these groups."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "max_findings": {"type": "integer", "minimum": 1, "maximum": 1000,
+                                 "description": "Findings listed; the summary always counts all. Default 100."},
+                "baseline_token": {"type": "string", "description": "Token from an earlier audit_design run."},
+                "time_budget_s": {"type": "number", "minimum": 1, "maximum": 110,
+                                  "description": "Stop gathering after this long. Default 90."},
+                "extra_findings": {
+                    "type": "array",
+                    "description": "Findings from another tool; at most 1000.",
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {
+                            "check": {"type": "string", "description": "Rule name, not a built-in one."},
+                            "group": {"type": "string", "description": "A built-in group or your own."},
+                            "severity": {"type": "string", "enum": ["error", "warning", "info"]},
+                            "where": {"type": "string",
+                                      "description": "Stable location; with check it identifies the finding."},
+                            "message": {"type": "string"},
+                            "why": {"type": "string"},
+                            "fix_tool": {"type": "string"},
+                            "source": {"type": "string", "description": "Who supplied it."},
+                        },
+                        "required": ["check", "group", "severity", "where", "message"],
+                    },
+                },
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -1579,6 +1637,7 @@ def build_tool_handlers(
     timeline_insert,
     compare_files,
     compare_bodies,
+    audit_design,
     apply_thread,
 ):
     """Build a dict mapping tool name to handler function.
@@ -1635,6 +1694,7 @@ def build_tool_handlers(
         TIMELINE_INSERT: timeline_insert,
         COMPARE_FILES: compare_files,
         COMPARE_BODIES: compare_bodies,
+        AUDIT_DESIGN: audit_design,
         APPLY_THREAD: apply_thread,
     }
     if set(handlers) != _TOOL_NAMES:

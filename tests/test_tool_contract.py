@@ -63,6 +63,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "compare_files",
         "compare_bodies",
         "apply_thread",
+        "audit_design",
     }
 
     def test_all_expected_tools_present(self):
