@@ -125,7 +125,7 @@ coordinates) or a `model_view` that frames the visible bodies with a chosen
 | `combine_bodies` | Join, cut or intersect existing bodies with `keep_tools` stated every time, a temporary-copy preview compared with what was built, and fresh references to every resulting body |
 | `construction_plane` | Make an offset, three-point, angled or point-and-normal plane and report where it really is, normal sign included; anchors are named, listed and hidden, never deleted |
 | `pattern_features` | Rectangular or circular pattern of features, bodies or faces, direction two always set; proves the count by `elements`, `bodies_made` and `instances_reached`, reads positions from the built elements, and undoes a pattern that changes a body outside the seeds |
-| `apply_thread` | Read Fusion's thread library: narrow by family, size and designation to per-class diameters, or get the nearest thread to a diameter (applying a thread is not available yet) |
+| `apply_thread` | Fusion's thread library: narrow by family, size and designation to per-class diameters, get the nearest thread to a diameter, or put a thread on one whole cylinder, refusing a split face and a diameter off the class, with `modeled` stated every time and the volume measured across the add |
 | `audit_design` | Read-only health report for the active design: file, timeline, links, bodies, joints, sketches and parameters, worst first; profiles, a time budget, baseline diffs, and findings merged from other tools |
 
 ### audit_design findings

@@ -1,8 +1,15 @@
-"""Thread catalog lookup and recommendation: apply_thread, read-only half.
+"""Thread catalog lookup, recommendation and application: apply_thread.
 
-``catalog`` narrows Fusion's thread library by what is given, and ``recommend``
-asks Fusion for the nearest thread to a diameter. Applying a thread arrives with
-``feature_ops``; until then ``apply`` is refused.
+``catalog`` narrows Fusion's thread library by what is given, ``recommend`` asks
+Fusion for the nearest thread to a diameter, and ``apply`` puts a thread on one
+face.
+
+``apply`` refuses a split face, cosmetic or modeled alike. A shaft that came back
+as two half-cylinders is the case that silently cuts a different solid: 2.57x the
+material, measured, with no error. So the face must be whole, and only that face
+goes in. Other cylinders on the body do not matter, since a plate of holes is
+fine. ``modeled`` is required because the two differ by one flag and 9.8% of a
+rod, and the volume is measured across the add to prove which one happened.
 
 The API's spellings are not the dialog's. Sizes are decimals, gauge sizes carry
 the number in brackets (``0.19(#10)``) and ``1/4`` raises for the Unified family,
@@ -14,8 +21,8 @@ Catalog diameters depend on the class: ``1/4-20 UNC`` reads 0.2428 in major unde
 ``12-24 UNC`` whatever it was meant to be. Fusion cannot take a measured pitch either; a thread
 is a designation from the library or nothing.
 
-Everything above the Fusion layer takes a duck-typed query and plain values, so
-it is testable with fakes. Fusion lengths are cm.
+Everything above the Fusion layer takes a duck-typed query, session and plain
+values, so it is testable with fakes. Fusion lengths are cm.
 """
 
 import difflib
@@ -26,18 +33,30 @@ import traceback
 import adsk.core
 import adsk.fusion
 
+from .common import feature_ops as fo
 from .common import geometry
 from .common.api import attempt, safe
 from .common.args import bool_arg, error_pair, is_finite_number, reject_unknown, require_object, text_arg
+from .common.bodies import VOLUME_ABS_TOLERANCE_CM3, label, native
+from .common.entity_refs import (
+    FusionScene,
+    describe_face,
+    owner_entry,
+    parse_ref,
+    resolve,
+    resolved_row,
+)
 from .common.geometry import UNIT_FACTORS, to_cm, unit_labels
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
-ACTIONS = ("catalog", "recommend")
+ACTIONS = ("catalog", "recommend", "apply")
 _COMMON_FIELDS = {"action", "units", "internal", "family"}
 _ACTION_FIELDS = {
     "catalog": {"size", "designation", "thread_class"},
     "recommend": {"diameter"},
+    "apply": {"size", "designation", "thread_class", "face", "modeled", "right_handed", "full_length", "length",
+              "length_expression", "offset", "offset_expression", "measured_from", "dry_run"},
 }
 
 _DIGITS = 5
@@ -47,6 +66,17 @@ SIZE_MATCH = 1e-6  # relative; sizes are spelled to at most four decimals
 
 # Tried in order. Inch tapping families offer only a bare 2B, and take the first.
 PREFERRED_CLASSES = {False: ("2A", "6g"), True: ("2B", "6H")}
+
+# A face sweeping less than this is not a whole cylinder.
+WHOLE_SWEEP_DEG = 355.0
+SPLIT_REFUSAL = "split shafts cut 2.57x too much, or fail; measured"
+# How far a face may be from the thread's major (external) or minor (internal) diameter.
+DIAMETER_TOLERANCE = 0.05
+_FRACTION_EPSILON = 1e-9
+# Kernel volumes drift on a large body, so a delta under this fraction of it is noise.
+VOLUME_NOISE_REL = 1e-6
+LOCATIONS = {"high": "HighEndThreadLocation", "low": "LowEndThreadLocation"}
+STALE_FACE = "the threaded face is gone after a modeled thread; find it again before naming it"
 
 RECOMMEND_WARNING = ("nearest size only, not what the part is: Fusion picks by diameter alone, "
                      "and a thread's pitch cannot be set apart from its designation")
@@ -303,7 +333,250 @@ def run_recommend(library, opts):
             "warnings": [RECOMMEND_WARNING]}
 
 
+# -- Applying (no Fusion) ------------------------------------------------------
+
+
+def is_split(sweep_deg, siblings):
+    """Is this cylinder less than one whole wall? A sweep that cannot be read proves nothing, so it counts."""
+    return siblings > 0 or sweep_deg is None or sweep_deg < WHOLE_SWEEP_DEG
+
+
+def concavity_problem(internal, concavity):
+    """An internal thread belongs in a bore, an external one on a shaft. Unknown is not a contradiction."""
+    wanted = "concave" if internal else "convex"
+    if concavity in ("concave", "convex") and concavity != wanted:
+        side, shape = ("internal", "a shaft") if internal else ("external", "a bore")
+        return f"'internal' says {side}, but the face is {shape} ({concavity})"
+    return None
+
+
+def face_problems(rec, internal):
+    """Why this face cannot take a thread; *rec* is ``describe_face``'s record."""
+    if rec["type"] != "cylinder":
+        return [f"the face is a {rec['type']}, not a cylinder"]
+    problems = []
+    siblings, sweep = rec.get("split_siblings", 0), rec.get("sweep_deg")
+    if is_split(sweep, siblings):
+        problems.append(f"the face is not a whole cylinder (sweep_deg {sweep}, split_siblings {siblings}): "
+                        f"{SPLIT_REFUSAL}")
+    contradiction = concavity_problem(internal, rec.get("concavity"))
+    return problems + ([contradiction] if contradiction else [])
+
+
+def diameter_problem(face_diameter, reference, internal, units):
+    """Is the face the size this thread goes on? Both in *units*, the reference read for the class in use."""
+    name = "minor" if internal else "major"
+    if not reference:
+        return f"the thread has no {name} diameter to check the face against"
+    if abs(face_diameter - reference) / reference > DIAMETER_TOLERANCE + _FRACTION_EPSILON:
+        return (f"the face is {face_diameter} {units} across, more than {DIAMETER_TOLERANCE:.0%} from the "
+                f"thread's {name} diameter {reference} {units}")
+    return None
+
+
+def volume_problem(modeled, volume_before, volume_after, faces_changed):
+    """Did the add do what ``modeled`` said? A small modeled thread on a big body may sit under the noise."""
+    if volume_before is None or volume_after is None:
+        return "the body's volume could not be read, so nothing proves what the thread did"
+    noise = max(VOLUME_ABS_TOLERANCE_CM3, VOLUME_NOISE_REL * abs(volume_before))
+    moved = abs(volume_after - volume_before) > noise
+    if modeled and not moved and not faces_changed:
+        return "a modeled thread changed nothing on the body"
+    if not modeled and moved:
+        return "a cosmetic thread changed the body's volume"
+    return None
+
+
+def pick_thread(library, info_of, opts):
+    """The thread *opts* name: family, designation, class and its ThreadInfo. Raises ThreadError."""
+    internal = opts["internal"]
+    family = library.family(opts["family"])
+    size = library.size(family, opts["size"]) if opts["size"] is not None else None
+    designation = library.designation(family, opts["designation"], size)
+    chosen, defaulted = pick_class(internal, library.classes(internal, family, designation), opts["thread_class"])
+    try:
+        info = info_of(internal, family, designation, chosen, opts["right_handed"])
+    except RuntimeError as exc:
+        raise ThreadError(f"Fusion could not build {designation} class {chosen}: {exc}") from exc
+    return {"family": family, "designation": designation, "thread_class": chosen, "class_defaulted": defaulted,
+            "_info": info}
+
+
+def thread_row(thread, opts):
+    """The result's ``thread``: what was asked for and the dimensions of the class in use."""
+    info, units = thread["_info"], opts["units"]
+    row = {key: thread[key] for key in ("family", "designation", "thread_class")}
+    row.update(internal=opts["internal"], modeled=opts["modeled"], right_handed=opts["right_handed"],
+               pitch=geometry.to_units(safe(info, "threadPitch"), units, 1, _DIGITS),
+               major=geometry.to_units(safe(info, "majorDiameter"), units, 1, _DIGITS),
+               minor=geometry.to_units(safe(info, "minorDiameter"), units, 1, _DIGITS),
+               class_defaulted=thread["class_defaulted"], full_length=opts["full_length"])
+    if not opts["full_length"]:
+        row.update(length=opts["length"]["text"], offset=opts["offset"]["text"], measured_from=opts["measured_from"])
+    return row
+
+
+def face_row(rec, check):
+    return {"ref": rec["ref"], "diameter": rec.get("diameter"), "sweep_deg": rec.get("sweep_deg"),
+            "split_siblings": rec.get("split_siblings"), "diameter_check": check, "concavity": rec.get("concavity"),
+            "axis_world": rec.get("axis_direction"), "length_along_axis": rec.get("length_along_axis")}
+
+
+def _read_face(session, opts, problems, warnings, resolved):
+    """Returns (face, entry, record); a miss leaves them None with the reason in *problems*."""
+    found = resolve(session, opts["face"])
+    if found.refusal:
+        problems.append(f"face: {found.refusal['error']} ({found.refusal['code']})")
+        return None, None, None
+    resolved.append(resolved_row(found, "face"))
+    warnings += found.warnings
+    entry = owner_entry(found.entity, session.entries())
+    if entry is None:
+        problems.append("face: it is not on a body of this design")
+        return None, None, None
+    if not entry["solid"]:
+        problems.append(f"{label(entry)} is a surface body: a thread needs a solid")
+    elif not entry["visible"]:
+        warnings.append(f"{label(entry)} is hidden; hidden bodies are often stale")
+    return found.entity, entry, session.describe(found.entity, opts["units"], entry)
+
+
+def _check_diameter(rec, thread, opts, problems):
+    """The result's ``diameter_check``; a face that cannot be judged was refused for that already."""
+    if thread is None or rec is None or rec["type"] != "cylinder":
+        return "not_checked"
+    info = thread["_info"]
+    reference = safe(info, "minorDiameter" if opts["internal"] else "majorDiameter")
+    problem = diameter_problem(rec["diameter"], geometry.to_units(reference, opts["units"], 1, _DIGITS),
+                               opts["internal"], opts["units"])
+    if problem:
+        problems.append(problem)
+        return "out_of_range"
+    return "ok"
+
+
+def _check_lengths(session, opts, problems):
+    """An expression Fusion cannot read is a refusal, before anything is built."""
+    if opts["full_length"]:
+        return
+    for value in (opts["length"], opts["offset"]):
+        try:
+            session.value(value)
+        except ValueError as exc:
+            problems.append(str(exc))
+
+
+def _finish_apply(design, outcome, job):
+    """Measure across the add; *job* holds ``entry``, ``before``, ``token``, ``opts`` and the report rows."""
+    feature, health, opts, key = outcome["feature"], outcome["health"], job["opts"], job["entry"]["key"]
+    before, units = job["before"], opts["units"]
+    after = fo.snapshot(design)
+    changes = fo.body_changes(before, after, [key], units)
+    old, new = before.get(key), after.get(key)
+    volume_before, volume_after = (None if rec is None else rec["volume"] for rec in (old, new))
+    faces_changed = old is not None and new is not None and old["faces"] != new["faces"]
+
+    problems = []
+    problem = volume_problem(opts["modeled"], volume_before, volume_after, faces_changed)
+    if problem:
+        problems.append(problem)
+    lost = fo.lost_outside(before, after, [key])
+    if lost:
+        problems.append(f"bodies nobody named lost volume or went: {lost}")
+    delta = None if None in (volume_before, volume_after) else volume_after - volume_before
+    warnings = list(job["warnings"]) + ([STALE_FACE] if opts["modeled"] else [])
+    others = [item["ref"] for item in changes["touched"] if item["role"] == "other_instance"]
+    if others:
+        warnings.append(f"other instances of this component changed with it: {others}")
+    return fo.envelope("suspect" if problems else "built", units, feature=fo.feature_row(feature, health),
+                       bodies=changes, baseline_token=job["token"], resolved=job["resolved"],
+                       warnings=problems + warnings, action="apply", thread=job["thread"], face=job["face"],
+                       volume_delta=geometry.to_units(delta, units, 3, _DIGITS + 1))
+
+
+def run_apply(design, document, library, info_of, opts, session):
+    """One thread: every refusal listed together, then the add unless this is a dry run."""
+    units, dry_run = opts["units"], opts["dry_run"]
+    problems, warnings, resolved, near = [], [], [], []
+    thread = None
+    try:
+        thread = pick_thread(library, info_of, opts)
+    except ThreadError as exc:
+        problems.append(str(exc))
+        near = exc.near
+
+    face, entry, rec = _read_face(session, opts, problems, warnings, resolved)
+    if rec is not None:
+        problems += face_problems(rec, opts["internal"])
+    check = _check_diameter(rec, thread, opts, problems)
+    _check_lengths(session, opts, problems)
+    blocked, notes = fo.preflight(design, document, [entry] if entry is not None else ())
+    problems += blocked
+    warnings += notes
+
+    shown = {"thread": thread_row(thread, opts) if thread else None, "face": face_row(rec, check) if rec else None}
+    if problems:
+        extra = {"near_matches": near} if near else {}
+        return fo.refused(units, problems, dry_run=dry_run, resolved=resolved, warnings=warnings, action="apply",
+                          **shown, **extra)
+    if dry_run:
+        return fo.envelope("planned", units, dry_run=True, resolved=resolved, warnings=warnings, action="apply",
+                           plan={"component": entry["component"], "target": entry["key"]}, **shown)
+
+    before, token = fo.baseline(design)
+    outcome = fo.add_feature(lambda: session.add(face, thread["_info"], opts))
+    warnings += outcome["warnings"]
+    if outcome["status"] == "refused":
+        return fo.refused(units, [outcome["refusal"]], resolved=resolved, warnings=warnings, baseline_token=token,
+                          action="apply", **shown)
+    job = {"entry": entry, "before": before, "token": token, "opts": opts, "resolved": resolved, "warnings": warnings,
+           **shown}
+    try:
+        return _finish_apply(design, outcome, job)
+    except Exception as exc:
+        log(f"[MCP] apply_thread post-check failed: {exc}")
+        return fo.envelope("suspect", units, feature=fo.feature_row(outcome["feature"], outcome["health"]),
+                           baseline_token=token, resolved=resolved, action="apply", **shown,
+                           warnings=warnings + [f"the thread was added but its check failed: {exc}"])
+
+
 # -- Argument validation -------------------------------------------------------
+
+
+def _partial_length(arguments, units):
+    """``length``, ``offset`` and ``measured_from``, which only a partial thread takes."""
+    length = fo.read_value(arguments, "length", units, minimum=0)
+    offset = fo.read_value(arguments, "offset", units, required=False) or {"text": f"0 {units}", "number": 0.0}
+    if offset["number"] is not None and offset["number"] < 0:
+        raise ValueError("'offset' must not be negative")
+    measured_from = arguments.get("measured_from", "high")
+    if measured_from not in LOCATIONS:
+        raise ValueError(f"'measured_from' must be one of {sorted(LOCATIONS)}, got {measured_from!r}")
+    return {"length": length, "offset": offset, "measured_from": measured_from}
+
+
+def _apply_options(arguments, opts):
+    for key in ("family", "designation"):
+        if opts[key] is None:
+            raise ValueError(f"'{key}' is required for apply")
+    if "modeled" not in arguments:
+        raise ValueError("'modeled' is required: the two differ by one flag and 9.8% of a rod")
+    if "face" not in arguments:
+        raise ValueError("'face' is required for apply")
+    ref = parse_ref(arguments["face"], opts["units"], "face")
+    if ref["kind"] not in (None, "face"):
+        raise ValueError(f"'face' must be a face, not a {ref['kind']}")
+    full_length = bool_arg(arguments, "full_length", True)
+    opts.update(face={**ref, "kind": "face"}, modeled=bool_arg(arguments, "modeled"),
+                right_handed=bool_arg(arguments, "right_handed", True), full_length=full_length,
+                dry_run=bool_arg(arguments, "dry_run", False))
+    partial = sorted(k for k in ("length", "length_expression", "offset", "offset_expression", "measured_from")
+                     if k in arguments)
+    if full_length:
+        if partial:
+            raise ValueError(f"{partial} need 'full_length': false")
+        return opts
+    return {**opts, **_partial_length(arguments, opts["units"])}
 
 
 @error_pair
@@ -311,8 +584,6 @@ def validate_args(arguments):
     """Return (options, error_text). Unused narrowing keys stay None."""
     require_object(arguments)
     action = arguments.get("action")
-    if action == "apply":
-        raise ValueError("'apply' is not available yet; it needs feature_ops. Use 'catalog' or 'recommend'")
     if action not in ACTIONS:
         raise ValueError(f"'action' must be one of {list(ACTIONS)}")
     reject_unknown(arguments, _COMMON_FIELDS | _ACTION_FIELDS[action])
@@ -329,6 +600,8 @@ def validate_args(arguments):
         return opts
     for key in ("size", "designation", "thread_class"):
         opts[key] = text_arg(arguments, key)
+    if action == "apply":
+        return _apply_options(arguments, opts)
     if opts["family"] is None and (opts["size"] or opts["designation"]):
         raise ValueError("'size' and 'designation' need 'family'; call with no arguments to list families")
     if opts["thread_class"] is not None and opts["designation"] is None:
@@ -355,20 +628,65 @@ def open_library():
     return ThreadLibrary(_design_threads().threadDataQuery)
 
 
-def make_info(internal, family, designation, cls):
+def make_info(internal, family, designation, cls, right_handed=True):
     """A ThreadInfo: ``ThreadInfo.create``, else the retired ``createThreadInfo`` that worked on 2704."""
     create = safe(safe(adsk.fusion, "ThreadInfo"), "create")
     if callable(create):
-        return create(False, internal, family, designation, cls, True)
-    return _design_threads().createThreadInfo(internal, family, designation, cls)
+        return create(False, internal, family, designation, cls, right_handed)
+    info = _design_threads().createThreadInfo(internal, family, designation, cls)
+    if not right_handed:
+        info.isRightHanded = False
+    return info
+
+
+class FusionThread(FusionScene):
+    """``FusionScene`` plus the add. Lives for one call."""
+
+    def __init__(self, design):
+        super().__init__(design)
+        self._units = design.unitsManager
+
+    def describe(self, face, units, entry):
+        return describe_face(face, units, entry)
+
+    def value(self, value):
+        return fo.value_input(value, self._units)
+
+    def add(self, face, info, opts):
+        """One whole face, in a collection as Build proved it; a feature works on native entities."""
+        member = native(face)
+        threads = member.body.parentComponent.features.threadFeatures
+        faces = adsk.core.ObjectCollection.create()
+        faces.add(member)
+        entity = threads.createInput(faces, info)
+        entity.isModeled = opts["modeled"]
+        entity.isFullLength = opts["full_length"]
+        if not opts["full_length"]:
+            entity.threadLength = self.value(opts["length"])
+            entity.threadOffset = self.value(opts["offset"])
+            entity.threadLocation = getattr(adsk.fusion.ThreadLocations, LOCATIONS[opts["measured_from"]])
+        return threads.add(entity)
+
+
+def _apply(opts):
+    app = get_app()
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    if design is None:
+        refusals, _ = fo.preflight(None)
+        return fo.write_result(fo.refused(opts["units"], refusals, dry_run=opts["dry_run"], action="apply"))
+    payload = run_apply(design, safe(app, "activeDocument"), open_library(), make_info, opts, FusionThread(design))
+    log(f"[MCP] apply_thread apply: {payload['status']}")
+    return fo.write_result(payload)
 
 
 def apply_thread(arguments):
-    """Read Fusion's thread library: catalog narrowing and nearest-size recommendation."""
+    """Fusion's thread library: catalog narrowing, nearest-size recommendation, and applying a thread."""
     opts, err = validate_args(arguments)
     if err:
         return error_result(err)
     try:
+        if opts["action"] == "apply":
+            return _apply(opts)
         library = open_library()
         if opts["action"] == "catalog":
             return ok_result({"action": "catalog", **run_catalog(library, make_info, opts)})
