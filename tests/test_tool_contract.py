@@ -28,6 +28,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "delete_script",
         "get_active_selection",
         "manage_annotations",
+        "probe_geometry",
     }
 
     def test_all_expected_tools_present(self):

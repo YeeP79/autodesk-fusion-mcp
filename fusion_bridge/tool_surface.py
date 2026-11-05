@@ -15,6 +15,7 @@ LIST_SCRIPTS = "list_scripts"
 DELETE_SCRIPT = "delete_script"
 GET_ACTIVE_SELECTION = "get_active_selection"
 MANAGE_ANNOTATIONS = "manage_annotations"
+PROBE_GEOMETRY = "probe_geometry"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -44,6 +45,8 @@ CAMERA_SCHEMA = {
     },
     "required": ["eye", "target", "up_vector", "projection"], "additionalProperties": False,
 }
+
+NUMBERS_SCHEMA = {"type": "array", "items": {"type": "number"}}
 
 # Each tool: {"name", "description", "inputSchema"}
 TOOL_DEFINITIONS = [
@@ -370,6 +373,68 @@ TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": PROBE_GEOMETRY,
+        "description": (
+            "Read-only sampling of the active design in world coordinates: is there material here? "
+            "Coordinates in and out use the required 'units'; angles are degrees; points and vectors are [x, y, z]. "
+            "Targets 'bodies' (default all visible solids). Actions:\n"
+            "- point: 'points'; inside/on per body, any body not listed is outside.\n"
+            "- ray: 'origin', 'direction'; every hit in order, entries and exits alike, with distance and body.\n"
+            "- grid: 'origin', 'u', 'v', 'rows', 'columns' over the rectangle (corners included); sample 'ray' "
+            "(default; 'direction' defaults to u x v) gives first-hit distance and body matrices, sample 'point' "
+            "gives one containment string per row.\n"
+            "- radial: 'center', 'axis', 'radii', 'angles'; at each radius and angle, the [start, end] heights along "
+            "the axis that hold material ('axial_range' limits them, default the targets' extent).\n"
+            "- axial: 'center', 'axis', 'stations'; at each height along the axis and each of 'angles' (default "
+            "0/90/180/270), the [inner, outer] radii holding material ('max_radius' limits them).\n"
+            "radial/axial angle 0 is 'reference' (default world X, or Y for an axis near X), right-handed about the "
+            "axis; the frame used is returned. Interval rows add by_body when several bodies have material, and "
+            "flags: coincident (ray runs along a surface, counted as material), unknown, hit_cap. "
+            "Stops at 2000 samples or about 90 s and reports truncated, truncation_reason and samples_done. "
+            "other_bodies_hit lists bodies a ray crossed that were not targets."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "action": {"type": "string", "enum": ["point", "ray", "grid", "radial", "axial"],
+                           "description": "What to sample."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"],
+                          "description": "Units of every length in the arguments and the result."},
+                "bodies": {
+                    "type": "array", "description": "Bodies to sample (default: all visible solids).",
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {
+                            "occurrence_path": {"type": "string", "description": "Occurrence fullPathName, or 'root'."},
+                            "body_name": {"type": "string", "description": "Body name."},
+                            "body_index": {"type": "integer", "minimum": 0,
+                                           "description": "Position in its occurrence, only when names repeat."},
+                        },
+                        "required": ["occurrence_path", "body_name"],
+                    },
+                },
+                "points": {"type": "array", "items": NUMBERS_SCHEMA, "description": "point: the [x, y, z] points."},
+                "origin": {**NUMBERS_SCHEMA, "description": "ray: ray start. grid: the rectangle's first corner."},
+                "direction": {**NUMBERS_SCHEMA, "description": "ray, grid: ray direction (any length)."},
+                "u": {**NUMBERS_SCHEMA, "description": "grid: rectangle edge the columns step along (a length vector)."},
+                "v": {**NUMBERS_SCHEMA, "description": "grid: rectangle edge the rows step along (a length vector)."},
+                "rows": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "grid: sample rows."},
+                "columns": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "grid: sample columns."},
+                "sample": {"type": "string", "enum": ["ray", "point"],
+                           "description": "grid: cast rays (default) or test containment."},
+                "center": {**NUMBERS_SCHEMA, "description": "radial, axial: a point on the axis; heights count from it."},
+                "axis": {**NUMBERS_SCHEMA, "description": "radial, axial: axis direction (any length)."},
+                "reference": {**NUMBERS_SCHEMA, "description": "radial, axial: direction of angle 0."},
+                "radii": {**NUMBERS_SCHEMA, "description": "radial: distances from the axis."},
+                "angles": {**NUMBERS_SCHEMA, "description": "radial, axial: angles about the axis, degrees."},
+                "stations": {**NUMBERS_SCHEMA, "description": "axial: heights along the axis from center."},
+                "axial_range": {**NUMBERS_SCHEMA, "description": "radial: [start, end] heights to search."},
+                "max_radius": {"type": "number", "description": "axial: how far from the axis to search."},
+            },
+            "required": ["action", "units"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -391,6 +456,7 @@ def build_tool_handlers(
     delete_script,
     get_active_selection,
     manage_annotations,
+    probe_geometry,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -412,6 +478,7 @@ def build_tool_handlers(
         DELETE_SCRIPT: delete_script,
         GET_ACTIVE_SELECTION: get_active_selection,
         MANAGE_ANNOTATIONS: manage_annotations,
+        PROBE_GEOMETRY: probe_geometry,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
