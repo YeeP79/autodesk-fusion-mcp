@@ -863,7 +863,8 @@ TOOL_DEFINITIONS = [
         "name": SKETCH_PROFILE,
         "description": (
             "Build a closed sketch outline safely, or inspect a sketch's profiles. "
-            "closed_polyline: new sketch on sketch_plane (xy|xz|yz of the component) or plane_entity_token; "
+            "closed_polyline: on a new sketch on sketch_plane (xy|xz|yz of the component) or plane_entity_token, or "
+            "added to the existing sketch at sketch_entity_token, so an outline and its holes share a sketch; "
             "points are [x,y] in sketch space or, with space 'model', [x,y,z] in the component's model space "
             "(mapped with Sketch.modelToSketchSpace; on XZ, sketch y is model -z). The loop closes itself; "
             "every curve shares SketchPoints with its neighbors, so moving a vertex keeps the profile closed. "
@@ -874,10 +875,13 @@ TOOL_DEFINITIONS = [
             "Returns sketch and profile entity tokens, warns when more than one profile results, and stores "
             "$sketch_profile_sketch / $sketch_profile_profile for follow-up calls. "
             "circles: each circle in circles as one entity (never two arcs, whose extruded wall is two faces "
-            "and cannot be threaded), on sketch_plane or plane_entity_token. center is [x,y] in sketch space or, "
+            "and cannot be threaded), on the same three targets. center is [x,y] in sketch space or, "
             "with space 'model', [x,y,z] on the plane. Refused if two circles repeat, cross or touch; nested "
             "circles are fine. Each entry of the result's circles has whole: true when a profile uses the "
             "circle uncut, false when other sketch curves cut it, null when it bounds no profile. "
+            "Adding to a sketch: name and component are refused, added_to_existing and profile_count_before "
+            "are reported, a failed build removes only what it drew, and a feature that already uses the "
+            "sketch recomputes against its new profiles. "
             "profiles: for a sketch by name (in component) or sketch_entity_token, list every profile with "
             "area, centroid (sketch space) and loop counts, the largest_profile, and with point the "
             "profile_containing it. Areas are in units squared. Profile tokens change when the sketch recomputes."
@@ -923,7 +927,8 @@ TOOL_DEFINITIONS = [
                 },
                 "name": {"type": "string",
                          "description": "closed_polyline, circles: new sketch name (must be unused). profiles: sketch to inspect."},
-                "sketch_entity_token": {"type": "string", "description": "profiles: sketch to inspect."},
+                "sketch_entity_token": {"type": "string",
+                                        "description": "closed_polyline, circles: sketch to add to. profiles: sketch to inspect."},
                 "point": {**_COORD_SCHEMA, "description": "profiles: report which profile contains this point."},
             },
             "required": ["action", "units"],

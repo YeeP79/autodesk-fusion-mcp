@@ -417,6 +417,11 @@ class FakePoint:
     def __init__(self, sketch, x, y):
         self.sketch, self.geometry = sketch, SimpleNamespace(x=x, y=y, z=0.0)
         self.curves = []
+        self.isValid = True
+
+    def deleteMe(self):
+        self.isValid = False
+        return True
 
     @property
     def connectedEntities(self):
@@ -439,6 +444,18 @@ class FakeCurve:
         start.curves.append(self)
         end.curves.append(self)
 
+    def deleteMe(self):
+        return delete_curve(self, self.startSketchPoint, self.endSketchPoint)
+
+
+def delete_curve(curve, *points):
+    for point in points:
+        point.curves.remove(curve)
+    for owner in (points[0].sketch.curves, points[0].sketch.circles):
+        if curve in owner:
+            owner.remove(curve)
+    return True
+
 
 class FakeCircle:
     def __init__(self, sketch, center, radius):
@@ -446,6 +463,9 @@ class FakeCircle:
         self.centerSketchPoint.curves.append(self)
         self.center_z, self.radius = center[2], radius
         self.entityToken = f"circle-{len(sketch.circles)}"
+
+    def deleteMe(self):
+        return delete_curve(self, self.centerSketchPoint)
 
 
 class FakeSketch:
@@ -555,6 +575,8 @@ class BuildSketch(FakeSketch):
         self.deleted = False
         self.deferred_history = []
         self.fixed_profiles = None
+        self.objectType = "adsk::fusion::Sketch"
+        self.parentComponent = SimpleNamespace(name="Sub")
 
     @property
     def isComputeDeferred(self):
@@ -728,6 +750,191 @@ class CirclesActionTests(HandlerCase):
         result, payload = self.run_tool(design, **self.ARGS, circles=[{"center": [0, 0], "diameter": 1}])
         self.assertTrue(result["isError"])
         self.assertIn("already exists", payload["problems"][0])
+
+
+class ExistingSketchRequestTests(unittest.TestCase):
+    POLY = {"action": "closed_polyline", "units": "in", "sketch_entity_token": "t",
+            "points": [[0, 0], [2, 0], [2, 2]]}
+
+    def test_token_replaces_the_plane(self):
+        self.assertEqual(sketch_profile.parse_request(self.POLY)["sketch_entity_token"], "t")
+        circles = {"action": "circles", "units": "in", "sketch_entity_token": "t",
+                   "circles": [{"center": [0, 0], "diameter": 1}]}
+        self.assertEqual(sketch_profile.parse_request(circles)["sketch_entity_token"], "t")
+
+    def test_exactly_one_target(self):
+        for changes in ({"sketch_plane": "xy"}, {"plane_entity_token": "p"}, {"sketch_entity_token": ""}):
+            with self.subTest(changes=changes), self.assertRaises(geo.GeometryError):
+                sketch_profile.parse_request({**self.POLY, **changes})
+
+    def test_name_and_component_refused(self):
+        for changes in ({"name": "S"}, {"component": "Sub"}):
+            with self.subTest(changes=changes):
+                problems = problems_of(sketch_profile.parse_request, {**self.POLY, **changes})
+                self.assertIn("cannot be used with 'sketch_entity_token'", problems[0])
+
+    def test_bad_outline_in_sketch_space_refused_early(self):
+        args = {**self.POLY, "points": [[0, 0], [2, 2], [2, 0], [0, 2]]}
+        self.assertIn("crosses", problems_of(sketch_profile.parse_request, args)[0])
+
+    def test_model_space_uses_the_vertices_for_the_normal(self):
+        args = {**self.POLY, "space": "model", "points": [[0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 1]]}
+        self.assertIn("off the sketch plane", problems_of(sketch_profile.parse_request, args)[0])
+
+    def test_model_space_d_shape_waits_for_the_real_plane(self):
+        args = {**self.POLY, "space": "model", "points": [[0, 0, 0], [2, 0, 0]],
+                "arcs": [{"index": 1, "mid_point": [1, 1, 0]}]}
+        self.assertEqual(len(sketch_profile.parse_request(args)["points"]), 2)
+
+
+def design_finding(*entities):
+    design = fake_design(None)
+    design.rootComponent.sketches.add = lambda plane: (_ for _ in ()).throw(AssertionError("new sketch made"))
+    design.findEntityByToken = lambda token: list(entities)
+    return design
+
+
+class AddToExistingSketchTests(HandlerCase):
+    CIRCLES = {"action": "circles", "sketch_entity_token": "t", "circles": [{"center": [5, 5], "diameter": 1}]}
+    POLY = {"action": "closed_polyline", "sketch_entity_token": "t", "points": [[1, 1], [3, 1], [3, 3], [1, 3]]}
+
+    def plate(self):
+        sketch = BuildSketch()
+        sketch_profile.build_loop(sketch, [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)], {}, tuple_point)
+        return sketch
+
+    def test_circle_joins_the_plate_sketch(self):
+        sketch = self.plate()
+        result, payload = self.run_tool(design_finding(sketch), **self.CIRCLES)
+        self.assertFalse(result["isError"])
+        self.assertEqual(len(sketch.circles), 1)
+        self.assertEqual(len(sketch.curves), 4)
+        self.assertIs(payload["added_to_existing"], True)
+        self.assertEqual((payload["profile_count_before"], payload["profile_count"]), (1, 2))
+        self.assertEqual(payload["sketch"]["component"], "Sub")
+        self.assertEqual(payload["warnings"], [])
+        self.assertEqual(sketch.name, "Sketch1")
+
+    def test_loop_joins_the_sketch_without_a_many_profiles_warning(self):
+        sketch = BuildSketch()
+        sketch.sketchCurves.sketchCircles.addByCenterRadius((5.0, 5.0, 0.0), 1.0)
+        result, payload = self.run_tool(design_finding(sketch), **self.POLY)
+        self.assertFalse(result["isError"])
+        self.assertEqual(len(sketch.curves), 4)
+        self.assertEqual(payload["profile_count"], 2)
+        self.assertEqual(payload["warnings"], [])
+
+    def test_new_sketch_reports_the_same_keys(self):
+        _, payload = self.run_tool(fake_design(BuildSketch()), action="circles", sketch_plane="xy",
+                                   circles=[{"center": [0, 0], "diameter": 1}])
+        self.assertIs(payload["added_to_existing"], False)
+        self.assertEqual(payload["profile_count_before"], 0)
+
+    def test_compute_is_never_deferred_on_an_existing_sketch(self):
+        for args in (self.CIRCLES, self.POLY):
+            sketch = self.plate()
+            with self.subTest(action=args["action"]):
+                self.run_tool(design_finding(sketch), **args)
+                self.assertEqual(sketch.deferred_history, [])
+
+    def test_no_new_region_warns(self):
+        sketch = self.plate()
+        sketch.fixed_profiles = [fake_profile(100.0, [("line", 0)])]
+        _, payload = self.run_tool(design_finding(sketch), **self.POLY)
+        self.assertIn("did not add a region", payload["warnings"][0])
+
+    def test_token_of_something_else_refused(self):
+        result, payload = self.run_tool(design_finding(SimpleNamespace(objectType="adsk::fusion::BRepFace")),
+                                        **self.CIRCLES)
+        self.assertTrue(result["isError"])
+        self.assertIn("does not match a sketch", payload["problems"][0])
+
+    def test_proxy_sketch_draws_on_the_native(self):
+        sketch = self.plate()
+        proxy = SimpleNamespace(objectType="adsk::fusion::Sketch", nativeObject=sketch)
+        self.run_tool(design_finding(proxy), **self.CIRCLES)
+        self.assertEqual(len(sketch.circles), 1)
+
+    def test_refusal_keeps_the_sketch_and_draws_nothing(self):
+        sketch = self.plate()
+        result, payload = self.run_tool(design_finding(sketch), action="circles", sketch_entity_token="t",
+                                        space="model", circles=[{"center": [0, 0, 1], "diameter": 1}])
+        self.assertTrue(result["isError"])
+        self.assertIn("nothing was created", payload["error"])
+        self.assertFalse(sketch.deleted)
+        self.assertEqual(sketch.circles, [])
+
+    def test_failed_circle_erases_only_what_it_drew(self):
+        sketch = self.plate()
+        kept = list(sketch.curves)
+        add = sketch.sketchCurves.sketchCircles.addByCenterRadius
+        answers = iter([add, lambda c, r: None])
+        sketch.sketchCurves.sketchCircles.addByCenterRadius = lambda c, r: next(answers)(c, r)
+        result, payload = self.run_tool(design_finding(sketch), action="circles", sketch_entity_token="t", circles=[
+            {"center": [2, 2], "diameter": 1}, {"center": [5, 5], "diameter": 1}])
+        self.assertTrue(result["isError"])
+        self.assertFalse(sketch.deleted)
+        self.assertEqual(sketch.circles, [])
+        self.assertEqual(sketch.curves, kept)
+
+    def test_failed_outline_erases_its_partial_loop_and_points(self):
+        sketch = self.plate()
+        kept = list(sketch.curves)
+        add = sketch.sketchCurves.sketchLines.addByTwoPoints
+        calls, drawn_points = [], []
+
+        def fail_on_third(a, b):
+            calls.append(None)
+            if len(calls) == 3:
+                return None
+            curve = add(a, b)
+            drawn_points.extend((curve.startSketchPoint, curve.endSketchPoint))
+            return curve
+
+        sketch.sketchCurves.sketchLines.addByTwoPoints = fail_on_third
+        result, _ = self.run_tool(design_finding(sketch), **self.POLY)
+        self.assertTrue(result["isError"])
+        self.assertFalse(sketch.deleted)
+        self.assertEqual(sketch.curves, kept)
+        self.assertEqual(len(drawn_points), 4)  # Two segments; their shared vertex appears twice.
+        self.assertTrue(all(not p.isValid for p in drawn_points))
+        self.assertTrue(all(p.isValid for c in kept for p in (c.startSketchPoint, c.endSketchPoint)))
+
+    def test_curve_that_will_not_delete_is_reported_not_called_a_refusal(self):
+        sketch = self.plate()
+        stuck = sketch.sketchCurves.sketchCircles.addByCenterRadius((2.0, 2.0, 0.0), 1.0)
+        stuck.deleteMe = lambda: False
+        answers = iter([stuck, None])
+        sketch.sketchCurves.sketchCircles.addByCenterRadius = lambda c, r: next(answers)
+        result, payload = self.run_tool(design_finding(sketch), action="circles", sketch_entity_token="t", circles=[
+            {"center": [2, 2], "diameter": 1}, {"center": [5, 5], "diameter": 1}])
+        self.assertTrue(result["isError"])
+        self.assertIn("1 drawn curve(s) could not be removed", payload["error"])
+
+    def test_new_sketch_is_still_deleted_on_failure(self):
+        sketch = BuildSketch()
+        sketch.sketchCurves.sketchCircles.addByCenterRadius = lambda c, r: None
+        result, _ = self.run_tool(fake_design(sketch), action="circles", sketch_plane="xy",
+                                  circles=[{"center": [0, 0], "diameter": 1}])
+        self.assertTrue(result["isError"])
+        self.assertTrue(sketch.deleted)
+
+
+class EraseCurvesTests(unittest.TestCase):
+    def test_a_point_still_in_use_stays(self):
+        sketch = FakeSketch()
+        add = sketch.sketchCurves.sketchLines.addByTwoPoints
+        first = add((0.0, 0.0), (1.0, 0.0))
+        second = add(first.endSketchPoint, (2.0, 0.0))
+        self.assertEqual(sketch_profile.erase_curves([second]), 0)
+        self.assertEqual(sketch.curves, [first])
+        self.assertTrue(first.endSketchPoint.isValid)
+        self.assertFalse(second.endSketchPoint.isValid)
+
+    def test_delete_that_raises_counts_as_left(self):
+        def boom():
+            raise RuntimeError("no")
+        self.assertEqual(sketch_profile.erase_curves([SimpleNamespace(deleteMe=boom)]), 1)
 
 
 class ChooseProfileTests(unittest.TestCase):
