@@ -290,11 +290,11 @@ class SchemaTests(unittest.TestCase):
 
 class DirectRoutingTests(unittest.TestCase):
     def test_only_fusion_dialogs_is_direct(self):
-        self.assertEqual(tool_surface.DIRECT_TOOL_NAMES, {"fusion_dialogs"})
+        self.assertIn("fusion_dialogs", tool_surface.DIRECT_TOOL_NAMES)
         handlers = runtime.server_tool_handlers(operations.TOOL_HANDLERS)
         self.assertIs(handlers["fusion_dialogs"], runtime.handle_any_tool)
         for name, handler in handlers.items():
-            if name != "fusion_dialogs":
+            if name not in tool_surface.DIRECT_TOOL_NAMES:
                 with self.subTest(tool=name):
                     self.assertIs(handler, dispatch.dispatch_to_main_thread)
 

@@ -95,6 +95,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `remove_empty_folders` | List truly empty cloud folders and delete them children-first (dry run by default) |
 | `sketch_profile` | Build validated, connected closed sketch outlines (lines + arcs); list a sketch's profiles |
 | `check_solids` | Post-feature sanity check: slivers, tiny faces, lumps, non-solids, interference, volume changes vs a baseline |
+| `tail_log` | Read Fusion's own app log (filter by substring, level, time; `save`/`errors` presets); runs off the main thread |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |

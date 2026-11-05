@@ -22,11 +22,6 @@ DOCUMENT_STATUS = "document_status"
 ACTIVATE_DOCUMENT = "activate_document"
 TIMELINE_HEALTH = "timeline_health"
 FUSION_DIALOGS = "fusion_dialogs"
-
-# Tools the HTTP server thread runs inline instead of dispatching to Fusion's
-# main thread. Only for handlers that never call the Fusion API: they must
-# keep working while a modal dialog blocks the main thread.
-DIRECT_TOOL_NAMES = frozenset({FUSION_DIALOGS})
 DELETE_FEATURES = "delete_features"
 LIST_BODIES = "list_bodies"
 DESCRIBE_BODY = "describe_body"
@@ -41,6 +36,12 @@ SKETCH_PROFILE = "sketch_profile"
 CHECK_SOLIDS = "check_solids"
 BRIDGE_INFO = "bridge_info"
 RELOAD_ADDIN = "reload_addin"
+TAIL_LOG = "tail_log"
+
+# Tools the HTTP server thread runs inline instead of dispatching to Fusion's
+# main thread. Only for handlers that never call the Fusion API: they must
+# keep working while a modal dialog blocks the main thread.
+DIRECT_TOOL_NAMES = frozenset({FUSION_DIALOGS, TAIL_LOG})
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -936,6 +937,38 @@ TOOL_DEFINITIONS = [
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    {
+        "name": TAIL_LOG,
+        "description": (
+            "Read Fusion's own application log (newest AppLogFile*.log by modification time). Runs "
+            "outside the main thread and never touches the Fusion API, so it works while Fusion is "
+            "busy or blocked by a dialog. Returns the newest matching entries, oldest first, each "
+            "'<yyyymmddThhmmss local> <level I/W/E/D> <thread> <message>' with continuation lines "
+            "indented. Filters combine (all must match): contains (any of the substrings, "
+            "case-insensitive), level (letters, e.g. \"WE\"), since (ISO local time or relative "
+            "30s/10m/2h/1d). Presets: save = save/upload workflow lines (a 'Workflow start: save' with "
+            "no '[CFSUploader] Uploaded document' after it means the save did not land); errors = "
+            "levels W and E. file: latest (default), list (log files with sizes/mtimes) or a file "
+            "name from list. The add-in's own error-level messages are written to this log too."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "lines": {"type": "integer", "minimum": 1, "maximum": 1000,
+                          "description": "Maximum entries to return (default 50)."},
+                "contains": {"type": "array", "items": {"type": "string"},
+                             "description": "Keep entries containing any of these substrings (case-insensitive)."},
+                "level": {"type": "string",
+                          "description": "Keep only these levels: any of I, W, E, D (e.g. \"E\" or \"WE\")."},
+                "since": {"type": "string",
+                          "description": "Only entries at or after this time: ISO (2026-11-04T17:08) or relative (10m, 2h)."},
+                "file": {"type": "string",
+                         "description": "latest (default), list, or a file name returned by list."},
+                "preset": {"type": "string", "enum": ["save", "errors"],
+                           "description": "save: save/upload workflow lines; errors: levels W and E."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -978,6 +1011,7 @@ def build_tool_handlers(
     check_solids,
     bridge_info,
     reload_addin,
+    tail_log,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -1020,6 +1054,7 @@ def build_tool_handlers(
         CHECK_SOLIDS: check_solids,
         BRIDGE_INFO: bridge_info,
         RELOAD_ADDIN: reload_addin,
+        TAIL_LOG: tail_log,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")

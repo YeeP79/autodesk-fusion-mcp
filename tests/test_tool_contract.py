@@ -49,6 +49,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "check_solids",
         "bridge_info",
         "reload_addin",
+        "tail_log",
     }
 
     def test_all_expected_tools_present(self):
