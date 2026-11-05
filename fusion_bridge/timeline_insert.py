@@ -36,6 +36,8 @@ import adsk.core
 import adsk.fusion
 
 from . import python_exec
+from .common.api import strict_items
+from .common.results import tool_result
 from .dispatch import get_app, log
 
 MAX_LISTED = 200
@@ -47,23 +49,12 @@ _PARAMETRIC_DESIGN = 1  # adsk.fusion.DesignTypes.ParametricDesignType
 _HEALTH_NAMES = {0: "healthy", 1: "warning", 2: "error", 3: "suppressed", 4: "rolled_back", 5: "unknown"}
 
 
-def _text(payload, is_error=False):
-    body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": is_error}
-
-
 def _attr(obj, name, default=None):
     """Read an attribute; Fusion properties can raise on stale or partial objects."""
     try:
         return getattr(obj, name)
     except Exception:
         return default
-
-
-def _items(collection):
-    if collection is None:
-        return []
-    return [collection.item(i) for i in range(collection.count)]
 
 
 def _truncate(text, limit=MAX_ERROR_CHARS):
@@ -300,7 +291,7 @@ def read_rows(timeline):
     group's children hold their own slots, so they appear once, not again under
     the group.
     """
-    top = _items(timeline)
+    top = strict_items(timeline)
     slots = {_attr(obj, "index") for obj in top if not _attr(obj, "isGroup")}
     rows, objects = [], []
     for position, obj in enumerate(top):
@@ -316,7 +307,7 @@ def read_rows(timeline):
                      "entity_type": "TimelineGroup", "component": None, "group": None,
                      "rollable": collapsed, "health": "group", "message": "", "participant_bodies": None})
         objects.append(group)
-        for child in _items(group):
+        for child in strict_items(group):
             child_index = _attr(child, "index", -1)
             if isinstance(child_index, int) and child_index >= 0 and child_index in slots:
                 continue
@@ -451,34 +442,34 @@ def timeline_insert(arguments):
     try:
         before, code, session_id, dry_run = validate_arguments(arguments)
     except ValueError as exc:
-        return _text(f"Error: {exc}", True)
+        return tool_result(f"Error: {exc}", True)
 
     try:
         app = get_app()
         design = _active_design(app)
         if design is None:
-            return _text("Error: the active product is not a Fusion design", True)
+            return tool_result("Error: the active product is not a Fusion design", True)
         timeline = _timeline_of(design)
         if timeline is None:
-            return _text("Error: this is a direct design; it has no timeline", True)
+            return tool_result("Error: this is a direct design; it has no timeline", True)
 
         rows, objects = read_rows(timeline)
         marker, count = timeline.markerPosition, timeline.count
         position, refusals = preflight(rows, marker, count, before)
         if refusals:
-            return _text({"error": "Nothing was run.", "dry_run": dry_run, "refusals": refusals,
+            return tool_result({"error": "Nothing was run.", "dry_run": dry_run, "refusals": refusals,
                           "marker_position": marker, "timeline_count": count,
                           "health_counts": health_counts(rows)}, True)
 
         plan = _describe_plan(rows, position, marker, count)
         if dry_run:
-            return _text({"dry_run": True, "before": before, **plan})
+            return tool_result({"dry_run": True, "before": before, **plan})
 
         outcome = run_rolled_back(timeline, objects[position], rows[position]["index"],
                                   _attr(app, "activeDocument"), code, session_id)
         report, is_error = _report(before, plan, rows, position, outcome, timeline)
         log(f"[MCP] timeline_insert before {before!r}: {report['status']}")
-        return _text(report, is_error)
+        return tool_result(report, is_error)
     except Exception as exc:
         log(f"[MCP] timeline_insert failed: {exc}")
-        return _text(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
+        return tool_result(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)

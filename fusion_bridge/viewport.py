@@ -244,7 +244,7 @@ def _dimension(value, name):
 
 def _screen_up(back, up):
     """Return up made perpendicular to the viewing direction, as a unit vector."""
-    return _unit(_cross(_unit(_cross(back, up)), back))
+    return _unit(cross(_unit(cross(back, up)), back))
 
 
 def _parse_capture_camera(value):
@@ -257,12 +257,12 @@ def _parse_capture_camera(value):
     if projection is not None and (not isinstance(projection, str) or projection not in PROJECTIONS):
         raise ValueError("Unknown camera projection")
     scale = CAPTURE_UNITS[units]
-    eye = _scale(_vector(value["eye"], "camera.eye"), scale)
-    target = _scale(_vector(value["target"], "camera.target"), scale)
+    eye = scaled(_vector(value["eye"], "camera.eye"), scale)
+    target = scaled(_vector(value["target"], "camera.target"), scale)
     extents = value.get("extents")
     if extents is not None:
         extents = _number(extents, "camera.extents", 1e-9, 1e12) * scale
-    back = _unit(_sub(eye, target))
+    back = _unit(sub(eye, target))
     up = _screen_up(back, _unit(_vector(value["up"], "camera.up")))
     return {"eye": eye, "target": target, "up": up, "extents": extents, "projection": projection}
 
@@ -271,29 +271,29 @@ def _model_view_axes(name, up_axis):
     """Return (unit vector from target to eye, up) for a model-relative view."""
     right, front, up = MODEL_AXES[up_axis]
     return {
-        "front": (front, up), "back": (_scale(front, -1), up),
-        "right": (right, up), "left": (_scale(right, -1), up),
-        "top": (up, _scale(front, -1)), "bottom": (_scale(up, -1), front),
-        "iso": (_unit(_add(_add(front, right), up)), up),
+        "front": (front, up), "back": (scaled(front, -1), up),
+        "right": (right, up), "left": (scaled(right, -1), up),
+        "top": (up, scaled(front, -1)), "bottom": (scaled(up, -1), front),
+        "iso": (_unit(add(add(front, right), up)), up),
     }[name]
 
 
 def _frame_model(low, high, name, up_axis, aspect):
     """Return an orthographic pose framing the box low..high (cm) at width/height aspect."""
-    half = _scale(_sub(high, low), 0.5)
+    half = scaled(sub(high, low), 0.5)
     radius = math.hypot(*half)
     if radius < 1e-9:
         raise ValueError("Visible bodies have no size to frame")
     back, up = _model_view_axes(name, up_axis)
     up = _screen_up(back, up)
-    right = _cross(up, back)
+    right = cross(up, back)
     half_width, half_height = (sum(abs(a) * h for a, h in zip(axis, half)) for axis in (right, up))
     # viewExtents is the full span of the window's smaller side (measured live:
     # 12.7 gave a 12.7 cm tall image at 400x300), not a radius.
     extents = 2 * MODEL_VIEW_MARGIN * max(half_width / max(aspect, 1), half_height * min(aspect, 1))
-    target = _scale(_add(low, high), 0.5)
+    target = scaled(add(low, high), 0.5)
     # Keep the eye outside the bounding sphere so nothing sits behind it.
-    return {"eye": _add(target, _scale(back, 3 * radius)), "target": target, "up": up,
+    return {"eye": add(target, scaled(back, 3 * radius)), "target": target, "up": up,
             "extents": extents, "projection": "orthographic"}
 
 

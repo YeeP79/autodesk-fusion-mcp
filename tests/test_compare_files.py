@@ -200,7 +200,7 @@ class Harness(unittest.TestCase):
         self.file_b = FakeDataFile(ID_B, "Winch copy", simple_design("Winch copy"))
         self.app = FakeApp([self.file_a, self.file_b])
         design = type("Design", (), {"cast": staticmethod(lambda product: product)})
-        for target, name, value in ((cf, "get_app", lambda: self.app), (cf, "_pump", lambda: 0.0),
+        for target, name, value in ((cf, "get_app", lambda: self.app), (cf, "pump", lambda: 0.0),
                                     (cf, "log", lambda *a, **k: None), (cf, "SETTLE_QUIET_S", 0.0),
                                     (cf, "CLOSE_SETTLE_QUIET_S", 0.0), (cf, "_POLL_S", 0.0),
                                     (cf, "CLOSE_VERIFY_TIMEOUT_S", 0.0), (cf, "RESTORE_TIMEOUT_S", 0.0)):

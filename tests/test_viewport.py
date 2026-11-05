@@ -245,8 +245,8 @@ class CaptureCameraMathTests(unittest.TestCase):
             for name in ('front', 'top', 'bottom', 'iso'):
                 with self.subTest(up_axis=up_axis, view=name):
                     pose = viewport._frame_model((0,0,0), (1,1,1), name, up_axis, 1)
-                    back = viewport._unit(viewport._sub(pose['eye'], pose['target']))
-                    self.assertGreater(viewport._cross(pose['up'], back)[0], 0)
+                    back = viewport._unit(viewport.sub(pose['eye'], pose['target']))
+                    self.assertGreater(viewport.cross(pose['up'], back)[0], 0)
 
     def test_frame_centers_on_the_box_and_clears_it(self):
         pose = viewport._frame_model((-10,0,0), (30,10,20), 'front', 'z', 1)

@@ -27,7 +27,6 @@ Body counts come in two forms. ``body_count`` and ``total_volume`` count every
 instance in the assembly; ``unique_*`` count each component once.
 """
 
-import json
 import time
 import traceback
 from collections import Counter
@@ -35,6 +34,11 @@ from collections import Counter
 import adsk.core
 import adsk.fusion
 
+from .common.api import safe, strict_items
+from .common.args import is_int
+from .common.cloud import path_segments
+from .common.documents import pump
+from .common.results import tool_result
 from .dispatch import get_app, log
 
 ID_PREFIX = "urn:"
@@ -73,32 +77,6 @@ NOT_PROOF_NOTE = (
 )
 
 
-def _text(payload, is_error=False):
-    body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": is_error}
-
-
-def _safe(obj, attr, default=None):
-    """Read an attribute; cloud-backed properties can raise or be missing."""
-    try:
-        return getattr(obj, attr)
-    except Exception:
-        return default
-
-
-def _items(collection):
-    """Members of a Fusion collection (count/item) or a vector (iteration only)."""
-    if collection is None:
-        return []
-    if hasattr(collection, "item") and hasattr(collection, "count"):
-        return [collection.item(i) for i in range(collection.count)]
-    return list(collection)
-
-
-def _is_int(value):
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 # -- Validation ---------------------------------------------------------------
 
 
@@ -132,11 +110,6 @@ def validate_arguments(arguments):
     return specs[0], specs[1], project_a, project_b
 
 
-def path_segments(path):
-    """Split "Folder/Sub/File" into non-empty segments; the last is the file."""
-    return [part.strip() for part in path.replace("\\", "/").split("/") if part.strip()]
-
-
 def match_named(objects, name, label):
     """The one object called *name* (or name.ext), ignoring case only if no exact hit.
 
@@ -145,16 +118,16 @@ def match_named(objects, name, label):
     """
     rows = []
     for obj in objects:
-        own = _safe(obj, "name") or ""
-        ext = _safe(obj, "fileExtension")
+        own = safe(obj, "name") or ""
+        ext = safe(obj, "fileExtension")
         rows.append((obj, {own, f"{own}.{ext}"} if ext else {own}))
     hits = ([obj for obj, names in rows if name in names]
             or [obj for obj, names in rows if name.casefold() in {n.casefold() for n in names}])
     if not hits:
-        found = sorted(_safe(obj, "name") or "?" for obj, _ in rows)[:50]
+        found = sorted(safe(obj, "name") or "?" for obj, _ in rows)[:50]
         raise LookupError(f"No {label} named {name!r}; found: {found}")
     if len(hits) > 1:
-        listed = "; ".join(f"{_safe(o, 'name')} (id {_safe(o, 'id')})" for o in hits)
+        listed = "; ".join(f"{safe(o, 'name')} (id {safe(o, 'id')})" for o in hits)
         raise LookupError(f"{len(hits)} {label}s named {name!r}: {listed}; use the id")
     return hits[0]
 
@@ -164,10 +137,10 @@ def match_named(objects, name, label):
 
 def _component_stats(component):
     """(body count, volume in cm^3, bodies whose volume could not be read)."""
-    bodies = _items(_safe(component, "bRepBodies"))
+    bodies = strict_items(safe(component, "bRepBodies"))
     volume, unreadable = 0.0, 0
     for body in bodies:
-        value = _safe(body, "volume")
+        value = safe(body, "volume")
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             volume += value
         else:
@@ -178,15 +151,15 @@ def _component_stats(component):
 def read_design(design):
     """The numbers compared for one design. Duck-typed over adsk.fusion.Design."""
     root = design.rootComponent
-    components = _items(design.allComponents)
-    occurrences = _items(root.allOccurrences)
+    components = strict_items(design.allComponents)
+    occurrences = strict_items(root.allOccurrences)
 
     # An assembly repeats components, and body reads are slow. The name is part
     # of the key because a copied file can keep its components' ids.
     stats = {}
 
     def key_of(component):
-        return _safe(component, "id"), _safe(component, "name")
+        return safe(component, "id"), safe(component, "name")
 
     def stats_of(component):
         key = key_of(component)
@@ -195,23 +168,23 @@ def read_design(design):
         return stats[key]
 
     unique = [stats_of(component) for component in components]
-    placed = [stats_of(root)] + [stats_of(_safe(occurrence, "component")) for occurrence in occurrences]
+    placed = [stats_of(root)] + [stats_of(safe(occurrence, "component")) for occurrence in occurrences]
     root_key = key_of(root)
-    design_type = _DESIGN_TYPES.get(_safe(design, "designType"), "unknown")
-    timeline = _safe(design, "timeline") if design_type == "parametric" else None
+    design_type = _DESIGN_TYPES.get(safe(design, "designType"), "unknown")
+    timeline = safe(design, "timeline") if design_type == "parametric" else None
     return {
         "design_type": design_type,
-        "root_component": _safe(root, "name"),
+        "root_component": safe(root, "name"),
         "occurrence_count": len(occurrences),
         "component_count": len(components),
-        "component_names": sorted((_safe(c, "name") or "?") for c in components if key_of(c) != root_key),
+        "component_names": sorted((safe(c, "name") or "?") for c in components if key_of(c) != root_key),
         "body_count": sum(row[0] for row in placed),
         "unique_body_count": sum(row[0] for row in unique),
         "total_volume_cm3": sum(row[1] for row in placed),
         "unique_volume_cm3": sum(row[1] for row in unique),
         "unreadable_volumes": sum(row[2] for row in unique),
-        "timeline_length": _safe(timeline, "count") if timeline is not None else None,
-        "marker_position": _safe(timeline, "markerPosition") if timeline is not None else None,
+        "timeline_length": safe(timeline, "count") if timeline is not None else None,
+        "marker_position": safe(timeline, "markerPosition") if timeline is not None else None,
     }
 
 
@@ -268,7 +241,7 @@ def instance_warnings(row, infos, index):
     if info.get("is_modified") is not False:
         warnings.append(f"{info.get('name')!r} has unsaved changes: this reads the open state, not the saved file.")
     latest = row.get("latest_version")
-    if _is_int(latest) and _is_int(info.get("version")) and info["version"] < latest:
+    if is_int(latest) and is_int(info.get("version")) and info["version"] < latest:
         warnings.append(f"The open instance has v{info['version']} loaded; the latest is v{latest}.")
     if len(instances_of(infos, row["id"])) > 1:
         warnings.append(f"Several instances of this file are open; using {info.get('name')!r}.")
@@ -341,42 +314,35 @@ class SettleTracker:
 # -- Fusion reads -------------------------------------------------------------
 
 
-def _pump():
-    """Run Fusion's event loop once; returns how long that took."""
-    started = time.monotonic()
-    adsk.doEvents()
-    return time.monotonic() - started
-
-
 def _describe(document):
-    data_file = _safe(document, "dataFile")
+    data_file = safe(document, "dataFile")
     return {
-        "name": _safe(document, "name"),
-        "is_active": _safe(document, "isActive"),
-        "is_visible": _safe(document, "isVisible"),
-        "is_modified": _safe(document, "isModified"),
-        "file_id": _safe(data_file, "id"),
-        "version": _safe(data_file, "versionNumber"),
+        "name": safe(document, "name"),
+        "is_active": safe(document, "isActive"),
+        "is_visible": safe(document, "isVisible"),
+        "is_modified": safe(document, "isModified"),
+        "file_id": safe(data_file, "id"),
+        "version": safe(data_file, "versionNumber"),
     }
 
 
 def _snapshot(app):
     """(documents, infos) for everything open, hidden instances included."""
-    documents = _items(app.documents)
+    documents = strict_items(app.documents)
     return documents, [_describe(document) for document in documents]
 
 
 def _linked_file_ids(document):
     """File ids *document* links, or None when they could not be read."""
     try:
-        return {_safe(_safe(ref, "dataFile"), "id") for ref in _items(document.documentReferences)}
+        return {safe(safe(ref, "dataFile"), "id") for ref in strict_items(document.documentReferences)}
     except Exception:
         return None
 
 
 def _resolve_project(app, project):
-    projects = _items(app.data.dataProjects)
-    by_id = [p for p in projects if _safe(p, "id") == project]
+    projects = strict_items(app.data.dataProjects)
+    by_id = [p for p in projects if safe(p, "id") == project]
     return by_id[0] if by_id else match_named(projects, project, "project")
 
 
@@ -386,8 +352,8 @@ def _resolve_path(project_obj, path):
         raise LookupError(f"{path!r} does not name a file")
     folder = project_obj.rootFolder
     for segment in segments[:-1]:
-        folder = match_named(_items(folder.dataFolders), segment, "folder")
-    return match_named(_items(folder.dataFiles), segments[-1], "file")
+        folder = match_named(strict_items(folder.dataFolders), segment, "folder")
+    return match_named(strict_items(folder.dataFiles), segments[-1], "file")
 
 
 def _resolve_row(app, spec, project):
@@ -400,10 +366,10 @@ def _resolve_row(app, spec, project):
         data_file = _resolve_path(_resolve_project(app, project), spec)
     return {
         "file": spec,
-        "id": _safe(data_file, "id"),
-        "name": _safe(data_file, "name"),
-        "extension": _safe(data_file, "fileExtension"),
-        "latest_version": _safe(data_file, "latestVersionNumber"),
+        "id": safe(data_file, "id"),
+        "name": safe(data_file, "name"),
+        "extension": safe(data_file, "fileExtension"),
+        "latest_version": safe(data_file, "latestVersionNumber"),
         "data_file": data_file,
     }
 
@@ -437,10 +403,10 @@ def _wait_settled(app, document, deadline, quiet_s=None):
     tracker = SettleTracker(SETTLE_QUIET_S if quiet_s is None else quiet_s)
     ui = app.userInterface
     while True:
-        pump_s = _pump()
+        pump_s = pump()
         now = time.monotonic()
-        in_front = document is None or _safe(document, "isActive") is True
-        settled = tracker.observe(now, in_front, _safe(ui, "activeCommand"), _safe(app.documents, "count"), pump_s)
+        in_front = document is None or safe(document, "isActive") is True
+        settled = tracker.observe(now, in_front, safe(ui, "activeCommand"), safe(app.documents, "count"), pump_s)
         if settled or now >= deadline:
             return settled
         time.sleep(_POLL_S)
@@ -449,7 +415,7 @@ def _wait_settled(app, document, deadline, quiet_s=None):
 def _still_open(app, file_id, deadline):
     """Pump until no instance of the file is open; returns those that remain."""
     while True:
-        _pump()
+        pump()
         _, infos = _snapshot(app)
         hits = [infos[i].get("name") for i in instances_of(infos, file_id)]
         if not hits or time.monotonic() >= deadline:
@@ -477,9 +443,9 @@ def _bring_to_front(app, row, documents, infos, entry):
         document = documents[index]
         entry["reused"] = True
         entry["warnings"].extend(instance_warnings(row, infos, index))
-    if _safe(document, "isActive") is not True and not document.activate():
+    if safe(document, "isActive") is not True and not document.activate():
         _fail(entry, "activate_failed", (
-            f"Fusion refused to activate {_safe(document, 'name')!r}, and a non-active document reads "
+            f"Fusion refused to activate {safe(document, 'name')!r}, and a non-active document reads "
             "partial data. A hidden instance held by a parent cannot always be brought forward; "
             "close the parent, or open the file in its own tab."))
         return None
@@ -494,11 +460,11 @@ def _read(document, entry):
         return None
     facts = read_design(adsk.fusion.Design.cast(product))
     entry["status"] = "read"
-    entry["version"] = _safe(_safe(document, "dataFile"), "versionNumber")
+    entry["version"] = safe(safe(document, "dataFile"), "versionNumber")
     if facts["unreadable_volumes"]:
         entry["warnings"].append(f"{facts['unreadable_volumes']} body volume(s) could not be read; "
                                  "the totals leave them out.")
-    if _is_int(facts["marker_position"]) and facts["marker_position"] < (facts["timeline_length"] or 0):
+    if is_int(facts["marker_position"]) and facts["marker_position"] < (facts["timeline_length"] or 0):
         entry["warnings"].append(f"The timeline marker is at {facts['marker_position']} of "
                                  f"{facts['timeline_length']}: later features are not in these numbers.")
     return facts
@@ -509,7 +475,7 @@ def _close_opened(app, document, entry, file_id, edited_ids):
     if not _wait_settled(app, None, time.monotonic() + CLOSE_SETTLE_TIMEOUT_S, CLOSE_SETTLE_QUIET_S):
         entry["close_skipped"] = "not_settled"
         return
-    block = close_block(_safe(document, "isModified"), _linked_file_ids(document), edited_ids)
+    block = close_block(safe(document, "isModified"), _linked_file_ids(document), edited_ids)
     if block:
         entry["close_skipped"] = block
         return
@@ -562,13 +528,13 @@ def _restore_active(app, document, name):
         result["note"] = "No document was active at the start."
         return result
     try:
-        if _safe(document, "isActive") is not True:
+        if safe(document, "isActive") is not True:
             document.activate()
         deadline = time.monotonic() + RESTORE_TIMEOUT_S
-        while _safe(document, "isActive") is not True and time.monotonic() < deadline:
-            _pump()
+        while safe(document, "isActive") is not True and time.monotonic() < deadline:
+            pump()
             time.sleep(_POLL_S)
-        result["restored"] = _safe(document, "isActive") is True
+        result["restored"] = safe(document, "isActive") is True
     except Exception as exc:
         result["note"] = f"Could not re-activate it: {type(exc).__name__}: {exc}"
     if not result["restored"] and "note" not in result:
@@ -617,18 +583,18 @@ def compare_files(arguments):
     try:
         file_a, file_b, project_a, project_b = validate_arguments(arguments)
     except ValueError as exc:
-        return _text(f"Error: {exc}", True)
+        return tool_result(f"Error: {exc}", True)
 
     try:
         started = time.monotonic()
         app = get_app()
         rows, problems = _resolve_rows(app, [(file_a, project_a), (file_b, project_b)])
         if problems:
-            return _text({"error": "Nothing was opened.", "problems": problems}, True)
+            return tool_result({"error": "Nothing was opened.", "problems": problems}, True)
 
         _, infos = _snapshot(app)
-        active = _safe(app, "activeDocument")
-        active_name = _safe(active, "name")
+        active = safe(app, "activeDocument")
+        active_name = safe(active, "name")
         entries, facts = _run(app, rows, started)
         restored = _restore_active(app, active, active_name)
         _, infos_after = _snapshot(app)
@@ -638,7 +604,7 @@ def compare_files(arguments):
         for entry, item in zip(entries, facts):
             if item is not None:
                 entry["facts"] = public_facts(item)
-        return _text({
+        return tool_result({
             "same": not differences if complete else None,
             "complete": complete,
             "differences": differences,
@@ -651,4 +617,4 @@ def compare_files(arguments):
         }, not complete)
     except Exception as exc:
         log(f"[MCP] compare_files failed: {exc}")
-        return _text(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
+        return tool_result(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
