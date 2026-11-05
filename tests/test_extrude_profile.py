@@ -1233,6 +1233,17 @@ class Occurrences(FusionStubs):
         self.assertEqual(job.origin, (25.4, 0.0, 0.0))
         self.assertAlmostEqual(result["extrude"]["measured_depth"], 1.0)
 
+    def test_the_plane_is_read_in_model_space_not_sketch_space(self):
+        def on_a_side_plane(_sketch, point):  # sketch z is model +y, 5 cm from the origin
+            return vec((point.x, point.z + 5.0, -point.y))
+
+        with mock.patch.object(Sketch, "sketchToModelSpace", on_a_side_plane):
+            job = World([Profile()]).job(direction=[0, 1, 0])
+            result = job.run()
+        self.assertNotIn("off the sketch normal", str(result.get("refusals")))
+        self.assertEqual(job.origin, (0.0, 5.0, 0.0))
+        self.assertEqual(tuple(round(c, 9) for c in job.normal), (0.0, 1.0, 0.0))
+
     def test_a_volume_counts_one_instance(self):
         self.sketch_in_sub()
         result = self.world.run(occurrence_path="Sub:1")
