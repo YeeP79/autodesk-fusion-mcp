@@ -55,6 +55,8 @@ TIMELINE_INSERT = "timeline_insert"
 COMPARE_FILES = "compare_files"
 COMPARE_BODIES = "compare_bodies"
 AUDIT_DESIGN = "audit_design"
+COMBINE_BODIES = "combine_bodies"
+CONSTRUCTION_PLANE = "construction_plane"
 APPLY_THREAD = "apply_thread"
 
 # Resource constants
@@ -128,6 +130,12 @@ INDEXED_BODY_REF_SCHEMA = {
                    "body_index": {"type": "integer", "minimum": 0,
                                   "description": "Position in its occurrence, only when names repeat."}},
     "required": ["occurrence_path", "body_name"], "additionalProperties": False,
+}
+# A BodyRef with the token a result gave; the token is tried first, then path, name and index.
+BODY_HANDLE_SCHEMA = {
+    **INDEXED_BODY_REF_SCHEMA,
+    "properties": {**INDEXED_BODY_REF_SCHEMA["properties"],
+                   "token": {"type": "string", "description": "A body's token, from an earlier result."}},
 }
 # token or point may be left out, not both; a point alone also needs kind (checked by the handler).
 ENTITY_REF_SCHEMA = {
@@ -1468,6 +1476,90 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": COMBINE_BODIES,
+        "description": (
+            "Boolean existing bodies of the active design: a Combine feature with an explicit target and tools, "
+            "landing in the component that owns them. keep_tools is required, because Fusion's default silently "
+            "consumes the tools. Bodies are found fresh on every call: a token is tried first, then occurrence path, "
+            "name and index, so references from before a base feature's finishEdit still work; 'resolved' says how "
+            "each was found. A preview on temporary copies gives each tool's overlap and the volume expected; cut or "
+            "intersect with a tool that overlaps nothing is refused, and a built volume that disagrees is 'suspect'. "
+            "The target and tools must share one occurrence. result.bodies lists every body the feature left, read "
+            "from the feature; a cut can leave several. stale_refs are refs to drop. dry_run (default false) "
+            "builds nothing and returns the preview as 'plan'. isError is 'not ok': anything but built or planned."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "target": {**BODY_HANDLE_SCHEMA, "description": "The body that changes."},
+                "tools": {"type": "array", "items": BODY_HANDLE_SCHEMA, "description": "At least one, none repeated."},
+                "operation": {"type": "string", "enum": ["join", "cut", "intersect"]},
+                "keep_tools": {"type": "boolean", "description": "Required. false consumes the tools."},
+                "feature_name": {"type": "string", "description": "Timeline name."},
+                "result_name": {"type": "string",
+                                "description": "Name for the largest result body; others take ' 2', ' 3'."},
+                "on_collateral": {"type": "string", "enum": ["undo", "keep"],
+                                  "description": "A body nobody named lost volume. Default undo."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "dry_run": {"type": "boolean", "description": "Default false."},
+            },
+            "required": ["target", "tools", "operation", "keep_tools"],
+        },
+    },
+    {
+        "name": CONSTRUCTION_PLANE,
+        "description": (
+            "Make a construction plane at a stated place and report where it really is, normal sign included: "
+            "'normal' is what Fusion built, so read it. All points and vectors are world coordinates. Modes: offset "
+            "(from a root plane, planar face or construction plane; offset is signed along 'toward', which fixes the "
+            "side whatever the parent's normal does, default the parent's normal, outward for a face); three_point; "
+            "angle (from a plane about a world axis or straight edge; angle_deg is right-handed about the axis, a "
+            "straight edge running from its start to its end); point_normal (a plane through a point facing any way). "
+            "offset and angle measure the result and delete and rebuild the plane once if Fusion went the other way. "
+            "Coordinates become sketch points, because Fusion refuses construction points at fixed coordinates: "
+            "those anchors are named <name>_anchors, listed in 'anchors' with their light bulb off (show_anchors to "
+            "turn it on), and must stay, since the plane and everything sketched on it depend on them. With "
+            "reuse_existing (default true) a coincident plane in the component is returned instead of a new one. A "
+            "sub-component needs occurrence_path, which instance world coordinates pass through. plane.token is "
+            "sketch_profile's plane_entity_token. dry_run (default false) predicts origin and normal, and the normal's "
+            "sign only as asked. 'suspect' means built but not where asked. isError is 'not ok'."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "mode": {"type": "string", "enum": ["offset", "three_point", "angle", "point_normal"]},
+                "name": {"type": "string", "description": "The plane's name; its anchors are named from it."},
+                "component": {"type": "string", "description": "Default root; any other needs occurrence_path."},
+                "occurrence_path": {"type": "string",
+                                    "description": "Instance of the component the plane goes in. Default root."},
+                "from": {"type": "string", "enum": ["xy", "xz", "yz"],
+                         "description": "offset, angle: the component's origin plane."},
+                "from_ref": {**ENTITY_REF_SCHEMA, "description": "offset, angle: a planar face."},
+                "from_plane_token": {"type": "string", "description": "offset, angle: a construction plane."},
+                "offset": {"type": "number", "description": "offset: signed distance along toward, in units."},
+                "offset_expression": {"type": "string", "description": "offset: instead of 'offset'; with a unit."},
+                "toward": {**NUMBERS_SCHEMA, "description": "offset: [x, y, z]; only its side of the parent matters."},
+                "points": {"type": "array", "description": "three_point: exactly three, each one of the keys.",
+                           "items": {"type": "object", "additionalProperties": False,
+                                     "properties": {"point": {**NUMBERS_SCHEMA, "description": "World [x, y, z]."},
+                                                    "ref": {**ENTITY_REF_SCHEMA, "description": "A vertex."},
+                                                    "sketch_point_token": {"type": "string"}}}},
+                "axis": {"type": "object", "additionalProperties": False, "description": "angle: one of the keys.",
+                         "properties": {"axis": {"type": "string", "enum": ["x", "y", "z"]},
+                                        "edge": {**ENTITY_REF_SCHEMA, "description": "A straight edge."}}},
+                "angle_deg": {"type": "number", "description": "angle: right-handed about the axis."},
+                "angle_expression": {"type": "string", "description": "angle: instead of angle_deg; with a unit."},
+                "point": {**NUMBERS_SCHEMA, "description": "point_normal: world [x, y, z] on the plane."},
+                "normal": {**NUMBERS_SCHEMA, "description": "point_normal: [x, y, z]."},
+                "reuse_existing": {"type": "boolean", "description": "Default true."},
+                "show_anchors": {"type": "boolean", "description": "Light bulb on for the anchors. Default false."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "dry_run": {"type": "boolean", "description": "Default false."},
+            },
+            "required": ["mode", "name"],
+        },
+    },
+    {
         "name": COMPARE_BODIES,
         "description": (
             "Are two bodies of the active design the same solid, and where do they differ? Read-only: three "
@@ -1638,6 +1730,8 @@ def build_tool_handlers(
     compare_files,
     compare_bodies,
     audit_design,
+    combine_bodies,
+    construction_plane,
     apply_thread,
 ):
     """Build a dict mapping tool name to handler function.
@@ -1695,6 +1789,8 @@ def build_tool_handlers(
         COMPARE_FILES: compare_files,
         COMPARE_BODIES: compare_bodies,
         AUDIT_DESIGN: audit_design,
+        COMBINE_BODIES: combine_bodies,
+        CONSTRUCTION_PLANE: construction_plane,
         APPLY_THREAD: apply_thread,
     }
     if set(handlers) != _TOOL_NAMES:

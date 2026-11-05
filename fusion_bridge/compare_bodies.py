@@ -26,7 +26,17 @@ import adsk.fusion
 from .common import geometry
 from .common.api import safe, strict_items
 from .common.args import bool_arg, error_pair, int_arg, is_finite_number, reject_unknown, require_object
-from .common.bodies import bbox, bbox_overlap, bbox_shift, body_entries, label, parse_body_ref, resolve_targets, temp_copy
+from .common.bodies import (
+    bbox,
+    bbox_overlap,
+    bbox_shift,
+    body_entries,
+    label,
+    parse_body_ref,
+    resolve_targets,
+    temp_copy,
+    volume_of,
+)
 from .common.geometry import UNIT_FACTORS, add, sub, to_cm, unit_labels
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
@@ -232,16 +242,6 @@ def _unmeasured(method):
     empty = {"volume": None, "lumps": [], "lump_count": 0}
     return {"method": method, "overlap": None, "a_only": empty, "b_only": empty, "uncertainty": 0.0,
             "gaps": (None, None), "trusted": False}
-
-
-def volume_of(body):
-    """A boolean result's volume; an empty result is zero, not an error."""
-    if not strict_items(safe(body, "lumps")):
-        return 0.0
-    volume = safe(body, "volume")
-    if volume is None:
-        raise RuntimeError("a boolean result has no readable volume")
-    return volume
 
 
 def region_of(body, max_lumps):

@@ -62,6 +62,8 @@ class ToolSurfaceTests(unittest.TestCase):
         "timeline_insert",
         "compare_files",
         "compare_bodies",
+        "combine_bodies",
+        "construction_plane",
         "apply_thread",
         "audit_design",
     }

@@ -76,6 +76,13 @@ def find_occurrence(root, path):
                  if safe(occ, "fullPathName") == path), None)
 
 
+def occurrence_frame(occurrence):
+    """The occurrence's (origin, x, y, z) in world coordinates, or None in root."""
+    if occurrence is None:
+        return None
+    return tuple(xyz(part) for part in occurrence.transform2.getAsCoordinateSystem())
+
+
 def is_hidden(entry):
     """Hidden if the body is hidden or its owning occurrence is."""
     return entry["visible"] is False or entry["occurrence_visible"] is False
@@ -232,6 +239,16 @@ def temp_copy(manager, body):
     if occurrence is not None and manager.transform(copy, occurrence.transform2) and placed(copy):
         return copy
     raise RuntimeError(f"the temporary copy of {safe(body, 'name')} did not land on the body")
+
+
+def volume_of(body):
+    """A boolean result's volume; an empty result is zero, not an error."""
+    if not strict_items(safe(body, "lumps")):
+        return 0.0
+    volume = safe(body, "volume")
+    if volume is None:
+        raise RuntimeError("a boolean result has no readable volume")
+    return volume
 
 
 # -- Faces --------------------------------------------------------------------
