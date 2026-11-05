@@ -16,6 +16,16 @@ _MAX_FOLDER_DEPTH = 64
 READ_ONLY_WARNING = "active document is read-only: saves will not stick"
 UNSAVED_WARNING = "active document has unsaved changes"
 NO_ACTIVE_WARNING = "no document is active"
+DUPLICATE_WARNING = (
+    "{count} open instances of {name!r} (DataFile {file_id}, loaded versions {versions}): "
+    "saving a non-primary instance can silently do nothing (save returns True, no upload; "
+    "its window title has a '(1)' suffix). Close the extra instance(s) without saving and "
+    "reopen the file fresh."
+)
+LINKED_PARENT_NOTE = (
+    " Open documents that link it ({parents}) load their own instances, so closing the "
+    "duplicate may need those parents closed too."
+)
 
 
 def _text(payload, is_error=False):
@@ -122,6 +132,37 @@ def attach_references(infos, referenced_id_sets):
         ]
 
 
+def flag_duplicates(infos):
+    """Mark documents sharing a DataFile id and return one warning per shared file.
+
+    Fusion can hold several in-memory instances of one file (opening it twice, or
+    opening a parent that links it). Each instance gets ``duplicate_instances`` and
+    ``loaded_versions`` (every instance's version, in document order).
+    """
+    groups = {}
+    for info in infos:
+        file_id = (info.get("data_file") or {}).get("id")
+        if file_id:
+            groups.setdefault(file_id, []).append(info)
+    warnings = []
+    for file_id, group in groups.items():
+        if len(group) < 2:
+            continue
+        versions = [info["data_file"].get("version_number") for info in group]
+        for info in group:
+            info["duplicate_instances"] = len(group)
+            info["loaded_versions"] = versions
+        names = {info["name"] for info in group}
+        parents = sorted({parent for info in group for parent in info.get("referenced_by", ())} - names)
+        warning = DUPLICATE_WARNING.format(
+            count=len(group), name=group[0]["data_file"].get("name") or group[0]["name"],
+            file_id=file_id, versions=versions)
+        if parents:
+            warning += LINKED_PARENT_NOTE.format(parents=", ".join(parents))
+        warnings.append(warning)
+    return warnings
+
+
 def status_warnings(infos):
     """Plain-language warnings about the active document."""
     active = next((info for info in infos if info.get("is_active")), None)
@@ -142,12 +183,13 @@ def document_status(arguments):
         docs = open_documents(get_app())
         infos = [describe_document(doc) for doc in docs]
         attach_references(infos, [_referenced_ids(doc) for doc in docs])
+        duplicate_warnings = flag_duplicates(infos)
         active = next((info for info in infos if info["is_active"]), None)
         return _text({
             "active_document": active["name"] if active else None,
             "count": len(infos),
             "documents": infos,
-            "warnings": status_warnings(infos),
+            "warnings": status_warnings(infos) + duplicate_warnings,
         })
     except Exception as exc:
         log(f"document_status failed: {exc}")
@@ -210,8 +252,10 @@ def activate_document(arguments):
                 "open_documents": [_candidate(info) for info in infos],
             }, True)
         if len(matches) > 1:
+            hint = ("they are duplicate instances of one file (see document_status warnings)"
+                    if field == "data_file_id" else "use data_file_id")
             return _text({
-                "error": f"{len(matches)} open documents match {field}={value!r}; use data_file_id",
+                "error": f"{len(matches)} open documents match {field}={value!r}; {hint}",
                 "candidates": [_candidate(infos[i]) for i in matches],
             }, True)
 

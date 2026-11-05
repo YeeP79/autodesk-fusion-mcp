@@ -486,8 +486,10 @@ TOOL_DEFINITIONS = [
             "isModified, isSaved and, when saved to the cloud, DataFile id, version number, "
             "isReadOnly ('unknown' if unreadable), project, folder path and which open documents "
             "reference it. Warns when the active document is read-only (saves will not stick, "
-            "common on Personal Use licences) or has unsaved changes. Only the active document "
-            "reads reliably; switch with activate_document."
+            "common on Personal Use licences) or has unsaved changes. Documents sharing a DataFile "
+            "id are marked duplicate_instances/loaded_versions with a warning: saving a non-primary "
+            "instance can silently do nothing, so close the extra one without saving and reopen. "
+            "Only the active document reads reliably; switch with activate_document."
         ),
         "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
     },

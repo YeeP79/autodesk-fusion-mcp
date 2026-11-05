@@ -81,7 +81,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `document_versions` | List the active document's cloud versions, newest first |
 | `restore_version` | Promote an older version and reopen the active document on it (requires confirm) |
 | `manage_annotations` | List, claim, complete or release session-only selection annotations |
-| `document_status` | List open documents with active, modified, read-only and folder details |
+| `document_status` | List open documents with active, modified, read-only and folder details; flags duplicate instances of one file |
 | `activate_document` | Make an open document active by name or DataFile id |
 | `timeline_health` | Report broken timeline items, rolled-back marker and active component; optionally suppress broken items |
 | `fusion_dialogs` | macOS: list or dismiss (Cancel/Close/Escape only) modal dialogs blocking Fusion's main thread; runs off the main thread, needs Accessibility |
