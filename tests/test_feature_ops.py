@@ -441,5 +441,114 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual((payload["status"], payload["refusals"]), ("refused", ["one", "two"]))
 
 
+class Spot:
+    def __init__(self, x, y, z):
+        self.x, self.y, self.z = x, y, z
+
+
+class SketchPoint:
+    def __init__(self, geometry, token):
+        self.geometry, self.entityToken = geometry, token
+
+
+class Sketch:
+    isLightBulbOn = True
+    name = "Sketch1"
+
+    def __init__(self, flatten, plane):
+        self.flatten, self.plane = flatten, plane
+        self.sketchPoints = self
+        self.added = []
+
+    def modelToSketchSpace(self, point):
+        return point
+
+    def sketchToModelSpace(self, point):
+        return point
+
+    def add(self, point):
+        made = SketchPoint(Spot(point.x, point.y, 0.0 if self.flatten else point.z), f"t{len(self.added)}")
+        self.added.append(made)
+        return made
+
+    def deleteMe(self):
+        raise AssertionError("an anchor must never be deleted")
+
+
+class Sketches:
+    def __init__(self, flatten):
+        self.flatten, self.made = flatten, []
+
+    def add(self, plane):
+        sketch = Sketch(self.flatten and not self.made, plane)
+        self.made.append(sketch)
+        return sketch
+
+
+class PlaneInput:
+    def setByOffset(self, parent, value):
+        self.parent = parent
+
+
+class AnchorPlane:
+    isLightBulbOn = True
+    name = "Plane1"
+
+
+class Planes:
+    def __init__(self):
+        self.made = []
+
+    def createInput(self):
+        return PlaneInput()
+
+    def add(self, entry):
+        self.made.append(AnchorPlane())
+        return self.made[-1]
+
+
+class Component:
+    xYConstructionPlane = "XY"
+
+    def __init__(self, flatten=False):
+        self.sketches, self.constructionPlanes = Sketches(flatten), Planes()
+
+
+class AnchorPointTests(unittest.TestCase):
+    POINTS = [(0, 0, 1), (1, 0, 2), (0, 1, 3)]
+
+    def anchor(self, component, show=False):
+        return fo.anchor_points(component, self.POINTS, "Boss", show, make=Spot)
+
+    def test_one_sketch_keeps_z(self):
+        component = Component()
+        made = self.anchor(component)
+        self.assertEqual(len(component.sketches.made), 1)
+        self.assertEqual(component.constructionPlanes.made, [])
+        self.assertEqual([p.geometry.z for p in made["points"]], [1, 2, 3])
+        self.assertEqual(made["rows"][0], {"sketch": "Boss_anchors", "token": "t0", "visible": False})
+        self.assertEqual(made["unused"], [])
+
+    def test_light_bulb_off_by_default_and_on_when_asked(self):
+        component = Component()
+        self.anchor(component)
+        self.assertFalse(component.sketches.made[0].isLightBulbOn)
+        component = Component()
+        self.assertTrue(self.anchor(component, show=True)["rows"][0]["visible"])
+
+    def test_a_sketch_that_flattens_falls_back_to_one_each(self):
+        component = Component(flatten=True)
+        made = self.anchor(component)
+        self.assertEqual(len(component.sketches.made), 4)
+        self.assertEqual(len(component.constructionPlanes.made), 3)
+        self.assertEqual([r["sketch"] for r in made["rows"]], ["Boss_anchors_1", "Boss_anchors_2", "Boss_anchors_3"])
+        self.assertEqual(made["rows"][1]["plane"], "Boss_anchors_2_plane")
+        self.assertFalse(any(p.isLightBulbOn for p in component.constructionPlanes.made))
+        self.assertFalse(any(s.isLightBulbOn for s in component.sketches.made))
+
+    def test_the_flattened_sketch_is_reported_not_deleted(self):
+        self.assertEqual(self.anchor(Component(flatten=True))["unused"], ["Boss_anchors"])
+
+
 if __name__ == "__main__":
     unittest.main()

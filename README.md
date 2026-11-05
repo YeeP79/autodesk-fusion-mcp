@@ -122,7 +122,27 @@ coordinates) or a `model_view` that frames the visible bodies with a chosen
 | `timeline_insert` | Run Python with the marker rolled back before a named timeline item, then always restore it and report what changed (dry run by default) |
 | `compare_files` | Compare two design files by occurrences, bodies, volume, component names and timeline length, closing only what it opened |
 | `compare_bodies` | Read-only: are two bodies the same solid, and where do they differ, by booleans on temporary copies with a sampled fallback; `unknown` rather than a false `same` |
+| `combine_bodies` | Join, cut or intersect existing bodies with `keep_tools` stated every time, a temporary-copy preview compared with what was built, and fresh references to every resulting body |
+| `construction_plane` | Make an offset, three-point, angled or point-and-normal plane and report where it really is, normal sign included; anchors are named, listed and hidden, never deleted |
 | `apply_thread` | Read Fusion's thread library: narrow by family, size and designation to per-class diameters, or get the nearest thread to a diameter (applying a thread is not available yet) |
+| `audit_design` | Read-only health report for the active design: file, timeline, links, bodies, joints, sketches and parameters, worst first; profiles, a time budget, baseline diffs, and findings merged from other tools |
+
+### audit_design findings
+
+Every finding has this shape, and `extra_findings` takes the same one, so another tool can add its own checks without this repo knowing about them:
+
+| Field | Meaning |
+| --- | --- |
+| `check` | Short rule name. Extra findings may not reuse a built-in one |
+| `group` | `file`, `timeline`, `links`, `bodies`, `joints`, `sketches`, `parameters`, or the caller's own |
+| `severity` | `error`, `warning` or `info` |
+| `where` | Where to look, as `<kind>: <name>`. With `check` it identifies the finding between runs, so keep it stable |
+| `message` | What was found |
+| `why` | Why it matters (may be null) |
+| `fix_tool` | The tool to go to next (may be null) |
+| `source` | Extra findings only: who supplied it |
+
+Checks say what they found, never how much it matters: `SEVERITY_TABLE` in `audit_rules.py` sets each check's severity per profile, and a check off there does not run. To add a check, write a function over the gathered facts, add it to `CHECKS`, and give it a row.
 
 ### Generic API example
 
@@ -318,6 +338,11 @@ New tools must use `fusion_bridge/common/` instead of private copies of its help
 | `timeline.py` | Timeline health, `read_rows`, `find_row`, marker and broken-feature refusals, the rolled-back window flag |
 | `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `in_context`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
 | `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `add_feature`, `snapshot`, `baseline`, `undo`, `body_changes`, `lost_outside`, `grew_outside`, `envelope` |
+| `geometry.py` | Vector math, `perpendicular_pair`, `rotate_about`, `collinear`, `same_plane`, unit conversion |
+| `bodies.py` | Body enumeration, `find_occurrence`, `occurrence_frame`, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy`, `volume_of`, face records, snapshots, diffs and the baseline store |
+| `timeline.py` | Timeline health, `read_rows`, `find_row`, marker and broken-feature refusals, the rolled-back window flag |
+| `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
+| `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `anchor_points`, `add_feature`, `snapshot`, `baseline`, `undo`, `body_changes`, `envelope` |
 | `documents.py` | Open documents, instances of a file, the event pump |
 | `cloud.py` | Cloud paths, projects, folders, files, the project tree walk |
 | `app_log.py` | Locating and scanning Fusion's log, the server's reason for a failed cloud write |

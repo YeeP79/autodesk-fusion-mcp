@@ -63,7 +63,7 @@ def _product_types(document):
     return types
 
 
-def _referenced_ids(document):
+def referenced_ids(document):
     """DataFile ids this document directly references (empty if unreadable)."""
     ids = set()
     refs = safe(document, "documentReferences")
@@ -167,7 +167,7 @@ def document_status(arguments):
     try:
         docs = open_documents(get_app())
         infos = [describe_document(doc) for doc in docs]
-        attach_references(infos, [_referenced_ids(doc) for doc in docs])
+        attach_references(infos, [referenced_ids(doc) for doc in docs])
         duplicate_warnings = flag_duplicates(infos)
         active = next((info for info in infos if info["is_active"]), None)
         return tool_result({

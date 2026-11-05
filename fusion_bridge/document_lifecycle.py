@@ -548,7 +548,7 @@ class CloudLookups:
         return self.cache[file_id]
 
 
-def _read_reference(ref, cloud):
+def read_reference(ref, cloud):
     data_file = safe(ref, "dataFile")
     file_id = safe(data_file, "id")
     file_version = int_or_none(safe(data_file, "versionNumber"))
@@ -572,7 +572,7 @@ def _read_reference(ref, cloud):
     return entry
 
 
-def _direct_references(document):
+def direct_references(document):
     return strict_items(safe(document, "documentReferences"))
 
 
@@ -597,7 +597,7 @@ def _pick_document(app, selector):
 def _loaded_versions(document):
     """Loaded versions per DataFile id, from a fresh read of the references."""
     versions = {}
-    for ref in _direct_references(document):
+    for ref in direct_references(document):
         file_id = safe(safe(ref, "dataFile"), "id")
         version = int_or_none(safe(ref, "version"))
         if version is None:
@@ -609,7 +609,7 @@ def _loaded_versions(document):
 
 def _fresh_reference(document, entry):
     """Re-find a reference: an earlier update may have invalidated what was held."""
-    for ref in _direct_references(document):
+    for ref in direct_references(document):
         data_file = safe(ref, "dataFile")
         if safe(data_file, "id") != entry.get("data_file_id"):
             continue
@@ -676,7 +676,7 @@ def _apply_updates(document, entries, held):
     return updates
 
 
-def _indirect_count(document, direct_count):
+def indirect_count(document, direct_count):
     try:
         return max(0, len(strict_items(safe(document, "allDocumentReferences"))) - direct_count)
     except Exception:
@@ -689,7 +689,7 @@ def _reference_warnings(document, name, direct_count, cloud):
         warnings.append(NON_ACTIVE_NOTE.format(document=repr(name)))
     if safe(safe(document, "dataFile"), "isReadOnly") is True:
         warnings.append(READ_ONLY_NOTE.format(document=repr(name)))
-    indirect = _indirect_count(document, direct_count)
+    indirect = indirect_count(document, direct_count)
     if indirect:
         warnings.append(INDIRECT_NOTE.format(count=indirect))
     if cloud.skipped:
@@ -712,8 +712,8 @@ def update_references(arguments):
 
         name = safe(document, "name")
         cloud = CloudLookups(app)
-        held = _direct_references(document)
-        references = [_read_reference(ref, cloud) for ref in held]
+        held = direct_references(document)
+        references = [read_reference(ref, cloud) for ref in held]
         selected, error = resolve_files(references, files)
         if error:
             return tool_result(error, True)
@@ -722,7 +722,7 @@ def update_references(arguments):
         updates = []
         if apply_updates:
             updates = _apply_updates(document, [references[i] for i in to_update], [held[i] for i in to_update])
-            references = [_read_reference(ref, cloud) for ref in _direct_references(document)]
+            references = [read_reference(ref, cloud) for ref in direct_references(document)]
 
         document_modified = safe(document, "isModified")
         result = {

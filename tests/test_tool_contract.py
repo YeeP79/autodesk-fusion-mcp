@@ -63,7 +63,10 @@ class ToolSurfaceTests(unittest.TestCase):
         "compare_files",
         "compare_bodies",
         "extrude_profile",
+        "combine_bodies",
+        "construction_plane",
         "apply_thread",
+        "audit_design",
     }
 
     def test_all_expected_tools_present(self):

@@ -135,7 +135,7 @@ def _read_items(timeline, states):
     return rows
 
 
-def _report(design, states):
+def read_report(design, states):
     timeline = design.timeline
     rows = _read_items(timeline, states)
     active = design.activeComponent
@@ -186,10 +186,10 @@ def timeline_health(arguments):
         if design is None:
             return error_result("Error: the active product is not a Fusion design")
         states = health_states()
-        report, rows = _report(design, states)
+        report, rows = read_report(design, states)
         if suppress:
             action = _suppress_broken(rows, states)
-            report, _ = _report(design, states)
+            report, _ = read_report(design, states)
             report["suppress_broken"] = action
             log(f"[MCP] timeline_health suppressed {len(action['suppressed'])} item(s)")
         return ok_result(json.dumps(report, indent=2))
