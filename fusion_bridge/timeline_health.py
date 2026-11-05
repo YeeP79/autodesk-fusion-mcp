@@ -17,6 +17,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
+from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
 # Fallback enum values, used when adsk.fusion.FeatureHealthStates is unavailable.
@@ -29,14 +30,6 @@ _FAILURE_LINE = re.compile(
     r"^(?:\d+\s*:\s*)?(?P<name>[^\n/]+?) / [^\n]*?// [A-Z][A-Z0-9_]+ - ", re.MULTILINE
 )
 _REASON_MARKERS = ("Compute Failed", "Reference Failures", "Source Lost")
-
-
-def _text(text):
-    return {"content": [{"type": "text", "text": text}], "isError": False}
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
 # -- Pure helpers -------------------------------------------------------------
@@ -206,11 +199,11 @@ def timeline_health(arguments):
     suppress = arguments.get("suppress_broken", False)
     confirm = arguments.get("confirm", False)
     if not isinstance(suppress, bool):
-        return _error("Error: 'suppress_broken' must be a boolean")
+        return error_result("Error: 'suppress_broken' must be a boolean")
     if not isinstance(confirm, bool):
-        return _error("Error: 'confirm' must be a boolean")
+        return error_result("Error: 'confirm' must be a boolean")
     if suppress and not confirm:
-        return _error(
+        return error_result(
             "Error: suppress_broken changes the design; pass confirm: true alongside it. "
             "Run timeline_health without it first to see what would be suppressed."
         )
@@ -218,7 +211,7 @@ def timeline_health(arguments):
     try:
         design = _active_design()
         if design is None:
-            return _error("Error: the active product is not a Fusion design")
+            return error_result("Error: the active product is not a Fusion design")
         states = _health_states()
         report, rows = _report(design, states)
         if suppress:
@@ -226,11 +219,11 @@ def timeline_health(arguments):
             report, _ = _report(design, states)
             report["suppress_broken"] = action
             log(f"[MCP] timeline_health suppressed {len(action['suppressed'])} item(s)")
-        return _text(json.dumps(report, indent=2))
+        return ok_result(json.dumps(report, indent=2))
     except Exception as exc:
         tb = traceback.format_exc()
         log(f"[MCP] timeline_health failed: {exc}")
-        return _error(f"Error: {exc}\n{tb}")
+        return error_result(f"Error: {exc}\n{tb}")
 
 
 # -- Rollback summary for the edit tools --------------------------------------

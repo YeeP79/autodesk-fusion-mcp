@@ -6,12 +6,12 @@ result. Cloud reads are slow, so the walk stops early on ``max_files`` or a
 time budget kept below the main-thread dispatch timeout, and says so.
 """
 
-import json
 import time
 import traceback
 
 from .. import settings
 from . import data_tree
+from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
 DEFAULT_DEPTH = 3
@@ -28,10 +28,6 @@ NOTES = [
     "Folder names are case-insensitive in Fusion; 'folder' matches regardless of case.",
     "File names are not unique: identify files (and links) by id, not name.",
 ]
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
 def _is_int(value):
@@ -97,15 +93,11 @@ def _hub_info(data):
     return {"name": hub.name, "id": hub.id} if hub is not None else None
 
 
-def _ok(payload):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=1)}], "isError": False}
-
-
 def project_tree(arguments):
     """List a project's folders and files (with links resolved to paths)."""
     options, problem = validate_arguments(arguments)
     if problem:
-        return _error(problem)
+        return error_result(problem)
 
     started = time.monotonic()
     try:
@@ -115,19 +107,19 @@ def project_tree(arguments):
         if options["list_projects"]:
             listing = sorted(({"name": p.name, "id": p.id} for p in projects),
                              key=lambda p: p["name"].casefold())
-            return _ok({
+            return ok_result({
                 "hub": _hub_info(data),
                 "projects": listing,
                 # Same-name projects can only be told apart by id.
                 "duplicate_project_names": data_tree.case_collisions([p["name"] for p in listing]),
                 "elapsed_seconds": round(time.monotonic() - started, 2),
-            })
+            }, indent=1)
 
         try:
             project = data_tree.find_project(projects, options["project"])
             folder, actual = data_tree.resolve_folder(project.rootFolder, options["segments"])
         except LookupError as exc:
-            return _error(f"Error: {exc}")
+            return error_result(f"Error: {exc}")
 
         start_path = data_tree.join_path(project.name, *actual)
         tree, summary = data_tree.build_tree(
@@ -143,16 +135,16 @@ def project_tree(arguments):
         log(f"[MCP] project_tree {start_path}: {summary['files_listed']} files, "
             f"{summary['folders_visited']} folders in {elapsed:.2f}s"
             + (f" (truncated: {summary['truncation']['reason']})" if summary["truncated"] else ""))
-        return _ok({
+        return ok_result({
             "hub": _hub_info(data),
             "project": {"name": project.name, "id": project.id},
             "root": start_path,
             "summary": summary,
             "notes": NOTES,
             "tree": tree,
-        })
+        }, indent=1)
     except Exception as exc:
         tb = traceback.format_exc()
         log(f"[MCP] project_tree failed: {exc}")
-        return _error(f"Error: {exc}\n{tb}")
+        return error_result(f"Error: {exc}\n{tb}")
 

@@ -10,13 +10,13 @@ Only user parameters can be set: model parameters belong to features and
 sketches and are edited there.
 """
 
-import json
 import traceback
 
 import adsk.core
 import adsk.fusion
 
 from . import parameter_graph as graph
+from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
 ACTIONS = ("list", "set")
@@ -39,14 +39,6 @@ COMPUTE_NOTE = (
     "Geometry may not have regenerated yet: run the compute tool (Compute All). "
     "The API recompute does not always match the UI command."
 )
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
-def _result(payload, is_error=False):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": is_error}
 
 
 # -- Argument validation (no Fusion) -----------------------------------------
@@ -502,13 +494,13 @@ def parameters(arguments):
     try:
         args = validate_arguments(arguments)
     except ValueError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
 
     try:
         app = get_app()
         design = adsk.fusion.Design.cast(app.activeProduct)
         if design is None:
-            return _error("Error: the active product is not a Fusion design")
+            return error_result("Error: the active product is not a Fusion design")
         units_manager = _safe(lambda: design.unitsManager)
         infos, objects, user_order, model_order = snapshot(design)
         index = DependencyIndex(infos, objects)
@@ -520,16 +512,16 @@ def parameters(arguments):
         if args["action"] == "list":
             if args["name"] is not None:
                 if args["name"] not in infos:
-                    return _error(f"Error: no parameter named {args['name']!r}")
-                return _result({**meta, "parameter": build_detail(infos, index, args["name"], args["depth"])})
-            return _result({**meta, **build_list(infos, user_order, model_order, index, args)})
+                    return error_result(f"Error: no parameter named {args['name']!r}")
+                return tool_result({**meta, "parameter": build_detail(infos, index, args["name"], args["depth"])})
+            return tool_result({**meta, **build_list(infos, user_order, model_order, index, args)})
 
         problems = check_updates(infos, args["updates"])
         if problems:
-            return _error("Error: nothing was changed.\n" + "\n".join(problems))
+            return error_result("Error: nothing was changed.\n" + "\n".join(problems))
         plans = [plan_update(infos, index, u, args["depth"], units_manager) for u in args["updates"]]
         if args["dry_run"]:
-            return _result({**meta, "dry_run": True, "updates": plans,
+            return tool_result({**meta, "dry_run": True, "updates": plans,
                             "note": "Nothing was changed. Pass dry_run: false to apply, in this order."})
 
         results, failed = apply_updates(objects, infos, args["updates"], units_manager)
@@ -545,8 +537,8 @@ def parameters(arguments):
             "note": COMPUTE_NOTE,
         }
         log(f"[MCP] parameters set: {len(applied)}/{len(results)} applied")
-        return _result(payload, is_error=failed)
+        return tool_result(payload, is_error=failed)
     except Exception as exc:
         tb = traceback.format_exc()
         log(f"[MCP] parameters failed: {exc}")
-        return _error(f"Error: {exc}\n{tb}")
+        return error_result(f"Error: {exc}\n{tb}")

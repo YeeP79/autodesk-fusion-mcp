@@ -7,11 +7,11 @@ recomputed or split, which in-memory references do not survive. Markers are
 removed with their annotation, on completion and when the add-in stops.
 """
 
-import json
 import math
 from uuid import uuid4
 
 from .annotation_store import AnnotationStore
+from .common.results import error_result, ok_result
 from .dispatch import get_app
 from . import value_builders
 from .selection import _safe_attr, _get_parent_component
@@ -336,6 +336,6 @@ def manage_annotations(args):
                 payload = _public(item)
             else:
                 raise ValueError("Unknown annotation action.")
-        return {"content": [{"type": "text", "text": json.dumps(payload)}], "isError": False}
+        return ok_result(payload, indent=None)
     except Exception as exc:
-        return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+        return error_result(str(exc))

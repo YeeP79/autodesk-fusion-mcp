@@ -26,13 +26,13 @@ Planning and state logic are plain functions over dicts, so they test with
 fakes; the glue reads ``time`` and ``adsk.doEvents`` through this module.
 """
 
-import json
 import time
 import traceback
 from collections import Counter
 
 import adsk.core
 
+from .common.results import tool_result
 from .dispatch import get_app, log
 
 COMMAND_IDS = {
@@ -60,11 +60,6 @@ MAX_QUIET_PUMP_S = 0.25
 _POLL_S = 0.1
 _STATE_POLL_S = 0.5
 _IDLE_COMMANDS = ("SelectCommand", None, "")
-
-
-def _text(payload, is_error=False):
-    body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": is_error}
 
 
 def _safe(obj, attr, default=None):
@@ -696,14 +691,14 @@ def set_editable_state(arguments):
     try:
         specs, project, target, dry_run = validate_arguments(arguments)
     except ValueError as exc:
-        return _text(f"Error: {exc}", True)
+        return tool_result(f"Error: {exc}", True)
 
     try:
         started = time.monotonic()
         app = get_app()
         rows, problems = _resolve_rows(app, specs, project)
         if problems:
-            return _text({"error": "Nothing was changed: some files could not be resolved.",
+            return tool_result({"error": "Nothing was changed: some files could not be resolved.",
                           "problems": problems}, True)
 
         _, infos = _snapshot(app)
@@ -713,13 +708,13 @@ def set_editable_state(arguments):
         command_id = COMMAND_IDS[target]
         cmd_def = app.userInterface.commandDefinitions.itemById(command_id) if needs_command else None
         if needs_command and cmd_def is None:
-            return _text(f"Error: Fusion command {command_id!r} is not available in this build", True)
+            return tool_result(f"Error: Fusion command {command_id!r} is not available in this build", True)
 
         result = {"dry_run": dry_run, "state": target, "command": command_id}
         if dry_run:
             entries = [_dry_run_entry(row, plan, target) for row, plan in zip(rows, plans)]
             result.update(files=entries, summary=summarize(entries), editable_count=_limits_report(limits))
-            return _text(result)
+            return tool_result(result)
 
         active = _safe(app, "activeDocument")
         active_name = _safe(active, "name")
@@ -743,7 +738,7 @@ def set_editable_state(arguments):
             documents_lost=lost_documents(infos, infos_after),
             elapsed_seconds=round(time.monotonic() - started, 2),
         )
-        return _text(result, any(entry["status"] in ("failed", "skipped") for entry in entries))
+        return tool_result(result, any(entry["status"] in ("failed", "skipped") for entry in entries))
     except Exception as exc:
         log(f"[MCP] set_editable_state failed: {exc}")
-        return _text(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
+        return tool_result(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)

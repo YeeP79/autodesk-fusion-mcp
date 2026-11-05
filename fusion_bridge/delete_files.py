@@ -30,9 +30,14 @@ import os
 import re
 import time
 import traceback
+from functools import partial
 
 from .. import settings
+from .common.results import error_result, tool_result
 from .dispatch import get_app, log
+
+# Plans list every file; a one-space indent keeps them readable and short.
+_result = partial(tool_result, indent=1)
 
 MAX_FILES_PER_CALL = 200
 ID_PREFIX = "urn:"
@@ -643,14 +648,6 @@ def validate_arguments(arguments):
     return dict(flags, project=project.strip(), files=[f.strip() for f in files], segments=segments)
 
 
-def _result(payload, is_error=False):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=1)}], "isError": is_error}
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
 def _time_budget():
     return max(_MIN_BUDGET_S, settings.MCP_MAIN_THREAD_TIMEOUT - _BUDGET_MARGIN_S)
 
@@ -660,7 +657,7 @@ def _run(app, options, out_of_time):
     try:
         project = find_project(items(data.dataProjects), options["project"])
     except LookupError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
 
     resolver = PathResolver()
     base = {"tool": "delete_files", "dry_run": options["dry_run"], "project": project.name}
@@ -707,7 +704,7 @@ def delete_files(arguments):
     try:
         options = validate_arguments(arguments)
     except ValueError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
     started = time.monotonic()
     deadline = started + _time_budget()
     try:
@@ -718,4 +715,4 @@ def delete_files(arguments):
     except Exception as exc:
         tb = traceback.format_exc()
         log(f"[MCP] delete_files failed: {exc}")
-        return _error(f"Error: {exc}\n{tb}")
+        return error_result(f"Error: {exc}\n{tb}")

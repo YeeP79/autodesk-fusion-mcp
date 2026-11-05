@@ -23,6 +23,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
+from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
 ACTIONS = ("point", "ray", "grid", "radial", "axial")
@@ -62,15 +63,6 @@ _ACTION_FIELDS = {
 
 class ProbeError(Exception):
     """A request that cannot be sampled, reported to the caller as plain text."""
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
-def _ok(payload):
-    # Compact on purpose: indenting a grid puts every number on its own line.
-    return {"content": [{"type": "text", "text": json.dumps(payload)}], "isError": False}
 
 
 # -- Vector math (no Fusion) ---------------------------------------------------
@@ -766,17 +758,17 @@ def probe_geometry(arguments):
     """Sample the active design's bodies: containment, ray hits, grids, intervals."""
     opts, err = validate_args(arguments)
     if err:
-        return _error(err)
+        return error_result(err)
     try:
         started = time.monotonic()
         budget = Budget()
         design = adsk.fusion.Design.cast(get_app().activeProduct)
         if design is None:
-            return _error("Error: the active product is not a Fusion design")
+            return error_result("Error: the active product is not a Fusion design")
         root = design.rootComponent
         targets, warnings, problem = resolve_targets(list(body_entries(root)), opts["bodies"])
         if problem:
-            return _error(json.dumps(problem, indent=2))
+            return error_result(json.dumps(problem, indent=2))
         probe = FusionProbe(root, targets)
         payload = sample(opts, targets, probe, budget)
         if probe.other_bodies:
@@ -784,10 +776,11 @@ def probe_geometry(arguments):
         if warnings:
             payload["warnings"] = warnings
         payload["elapsed_seconds"] = round(time.monotonic() - started, 2)
-        return _ok(payload)
+        # Compact on purpose: indenting a grid puts every number on its own line.
+        return ok_result(payload, indent=None)
     except ProbeError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
     except Exception as exc:
         tb = traceback.format_exc()
         log(f"[MCP] probe_geometry failed: {exc}")
-        return _error(f"Error: {exc}\n{tb}")
+        return error_result(f"Error: {exc}\n{tb}")

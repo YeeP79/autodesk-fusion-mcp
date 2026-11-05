@@ -1,12 +1,12 @@
 """Read the active selection from the Fusion 360 viewport."""
 
-import json
 import traceback
 
 import adsk.core
 import adsk.fusion
 
 from . import value_builders
+from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
 
@@ -66,17 +66,11 @@ def get_active_selection(arguments):
         result["context"] = context_msg
 
         log(f"[MCP] get_active_selection: {result['count']} items")
-        return {
-            "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
-            "isError": False,
-        }
+        return ok_result(result)
     except Exception as exc:
         tb = traceback.format_exc()
         log(f"[MCP] get_active_selection failed: {exc}")
-        return {
-            "content": [{"type": "text", "text": f"Error: {exc}\n{tb}"}],
-            "isError": True,
-        }
+        return error_result(f"Error: {exc}\n{tb}")
 
 
 def _safe_attr(obj, name):

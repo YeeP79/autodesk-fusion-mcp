@@ -12,7 +12,6 @@ duck-typed objects) so the metric, threshold and diff logic is testable with
 fakes; the Fusion layer only gathers numbers.
 """
 
-import json
 import math
 import time
 import traceback
@@ -22,6 +21,7 @@ from collections import OrderedDict
 import adsk.core
 import adsk.fusion
 
+from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
 # Fusion lengths are cm; factor converts cm to the chosen unit.
@@ -60,14 +60,6 @@ SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 # Module-level baseline store: token -> {"created", "document", "records"}.
 # Session-only (lost when the add-in reloads), most recent last.
 _BASELINES = OrderedDict()
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
-def _ok(payload):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": False}
 
 
 # -- Units ----------------------------------------------------------------------
@@ -756,17 +748,17 @@ def check_solids(arguments):
     """Run geometry sanity checks on bodies in the active design."""
     opts, err = validate_args(arguments)
     if err:
-        return _error(err)
+        return error_result(err)
     try:
         app = get_app()
         design = adsk.fusion.Design.cast(app.activeProduct)
         if design is None:
-            return _error("Error: the active product is not a Fusion design")
+            return error_result("Error: the active product is not a Fusion design")
         report, err = run_checks(design, _document_name(app), opts)
         if err:
-            return _error(err)
+            return error_result(err)
         log(f"[MCP] check_solids: {report['bodies_checked']} bodies, {report['summary']['problems']} problems")
-        return _ok(report)
+        return ok_result(report)
     except Exception as exc:
         log(f"[MCP] check_solids failed: {exc}", adsk.core.LogLevels.ErrorLogLevel)
-        return _error(f"Error: {exc}\n{traceback.format_exc()}")
+        return error_result(f"Error: {exc}\n{traceback.format_exc()}")

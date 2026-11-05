@@ -11,10 +11,10 @@ The walk, summary and hints are plain functions over duck-typed objects
 (``count``/``item(i)`` collections, attribute reads) so they test with fakes.
 """
 
-import json
 import time
 import traceback
 
+from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
 DEFAULT_EDITABLE_LIMIT = 10
@@ -36,10 +36,6 @@ HINTS_NOTE = (
     "Hints are heuristics, not guarantees. Fusion's API cannot change a file's editable "
     "state: right-click the file in the Data Panel and choose Make Read-Only / Make Editable."
 )
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
 def _is_int(value):
@@ -482,7 +478,7 @@ def editable_files(arguments):
     """Report editable designs against the Personal Use limit, with release hints."""
     options, err = validate_arguments(arguments)
     if err:
-        return _error(err)
+        return error_result(err)
     try:
         app = get_app()
         data = app.data
@@ -491,7 +487,7 @@ def editable_files(arguments):
         projects = select_projects(all_projects, options["project"])
         if options["project"] and not projects:
             names = sorted(_safe(p, "name", "?") for p in all_projects)
-            return _error(f"Error: no project matches {options['project']!r}. Projects: {names}")
+            return error_result(f"Error: no project matches {options['project']!r}. Projects: {names}")
 
         entries, walk_info = walk_projects(projects, options["max_depth"], options["max_files"],
                                            deadline=started + options["time_budget_s"])
@@ -501,8 +497,8 @@ def editable_files(arguments):
         report["elapsed_seconds"] = round(time.monotonic() - started, 2)
         log(f"[MCP] editable_files: {report['editable_count']}/{report['editable_limit']} editable, "
             f"{len(entries)} designs scanned in {report['elapsed_seconds']}s")
-        return {"content": [{"type": "text", "text": json.dumps(report, indent=2)}], "isError": False}
+        return ok_result(report)
     except Exception as exc:
         tb = traceback.format_exc()
         log(f"[MCP] editable_files failed: {exc}")
-        return _error(f"Error: {exc}\n{tb}")
+        return error_result(f"Error: {exc}\n{tb}")

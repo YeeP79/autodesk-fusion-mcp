@@ -4,10 +4,10 @@ The `ScriptManager` class owns the scripts directory and provides CRUD
 operations that return JSON payloads matching the public wire format.
 """
 
-import json
 import os
 from pathlib import Path
 
+from .common.results import error_result, ok_result
 from .dispatch import log
 
 
@@ -45,12 +45,12 @@ class ScriptManager:
         filename = arguments.get("filename")
         code = arguments.get("code")
         if not filename or code is None:
-            return _reply_error("ERROR: 'filename' and 'code' required")
+            return error_result("ERROR: 'filename' and 'code' required")
         try:
             target = self._safe_path(filename)
             target.write_text(code, encoding="utf-8")
             log(f"[MCP] Saved script: {target}")
-            return _reply(
+            return ok_result(
                 {
                     "filename": filename,
                     "path": str(target),
@@ -59,19 +59,19 @@ class ScriptManager:
                 }
             )
         except Exception as exc:
-            return _reply_error(f"ERROR saving script: {exc}")
+            return error_result(f"ERROR saving script: {exc}")
 
     def load(self, arguments):
         filename = arguments.get("filename")
         if not filename:
-            return _reply_error("ERROR: 'filename' required")
+            return error_result("ERROR: 'filename' required")
         try:
             target = self._safe_path(filename)
             if not target.exists():
-                return _reply_error(f"ERROR: Script not found: {filename}")
+                return error_result(f"ERROR: Script not found: {filename}")
             code = target.read_text(encoding="utf-8")
             log(f"[MCP] Loaded script: {target}")
-            return _reply(
+            return ok_result(
                 {
                     "filename": filename,
                     "code": code,
@@ -80,7 +80,7 @@ class ScriptManager:
                 }
             )
         except Exception as exc:
-            return _reply_error(f"ERROR loading script: {exc}")
+            return error_result(f"ERROR loading script: {exc}")
 
     def list_all(self, arguments):
         del arguments
@@ -100,7 +100,7 @@ class ScriptManager:
                     }
                 )
             log(f"[MCP] Listed {len(entries)} scripts")
-            return _reply(
+            return ok_result(
                 {
                     "scripts": entries,
                     "count": len(entries),
@@ -108,38 +108,21 @@ class ScriptManager:
                 }
             )
         except Exception as exc:
-            return _reply_error(f"ERROR listing scripts: {exc}")
+            return error_result(f"ERROR listing scripts: {exc}")
 
     def delete(self, arguments):
         filename = arguments.get("filename")
         if not filename:
-            return _reply_error("ERROR: 'filename' required")
+            return error_result("ERROR: 'filename' required")
         try:
             target = self._safe_path(filename)
             if not target.exists():
-                return _reply_error(f"ERROR: Script not found: {filename}")
+                return error_result(f"ERROR: Script not found: {filename}")
             target.unlink()
             log(f"[MCP] Deleted script: {target}")
-            return _reply({"filename": filename, "deleted": True})
+            return ok_result({"filename": filename, "deleted": True})
         except Exception as exc:
-            return _reply_error(f"ERROR deleting script: {exc}")
-
-
-# ── Response helper ───────────────────────────────────────────────────────
-
-
-def _reply(payload):
-    return {
-        "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-        "isError": False,
-    }
-
-
-def _reply_error(message):
-    return {
-        "content": [{"type": "text", "text": message}],
-        "isError": True,
-    }
+            return error_result(f"ERROR deleting script: {exc}")
 
 
 # ── Module-level default instance and backwards-compat exports ───────────

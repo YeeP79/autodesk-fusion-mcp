@@ -24,6 +24,8 @@ import os
 import re
 from datetime import datetime, timedelta
 
+from .common.results import error_result, ok_result
+
 DEFAULT_LINES = 50
 MAX_LINES = 1000
 LEVELS = "IWED"
@@ -49,15 +51,6 @@ _HEADER = re.compile(r"^(\d{8}T\d{6}) ([A-Z]) (\S+) ?(.*)$")
 _RELATIVE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd])\s*$", re.IGNORECASE)
 _UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
 _TS_FORMAT = "%Y%m%dT%H%M%S"
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
-def _ok(text):
-    body = text if isinstance(text, str) else json.dumps(text, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": False}
 
 
 # -- Locating log files --------------------------------------------------------
@@ -334,21 +327,21 @@ def tail_log(arguments, roots=None, now=None, max_scan_bytes=MAX_SCAN_BYTES):
     now = now or datetime.now()
     options, failure = _validate(arguments, now)
     if failure:
-        return _error(failure)
+        return error_result(failure)
 
     roots = roots if roots is not None else default_log_roots()
     files = find_log_files(roots)
     if not files:
-        return _error("Error: no Fusion app log found (looked for "
+        return error_result("Error: no Fusion app log found (looked for "
                       f"{LOG_GLOB} under: {', '.join(roots)})")
     if options["file"] == "list":
-        return _ok(describe_files(files))
+        return ok_result(describe_files(files))
     if options["file"] == "latest":
         mtime, size, path = files[0]
     else:
         chosen = [f for f in files if os.path.basename(f[2]) == options["file"]]
         if not chosen:
-            return _error(f"Error: no log file named {options['file']!r}; use file=\"list\"")
+            return error_result(f"Error: no log file named {options['file']!r}; use file=\"list\"")
         mtime, size, path = chosen[0]
 
     stats = {}
@@ -360,7 +353,7 @@ def tail_log(arguments, roots=None, now=None, max_scan_bytes=MAX_SCAN_BYTES):
                 entries, options["lines"], options["levels"], options["needles"],
                 options["required"], options["since"])
     except OSError as exc:
-        return _error(f"Error: could not read {path}: {exc}")
+        return error_result(f"Error: could not read {path}: {exc}")
 
     if len(matched) >= options["lines"]:
         reach = f"stopped at the {options['lines']}-entry limit"
@@ -382,4 +375,4 @@ def tail_log(arguments, roots=None, now=None, max_scan_bytes=MAX_SCAN_BYTES):
         body.extend(format_entry(entry))
     if not matched:
         body.append("(no matching entries)")
-    return _ok("\n".join(body))
+    return ok_result("\n".join(body))

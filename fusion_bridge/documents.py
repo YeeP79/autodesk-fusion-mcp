@@ -5,10 +5,10 @@ design need the right document active first. ``document_status`` shows what is
 open (and which documents will not save); ``activate_document`` switches.
 """
 
-import json
 import traceback
 
 from . import document_guard
+from .common.results import tool_result
 from .dispatch import get_app, log
 
 _MAX_FOLDER_DEPTH = 64
@@ -26,11 +26,6 @@ LINKED_PARENT_NOTE = (
     " Open documents that link it ({parents}) load their own instances, so closing the "
     "duplicate may need those parents closed too."
 )
-
-
-def _text(payload, is_error=False):
-    body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": is_error}
 
 
 def _safe(obj, attr, default=None):
@@ -185,7 +180,7 @@ def document_status(arguments):
         attach_references(infos, [_referenced_ids(doc) for doc in docs])
         duplicate_warnings = flag_duplicates(infos)
         active = next((info for info in infos if info["is_active"]), None)
-        return _text({
+        return tool_result({
             "active_document": active["name"] if active else None,
             "count": len(infos),
             "documents": infos,
@@ -193,7 +188,7 @@ def document_status(arguments):
         })
     except Exception as exc:
         log(f"document_status failed: {exc}")
-        return _text(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
+        return tool_result(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
 
 
 def validate_selector(arguments):
@@ -239,7 +234,7 @@ def activate_document(arguments):
     """Activate one open document chosen by name or DataFile id."""
     selector, error = validate_selector(arguments)
     if error:
-        return _text(error, True)
+        return tool_result(error, True)
     field, value = selector
     try:
         app = get_app()
@@ -247,14 +242,14 @@ def activate_document(arguments):
         infos = [describe_document(doc) for doc in docs]
         matches = match_documents(infos, field, value)
         if not matches:
-            return _text({
+            return tool_result({
                 "error": f"No open document matches {field}={value!r}",
                 "open_documents": [_candidate(info) for info in infos],
             }, True)
         if len(matches) > 1:
             hint = ("they are duplicate instances of one file (see document_status warnings)"
                     if field == "data_file_id" else "use data_file_id")
-            return _text({
+            return tool_result({
                 "error": f"{len(matches)} open documents match {field}={value!r}; {hint}",
                 "candidates": [_candidate(infos[i]) for i in matches],
             }, True)
@@ -262,7 +257,7 @@ def activate_document(arguments):
         target = docs[matches[0]]
         was_active = infos[matches[0]]["is_active"]
         if not was_active and not target.activate():
-            return _text(f"Error: Fusion refused to activate {infos[matches[0]]['name']!r}", True)
+            return tool_result(f"Error: Fusion refused to activate {infos[matches[0]]['name']!r}", True)
 
         active_doc = app.activeDocument
         active = describe_document(active_doc) if active_doc is not None else None
@@ -274,8 +269,8 @@ def activate_document(arguments):
             "warnings": status_warnings([active] if active else []),
         }
         if active is None or active.get("name") != infos[matches[0]]["name"]:
-            return _text({"error": "Activation did not take effect", **result}, True)
-        return _text(result)
+            return tool_result({"error": "Activation did not take effect", **result}, True)
+        return tool_result(result)
     except Exception as exc:
         log(f"activate_document failed: {exc}")
-        return _text(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
+        return tool_result(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)

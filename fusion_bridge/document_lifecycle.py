@@ -17,13 +17,13 @@ Decision logic is Fusion-free and tested with fakes; the glue reads ``time`` and
 ``adsk.doEvents`` through this module.
 """
 
-import json
 import time
 import traceback
 from collections import Counter
 
 import adsk.core
 
+from .common.results import tool_result
 from .dispatch import get_app, log
 
 _POLL_S = 0.1
@@ -85,11 +85,6 @@ LOOKUP_BUDGET_NOTE = (
     "The cloud lookup budget ran out after {seconds:g} s: {count} file(s) use the possibly stale "
     "latest version from the open document, with no path."
 )
-
-
-def _text(payload, is_error=False):
-    body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": is_error}
 
 
 def _safe(obj, attr, default=None):
@@ -515,17 +510,17 @@ def close_document(arguments):
     try:
         field, value, all_instances, discard_unsaved = validate_close(arguments)
     except ValueError as exc:
-        return _text(f"Error: {exc}", True)
+        return tool_result(f"Error: {exc}", True)
 
     try:
         app = get_app()
         documents, before = _read_with_references(app)
         targets, error = pick_targets(before, field, value, all_instances)
         if error:
-            return _text(error, True)
+            return tool_result(error, True)
         blockers = close_preflight(before, targets)
         if blockers and not discard_unsaved:
-            return _text({"status": "refused", "attempted": False, "reason": "unsaved_changes",
+            return tool_result({"status": "refused", "attempted": False, "reason": "unsaved_changes",
                           "unsaved": blockers, "recommendation": UNSAVED_FIX}, True)
 
         attempts = []
@@ -537,10 +532,10 @@ def close_document(arguments):
         _, after = _read_with_references(app)
         active_name = _safe(_safe(app, "activeDocument"), "name")
         result = close_result(before, after, targets, attempts, active_name)
-        return _text(result, bool(result["still_open"]))
+        return tool_result(result, bool(result["still_open"]))
     except Exception as exc:
         log(f"[MCP] close_document failed: {exc}")
-        return _text(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
+        return tool_result(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
 
 
 def _folder_path(data_file):
@@ -741,13 +736,13 @@ def update_references(arguments):
     try:
         selector, apply_updates, files = validate_references(arguments)
     except ValueError as exc:
-        return _text(f"Error: {exc}", True)
+        return tool_result(f"Error: {exc}", True)
 
     try:
         app = get_app()
         document, error = _pick_document(app, selector)
         if error:
-            return _text(error, True)
+            return tool_result(error, True)
 
         name = _safe(document, "name")
         cloud = CloudLookups(app)
@@ -755,7 +750,7 @@ def update_references(arguments):
         references = [_read_reference(ref, cloud) for ref in held]
         selected, error = resolve_files(references, files)
         if error:
-            return _text(error, True)
+            return tool_result(error, True)
         to_update, skipped = plan_updates(references, selected)
 
         updates = []
@@ -781,7 +776,7 @@ def update_references(arguments):
             result["would_update"] = [references[i].get("name") for i in to_update]
         result["warnings"] = _reference_warnings(document, name, len(references), cloud)
         result["recommendation"] = reference_advice(name, references, updates, document_modified is True)
-        return _text(result, any(item["status"] in (NO_CHANGE, FAILED, NOT_ATTEMPTED) for item in updates))
+        return tool_result(result, any(item["status"] in (NO_CHANGE, FAILED, NOT_ATTEMPTED) for item in updates))
     except Exception as exc:
         log(f"[MCP] update_references failed: {exc}")
-        return _text(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
+        return tool_result(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)

@@ -12,21 +12,13 @@ kept in plain functions over dicts so it is testable without Fusion.
 """
 
 import datetime
-import json
 import traceback
 
+from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 500
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
-def _success(payload):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": False}
 
 
 # -- Pure logic ---------------------------------------------------------------
@@ -264,7 +256,7 @@ def document_versions(arguments):
     try:
         limit = validate_list_args(arguments)
     except ValueError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
     try:
         doc, data_file = _active_data_file(get_app())
         files = _version_files(data_file)
@@ -272,12 +264,12 @@ def document_versions(arguments):
         payload = format_version_list(
             doc.name, records, data_file.versionNumber, data_file.latestVersionNumber, limit
         )
-        return _success(payload)
+        return ok_result(payload)
     except ValueError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
     except Exception as exc:
         log(f"[MCP] document_versions failed: {exc}")
-        return _error(f"Error reading document versions: {exc}\n{traceback.format_exc()}")
+        return error_result(f"Error reading document versions: {exc}\n{traceback.format_exc()}")
 
 
 def _open_document_names(app, visible_only=True):
@@ -294,7 +286,7 @@ def restore_version(arguments):
     try:
         version_number, confirm, discard_unsaved = validate_restore_args(arguments)
     except ValueError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
 
     promoted = False
     name = None
@@ -318,7 +310,7 @@ def restore_version(arguments):
         }
         refusal, plan = plan_restore(state, version_number, confirm, discard_unsaved)
         if refusal:
-            return _error(refusal)
+            return error_result(refusal)
 
         # Keep only strings across the close: Document objects (this one and
         # any it links) become invalid once Fusion closes them.
@@ -328,12 +320,12 @@ def restore_version(arguments):
         before = [n for n in _open_document_names(app) if n != name]
 
         if not files[version_number].promote():
-            return _error(f"Fusion refused to promote version {version_number} of '{name}'. Nothing was changed.")
+            return error_result(f"Fusion refused to promote version {version_number} of '{name}'. Nothing was changed.")
         promoted = True
         log(f"[MCP] restore_version: promoted v{version_number} of '{name}'")
 
         if not doc.close(False):
-            return _error(
+            return error_result(
                 f"Version {version_number} was promoted to a new latest version, but Fusion did not close '{name}'. "
                 "The open document still shows the old content: close it without saving and reopen it."
             )
@@ -342,13 +334,13 @@ def restore_version(arguments):
 
         fresh = app.data.findFileById(file_id) if file_id else None
         if fresh is None:
-            return _error(
+            return error_result(
                 f"Version {version_number} was promoted and '{name}' was closed, but the file could not be found "
                 "again to reopen it. Open it from the Data Panel; the latest version is the restored one."
             )
         new_doc = app.documents.open(fresh, True)
         if new_doc is None:
-            return _error(
+            return error_result(
                 f"Version {version_number} was promoted and '{name}' was closed, but Fusion failed to reopen it. "
                 "Open it from the Data Panel; the latest version is the restored one."
             )
@@ -374,13 +366,13 @@ def restore_version(arguments):
                 f"got {result['new_version']}; check the Data Panel."
             )
         log(f"[MCP] restore_version: '{name}' now at v{result['new_version']}")
-        return _success(result)
+        return ok_result(result)
     except ValueError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
     except Exception as exc:
         log(f"[MCP] restore_version failed: {exc}")
         prefix = (
             f"Version {version_number} of '{name}' WAS promoted before the failure; the latest version is the "
             "restored one. " if promoted else ""
         )
-        return _error(f"{prefix}Error restoring version: {exc}\n{traceback.format_exc()}")
+        return error_result(f"{prefix}Error restoring version: {exc}\n{traceback.format_exc()}")

@@ -14,7 +14,6 @@ Entry format: ``20261105T113244 I .24563490 Begin:\tOpen the Document ...``
 """
 
 import glob
-import json
 import math
 import os
 import re
@@ -22,6 +21,7 @@ import time
 from datetime import datetime, timedelta
 
 from . import dispatch
+from .common.results import error_result, ok_result
 
 DEFAULT_TIMEOUT_SECONDS = 2.0
 MIN_TIMEOUT_SECONDS = 0.1
@@ -48,14 +48,6 @@ ACTIVITIES = (
 _ARGUMENTS = {"timeout_seconds", "wait_until_idle_seconds"}
 _HEADER = re.compile(r"^(\d{8}T\d{6}) [A-Z] \S+ ?(.*)$")
 _TS_FORMAT = "%Y%m%dT%H%M%S"
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
-def _ok(payload):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": False}
 
 
 # -- Arguments -----------------------------------------------------------------
@@ -278,7 +270,7 @@ def fusion_status(arguments, cancel_event=None):
     try:
         timeout_seconds, wait_seconds = parse_arguments(arguments)
     except ValueError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
 
     def probe(seconds):
         return dispatch.probe_main_thread(seconds, cancel_event)
@@ -289,7 +281,7 @@ def fusion_status(arguments, cancel_event=None):
         else:
             cancel_event.wait(seconds)
 
-    return _ok(collect_status(
+    return ok_result(collect_status(
         timeout_seconds, wait_seconds, probe=probe, running=dispatch.running_tool,
         queued=dispatch.queued_call_count, log_hint=read_log_hint,
         open_files=count_open_files, pause=pause,

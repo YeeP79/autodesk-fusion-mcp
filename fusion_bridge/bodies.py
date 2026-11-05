@@ -10,13 +10,13 @@ The Fusion-free helpers at the top take plain values or duck-typed objects
 so they are testable with fakes.
 """
 
-import json
 import math
 import traceback
 
 import adsk.core
 import adsk.fusion
 
+from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
 # Fusion lengths are cm; factor converts cm to the chosen unit.
@@ -47,14 +47,6 @@ TRAP_NOTE = (
     "sweep_deg (a fillet sweeps ~90 deg, a bore or OD 360) and created_by before treating a "
     "cylinder as a bore or OD."
 )
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
-def _ok(payload):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": False}
 
 
 # -- Pure helpers (no Fusion) -------------------------------------------------
@@ -576,35 +568,35 @@ def list_bodies(arguments):
     """List every B-Rep body in the active design in world coordinates."""
     opts, err = validate_list_args(arguments)
     if err:
-        return _error(err)
+        return error_result(err)
     try:
         root = _root_component()
         if root is None:
-            return _error("Error: the active product is not a Fusion design")
+            return error_result("Error: the active product is not a Fusion design")
         result = list_body_rows(root, opts)
         log(f"[MCP] list_bodies: {result['returned']}/{result['total_matched']} rows")
-        return _ok(result)
+        return ok_result(result)
     except Exception as exc:
         log(f"[MCP] list_bodies failed: {exc}", adsk.core.LogLevels.ErrorLogLevel)
-        return _error(f"Error: {exc}\n{traceback.format_exc()}")
+        return error_result(f"Error: {exc}\n{traceback.format_exc()}")
 
 
 def describe_body(arguments):
     """Describe one body's faces, analytic surfaces and physical properties."""
     opts, err = validate_describe_args(arguments)
     if err:
-        return _error(err)
+        return error_result(err)
     try:
         root = _root_component()
         if root is None:
-            return _error("Error: the active product is not a Fusion design")
+            return error_result("Error: the active product is not a Fusion design")
         entry, problem = resolve_body(list(iter_body_entries(root)), opts["occurrence_path"],
                                       opts["body_name"], opts["body_index"])
         if problem:
-            return {"content": [{"type": "text", "text": json.dumps(problem, indent=2)}], "isError": True}
+            return error_result(problem)
         payload = describe(entry, opts["units"], opts["max_faces"])
         log(f"[MCP] describe_body: {entry['occurrence_path']} / {entry['body']}")
-        return _ok(payload)
+        return ok_result(payload)
     except Exception as exc:
         log(f"[MCP] describe_body failed: {exc}", adsk.core.LogLevels.ErrorLogLevel)
-        return _error(f"Error: {exc}\n{traceback.format_exc()}")
+        return error_result(f"Error: {exc}\n{traceback.format_exc()}")

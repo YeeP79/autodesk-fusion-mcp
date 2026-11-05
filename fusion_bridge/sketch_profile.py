@@ -9,7 +9,6 @@ coordinates on non-XY planes. ``closed_polyline`` validates the outline first
 reports the profiles it produced. ``profiles`` describes an existing sketch.
 """
 
-import json
 import traceback
 
 import adsk.core
@@ -17,6 +16,7 @@ import adsk.fusion
 
 from . import sketch_geometry as geo
 from . import value_builders
+from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
 ACTIONS = ("closed_polyline", "profiles")
@@ -26,15 +26,6 @@ SKETCH_KEY = "sketch_profile_sketch"
 PROFILE_KEY = "sketch_profile_profile"
 _ROOT_PLANE_ATTRS = {"xy": "xYConstructionPlane", "xz": "xZConstructionPlane", "yz": "yZConstructionPlane"}
 _PLANE_TYPES = ("adsk::fusion::ConstructionPlane", "adsk::fusion::BRepFace")
-
-
-def _result(payload, is_error=False):
-    body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": is_error}
-
-
-def _error(text):
-    return _result(f"Error: {text}", True)
 
 
 # -- Argument parsing (Fusion-free) ------------------------------------------------
@@ -380,14 +371,14 @@ def sketch_profile(arguments):
     try:
         request = parse_request(arguments)
     except geo.GeometryError as exc:
-        return _result({"error": "invalid input; nothing was created", "problems": exc.problems}, True)
+        return tool_result({"error": "invalid input; nothing was created", "problems": exc.problems}, True)
     try:
         payload = _closed_polyline(request) if request["action"] == "closed_polyline" else _profiles(request)
         log(f"[MCP] sketch_profile {request['action']}: {payload['profile_count']} profile(s)")
-        return _result(payload)
+        return tool_result(payload)
     except geo.GeometryError as exc:
         note = "refused; nothing was created" if request["action"] == "closed_polyline" else "refused"
-        return _result({"error": note, "problems": exc.problems}, True)
+        return tool_result({"error": note, "problems": exc.problems}, True)
     except Exception as exc:
         log(f"[MCP] sketch_profile failed: {exc}")
-        return _error(f"{exc}\n{traceback.format_exc()}")
+        return error_result(f"Error: {exc}\n{traceback.format_exc()}")

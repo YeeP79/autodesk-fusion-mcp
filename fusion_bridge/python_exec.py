@@ -20,6 +20,7 @@ from ..lib import fusionAddInUtils as futil
 from ..lib import mcp_server as mcp_server_module
 from . import document_guard
 from . import timeline_health
+from .common.results import error_result, ok_result
 from .dispatch import get_app
 
 
@@ -175,10 +176,7 @@ def clear_sessions():
 def run_python(arguments):
     code = arguments.get("code")
     if not code:
-        return {
-            "content": [{"type": "text", "text": "ERROR: 'code' parameter required"}],
-            "isError": True,
-        }
+        return error_result("ERROR: 'code' parameter required")
 
     session_id = arguments.get("session_id", "default")
     persistent = arguments.get("persistent", True)
@@ -214,10 +212,7 @@ def run_python(arguments):
         warning = document_guard.active_document_warning()
         if warning:
             payload["warnings"] = [warning]
-        return {
-            "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": False,
-        }
+        return ok_result(payload)
     except Exception as exc:
         error_text = str(exc)
         tb = traceback.format_exc()
@@ -235,10 +230,7 @@ def run_python(arguments):
         # Names bound before the failure stay in the session, so say which.
         if persistent and runtime_globals is not None:
             payload.update(_describe_session(runtime_globals))
-        return {
-            "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": True,
-        }
+        return error_result(payload)
 
 
 def read_git_commit(addin_dir):

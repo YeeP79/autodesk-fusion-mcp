@@ -43,12 +43,12 @@ after and reports anything that went unplanned as also_removed.
 
 import collections
 import difflib
-import json
 import traceback
 
 import adsk.core
 import adsk.fusion
 
+from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
 # Feature/sketch/joint properties that hold inputs. Feature.bodies is output.
@@ -87,15 +87,6 @@ HEALTH_STATES = ("healthy", "warning", "error")
 
 
 # -- Small helpers -------------------------------------------------------------
-
-
-def _error(payload):
-    text = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
-def _ok(payload, is_error=False):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": is_error}
 
 
 def _attr(obj, name):
@@ -663,31 +654,31 @@ def delete_features(arguments):
     """Plan (dry_run, default) or perform deletion of named timeline items."""
     params, problem = validate_arguments(arguments)
     if problem:
-        return _error(problem)
+        return error_result(problem)
     try:
         app = get_app()
         design = adsk.fusion.Design.cast(app.activeProduct)
         if design is None:
-            return _error("Error: the active product is not a Fusion design")
+            return error_result("Error: the active product is not a Fusion design")
         direct = getattr(getattr(adsk.fusion, "DesignTypes", None), "DirectDesignType", None)
         if direct is not None and design.designType == direct:
-            return _error("Error: the active design has no timeline (direct modeling)")
+            return error_result("Error: the active design has no timeline (direct modeling)")
         timeline = design.timeline
         if timeline.markerPosition < timeline.count:
-            return _error("Error: the timeline marker is rolled back; move it to the end before deleting "
+            return error_result("Error: the timeline marker is rolled back; move it to the end before deleting "
                           "(inputs of rolled-back items cannot be inspected)")
 
         entries, handles, keys = snapshot(design)
         targets, problems = resolve_targets(entries, params["names"], params["component"])
         if problems:
-            return _error({"error": "every name must resolve to exactly one timeline item; nothing was deleted",
+            return error_result({"error": "every name must resolve to exactly one timeline item; nothing was deleted",
                            "unresolved": problems})
         plan, refusal = build_plan(entries, targets, params["include_dependents"], keys.labels)
         counts_before, errors_before = health_summary(entries)
         if refusal:
             refusal.pop("positions", None)
             refusal["note"] = "nothing was deleted"
-            return _error(refusal)
+            return error_result(refusal)
 
         order = plan.pop("positions")
         by_position = {e["position"]: e for e in entries}
@@ -698,7 +689,7 @@ def delete_features(arguments):
                                  "features are broken")
         if params["dry_run"]:
             result["note"] = "dry run: nothing was deleted; call again with dry_run=false to delete in this order"
-            return _ok(result)
+            return tool_result(result)
 
         deleted, failure = [], None
         for planned, position in zip(plan["delete_order"], order):
@@ -752,9 +743,9 @@ def delete_features(arguments):
             log(f"[MCP] delete_features: Fusion also removed {names}")
             # Lead the response with it: the plan said otherwise.
             result = {"warning": result.pop("warning"), "also_removed": result.pop("also_removed"), **result}
-        return _ok(result, is_error=bool(failure) or still_there or bool(also_removed))
+        return tool_result(result, is_error=bool(failure) or still_there or bool(also_removed))
     except Exception as exc:
         tb = traceback.format_exc()
         log(f"[MCP] delete_features failed: {exc}")
-        return _error(f"Error: {exc}\n{tb}")
+        return error_result(f"Error: {exc}\n{tb}")
 

@@ -6,7 +6,6 @@ imports it afresh), while the disk commit and source mtimes are read on
 every call.
 """
 
-import json
 import os
 import sys
 import time
@@ -14,6 +13,7 @@ from datetime import datetime
 
 from ..lib import mcp_server as mcp_server_module
 from . import python_exec, reloader
+from .common.results import error_result, ok_result
 
 # Directories under the add-in that never hold running add-in code.
 _SKIPPED_DIRS = {".git", "__pycache__", "tests", "third_party", "docs", "guides"}
@@ -130,11 +130,5 @@ def bridge_info(arguments):
     try:
         payload = collect()
     except Exception as exc:
-        return {
-            "content": [{"type": "text", "text": f"Error: {type(exc).__name__}: {exc}"}],
-            "isError": True,
-        }
-    return {
-        "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-        "isError": False,
-    }
+        return error_result(f"Error: {type(exc).__name__}: {exc}")
+    return ok_result(payload)

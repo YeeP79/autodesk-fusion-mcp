@@ -27,15 +27,19 @@ Rules this module enforces:
   and links that were lost or became unresolvable.
 """
 
-import json
 import time
 import traceback
+from functools import partial
 
 import adsk
 
 from . import data_tree, project_tree
+from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 from .server_log import INTERNAL_ERROR, LOCKED_CODE, LOCKED_STATUS, ServerLog, current_log
+
+# Plans list every file; a one-space indent keeps them readable and short.
+_result = partial(tool_result, indent=1)
 
 MAX_FILES_PER_CALL = 50
 LINK_CHECK_MAX_FILES = 100
@@ -742,14 +746,6 @@ def validate_remove_empty(arguments):
 # -- Handlers ----------------------------------------------------------------
 
 
-def _result(payload, is_error=False):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=1)}], "isError": is_error}
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
 def _refused(tool, plan, problems):
     return _result({"tool": tool, "refused": True, "changed": False, "problems": problems, "plan": plan}, True)
 
@@ -771,7 +767,7 @@ def _guarded(tool, validator, body):
         try:
             options = validator(arguments)
         except ValueError as exc:
-            return _error(f"Error: {exc}")
+            return error_result(f"Error: {exc}")
         started = time.monotonic()
         try:
             app = get_app()
@@ -779,7 +775,7 @@ def _guarded(tool, validator, body):
             try:
                 project = data_tree.find_project(projects, options["project"])
             except LookupError as exc:
-                return _error(f"Error: {exc}")
+                return error_result(f"Error: {exc}")
             result = body(app, projects, project, options)
             log(f"[MCP] {tool} in {project.name!r} (dry_run={options['dry_run']}) "
                 f"took {time.monotonic() - started:.2f}s")
@@ -787,7 +783,7 @@ def _guarded(tool, validator, body):
         except Exception as exc:
             tb = traceback.format_exc()
             log(f"[MCP] {tool} failed: {exc}")
-            return _error(f"Error: {exc}\n{tb}")
+            return error_result(f"Error: {exc}\n{tb}")
 
     handler.__name__ = tool
     return handler
@@ -820,7 +816,7 @@ def _move_body(app, projects, project, options):
         try:
             target_project = data_tree.find_project(projects, options["to_project"])
         except LookupError as exc:
-            return _error(f"Error: 'to_project': {exc}")
+            return error_result(f"Error: 'to_project': {exc}")
     resolver = data_tree.PathResolver()
     find = getattr(data, "findFileById", None)
     find_by_id = find if callable(find) else (lambda fid: None)
@@ -849,7 +845,7 @@ def _rename_folder_body(app, projects, project, options):
     try:
         folder, _ = data_tree.resolve_folder(project.rootFolder, options["segments"])
     except LookupError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
     plan, problems = plan_folder_rename(folder, options["new_name"], resolver)
     if problems:
         return _refused("rename_folder", plan, problems)
@@ -912,7 +908,7 @@ def _remove_empty_body(app, projects, project, options):
     try:
         folder, actual = data_tree.resolve_folder(project.rootFolder, options["segments"])
     except LookupError as exc:
-        return _error(f"Error: {exc}")
+        return error_result(f"Error: {exc}")
     start_path = data_tree.join_path(project.name, *actual)
     empty, complete = find_empty_folders(folder, start_path, budget_s=project_tree.time_budget())
     plan = {"root": start_path, "empty_folders": [p for _, p in empty], "top_level": top_level_paths(empty),

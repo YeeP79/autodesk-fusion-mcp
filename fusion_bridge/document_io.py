@@ -14,7 +14,6 @@ it links.
 """
 
 import glob
-import json
 import os
 import re
 import time
@@ -23,6 +22,7 @@ from datetime import datetime, timedelta
 
 import adsk.core
 
+from .common.results import tool_result
 from .dispatch import get_app, log
 
 DEFAULT_SAVE_TIMEOUT_S = 60.0
@@ -53,11 +53,6 @@ STUCK_INSTANCE_FIX = (
 
 
 # -- Small helpers -----------------------------------------------------------
-
-
-def _text(payload, is_error=False):
-    body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": is_error}
 
 
 def _safe(obj, attr, default=None):
@@ -497,7 +492,7 @@ def save_document(arguments):
     try:
         description, field, value, timeout_s = validate_save(arguments)
     except ValueError as exc:
-        return _text(f"Error: {exc}", True)
+        return tool_result(f"Error: {exc}", True)
 
     try:
         app = get_app()
@@ -505,13 +500,13 @@ def save_document(arguments):
         infos = [describe_document(doc) for doc in docs]
         target, error = pick_target(infos, field, value)
         if error:
-            return _text(error, True)
+            return tool_result(error, True)
         refusal, warnings = save_preflight(infos, target)
         if refusal:
             refusal = {"saved": False, "attempted": False, "document": infos[target].get("name"), **refusal}
             if refusal["reason"] == "older_duplicate":
                 refusal["recommendation"] = STUCK_INSTANCE_FIX
-            return _text(refusal, True)
+            return tool_result(refusal, True)
 
         document = docs[target]
         info = infos[target]
@@ -521,7 +516,7 @@ def save_document(arguments):
         if version_before is None:
             version_before = _loaded_version(info)
         if info.get("is_modified") is False:
-            return _text({
+            return tool_result({
                 "saved": False, "attempted": False, "document": info.get("name"),
                 "reason": "not_modified",
                 "note": "No unsaved changes, so Fusion would not create a new version.",
@@ -564,7 +559,7 @@ def save_document(arguments):
             result["warnings"] = warnings
         if verifier.saved:
             log(f"[MCP] save_document: v{version_before} -> v{verifier.latest_version} in {elapsed}s")
-            return _text(result)
+            return tool_result(result)
 
         # Failure: explain it from fresh readings.
         infos_after = [describe_document(doc) for doc in _open_documents(app)]
@@ -580,10 +575,10 @@ def save_document(arguments):
         }
         result["recommendation"] = save_recommendation(verifier.stage, same, read_only)
         log(f"[MCP] save_document: NOT saved after {elapsed}s ({verifier.stage})")
-        return _text(result, True)
+        return tool_result(result, True)
     except Exception as exc:
         log(f"[MCP] save_document failed: {exc}")
-        return _text(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
+        return tool_result(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
 
 
 # -- Fusion glue: open_document ----------------------------------------------
@@ -627,27 +622,27 @@ def open_document(arguments):
     try:
         file_id, project, segments, version = validate_open(arguments)
     except ValueError as exc:
-        return _text(f"Error: {exc}", True)
+        return tool_result(f"Error: {exc}", True)
 
     try:
         app = get_app()
         if file_id:
             data_file = app.data.findFileById(file_id)
             if data_file is None:
-                return _text(f"Error: no file with data_file_id {file_id!r}", True)
+                return tool_result(f"Error: no file with data_file_id {file_id!r}", True)
         else:
             try:
                 data_file = _resolve_path(app, project, segments)
             except ValueError as exc:
-                return _text(f"Error: {exc}", True)
+                return tool_result(f"Error: {exc}", True)
             file_id = _safe(data_file, "id")
 
         latest = _safe(data_file, "latestVersionNumber")
         target_version = version if version is not None else latest
         if not isinstance(target_version, int):
-            return _text("Error: could not read the file's latest version number; pass 'version'", True)
+            return tool_result("Error: could not read the file's latest version number; pass 'version'", True)
         if isinstance(latest, int) and target_version > latest:
-            return _text(f"Error: 'version' {version} is newer than the latest version (v{latest})", True)
+            return tool_result(f"Error: 'version' {version} is newer than the latest version (v{latest})", True)
 
         docs = _open_documents(app)
         infos = [describe_document(doc) for doc in docs]
@@ -656,13 +651,13 @@ def open_document(arguments):
         if plan["action"] == "reuse":
             document = docs[plan["index"]]
             if not infos[plan["index"]]["is_active"] and not document.activate():
-                return _text(f"Error: Fusion refused to activate {infos[plan['index']]['name']!r}", True)
+                return tool_result(f"Error: Fusion refused to activate {infos[plan['index']]['name']!r}", True)
         else:
             to_open = data_file
             if version is not None and version != latest:
                 to_open = _version_file(data_file, version)
                 if to_open is None:
-                    return _text(f"Error: version {version} not found in DataFile.versions", True)
+                    return tool_result(f"Error: version {version} not found in DataFile.versions", True)
             if plan["others"]:
                 loaded = sorted({_loaded_version(infos[i]) for i in plan["others"]} - {None})
                 warnings.append(
@@ -671,7 +666,7 @@ def open_document(arguments):
                     f"close the one you will not edit (without saving) before saving.")
             document = app.documents.open(to_open, True)
             if document is None:
-                return _text("Error: Fusion did not open the document", True)
+                return tool_result("Error: Fusion did not open the document", True)
             if not _safe(document, "isActive"):
                 document.activate()
 
@@ -692,7 +687,7 @@ def open_document(arguments):
             "warnings": warnings,
         }
         log(f"[MCP] open_document {result_info.get('name')!r}: {'reused' if result['reused'] else 'opened'}")
-        return _text(result)
+        return tool_result(result)
     except Exception as exc:
         log(f"[MCP] open_document failed: {exc}")
-        return _text(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)
+        return tool_result(f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}", True)

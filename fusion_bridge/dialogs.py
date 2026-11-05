@@ -29,11 +29,12 @@ Script generation and output parsing are pure functions so they can be
 tested without macOS; ``fusion_dialogs`` takes an injectable runner.
 """
 
-import json
 import os
 import subprocess
 import sys
 import time
+
+from .common.results import error_result, ok_result
 
 FUSION_BUNDLE_ID = "com.autodesk.fusion360"
 FUSION_PROCESS_NAMES = ("Fusion", "Autodesk Fusion", "Autodesk Fusion 360")
@@ -72,14 +73,6 @@ AUTOMATION_MESSAGE = (
     "Grant it in System Settings > Privacy & Security > Automation: under \"Autodesk Fusion\" "
     "enable \"System Events\", then retry."
 )
-
-
-def _error(text):
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
-def _ok(payload):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": False}
 
 
 # -- AppleScript generation ---------------------------------------------------
@@ -418,7 +411,7 @@ class _Runs:
                          for a in self.attempts)
 
     def error(self, message):
-        return _error(f"{message}\nosascript attempts: {self.describe()}")
+        return error_result(f"{message}\nosascript attempts: {self.describe()}")
 
 
 def _preflight(runs):
@@ -458,17 +451,17 @@ def fusion_dialogs(arguments, runner=None, platform=None, pid=None, sleep=time.s
     arguments = arguments or {}
     unknown = set(arguments) - {"action", "title_contains"}
     if unknown:
-        return _error(f"Error: unknown argument(s): {', '.join(sorted(unknown))}")
+        return error_result(f"Error: unknown argument(s): {', '.join(sorted(unknown))}")
     action = arguments.get("action", "list")
     if action not in ACTIONS:
-        return _error(f"Error: 'action' must be one of {list(ACTIONS)}, got {action!r}")
+        return error_result(f"Error: 'action' must be one of {list(ACTIONS)}, got {action!r}")
     title_contains = arguments.get("title_contains")
     if title_contains is not None and (not isinstance(title_contains, str) or not title_contains.strip()):
-        return _error("Error: 'title_contains' must be a non-empty string")
+        return error_result("Error: 'title_contains' must be a non-empty string")
 
     platform = platform if platform is not None else sys.platform
     if platform != "darwin":
-        return _error(f"Error: fusion_dialogs is not supported on this platform ({platform}); "
+        return error_result(f"Error: fusion_dialogs is not supported on this platform ({platform}); "
                       "it needs macOS Accessibility.")
     runs = _Runs(runner or run_osascript, clock)
     pid = pid if pid is not None else os.getpid()
@@ -483,7 +476,7 @@ def fusion_dialogs(arguments, runner=None, platform=None, pid=None, sleep=time.s
 
     if action == "list":
         others = [w for w in parsed["windows"] if not w["looks_modal"]]
-        return _ok({
+        return ok_result({
             "process": parsed["process"],
             "dialogs": [_summary(d) for d in dialogs],
             "other_windows": [{k: w[k] for k in ("window_index", "title", "role", "subrole", "modal")}
@@ -493,7 +486,7 @@ def fusion_dialogs(arguments, runner=None, platform=None, pid=None, sleep=time.s
 
     if not dialogs:
         scope = f" with a title containing {title_contains!r}" if title_contains else ""
-        return _ok({"process": parsed["process"], "pressed": None,
+        return ok_result({"process": parsed["process"], "pressed": None,
                     "note": f"No modal dialog found{scope}; nothing pressed.",
                     "osascript_attempts": runs.attempts})
 
@@ -524,4 +517,4 @@ def fusion_dialogs(arguments, runner=None, platform=None, pid=None, sleep=time.s
     if failure:
         result["note"] = (result.get("note", "") + f" Could not re-list dialogs: {failure}").strip()
     result["osascript_attempts"] = runs.attempts
-    return _ok(result)
+    return ok_result(result)

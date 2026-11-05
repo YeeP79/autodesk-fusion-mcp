@@ -1,6 +1,5 @@
 """MCP tool routing and generic Fusion API dispatch."""
 
-import json
 import os
 import traceback
 
@@ -38,22 +37,8 @@ from . import (
     value_builders,
     viewport,
 )
+from .common.results import error_result, ok_result
 from .dispatch import log
-
-
-# -- Response helpers -------------------------------------------------------
-
-
-def _success(payload):
-    """Return a JSON-dict success response."""
-    body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": False}
-
-
-def _failure(payload):
-    """Return a JSON-dict error response."""
-    body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": True}
 
 
 # -- Generic API execution --------------------------------------------------
@@ -108,17 +93,17 @@ def handle_generic_api_call(call_data):
 
     # Dispatch special pseudo-paths
     if api_path == "get_pid":
-        return _success(f"Process ID: {os.getpid()}")
+        return ok_result(f"Process ID: {os.getpid()}")
 
     if api_path == "clear_context":
         cleared = value_builders.clear_object_store()
-        return _success(f"Cleared {cleared} stored objects")
+        return ok_result(f"Cleared {cleared} stored objects")
 
     try:
         result = _execute_api_call(
             api_path, args, kwargs, remember_as, return_properties
         )
-        return _success(result)
+        return ok_result(result)
     except Exception as exc:
         tb = traceback.format_exc()
         error_text = str(exc)
@@ -135,7 +120,7 @@ def handle_generic_api_call(call_data):
             text = f"{summary}\n\n{text}"
         log(f"Tool call failed: {exc}", adsk.core.LogLevels.ErrorLogLevel)
         log(tb, adsk.core.LogLevels.ErrorLogLevel)
-        return _failure(text)
+        return error_result(text)
 
 
 # -- Wrapper helpers for handlers that take arguments directly ---------------

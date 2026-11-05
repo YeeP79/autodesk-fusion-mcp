@@ -14,16 +14,7 @@ import urllib.error
 import urllib.request
 from types import FunctionType, ModuleType
 
-
-# ── Response helpers ──────────────────────────────────────────────────────
-
-
-def _ok(message):
-    return {"content": [{"type": "text", "text": message}], "isError": False}
-
-
-def _err(message):
-    return {"content": [{"type": "text", "text": message}], "isError": True}
+from .common.results import error_result, ok_result
 
 
 # ── Introspection utilities ──────────────────────────────────────────────
@@ -169,9 +160,9 @@ class DocumentationProvider:
             header = (
                 f"Fusion Design Guide\n\nLength: {len(text.splitlines())} lines\n\n"
             )
-            return _ok(header + text)
+            return ok_result(header + text)
         except Exception as exc:
-            return _err(f"ERROR reading design guide: {exc}")
+            return error_result(f"ERROR reading design guide: {exc}")
 
     # -- introspection search (scored ranking) -----------------------------
 
@@ -182,7 +173,7 @@ class DocumentationProvider:
 
         log_fn(f"[MCP] Tool call: fetch_api_documentation - {term} ({category})")
         if not term:
-            return _err("Missing required parameter 'search_term'")
+            return error_result("Missing required parameter 'search_term'")
 
         try:
             import adsk
@@ -241,11 +232,11 @@ class DocumentationProvider:
             top = [_classify_hit(*hit) for _, hit in scored[:max_results]]
 
             if not top:
-                return _ok(f"No results found for '{term}' in category '{category}'")
-            return _ok(json.dumps(top, indent=2))
+                return ok_result(f"No results found for '{term}' in category '{category}'")
+            return ok_result(json.dumps(top, indent=2))
 
         except Exception as exc:
-            return _err(
+            return error_result(
                 f"ERROR searching documentation: {exc}\n{traceback.format_exc()}"
             )
 
@@ -263,7 +254,7 @@ class DocumentationProvider:
             log_fn(f"[MCP] Tool call: fetch_online_documentation - {class_name}")
 
         if not class_name:
-            return _err("ERROR: 'class_name' parameter required")
+            return error_result("ERROR: 'class_name' parameter required")
 
         fname = (
             f"{class_name}_{member_name}.htm" if member_name else f"{class_name}.htm"
@@ -276,11 +267,11 @@ class DocumentationProvider:
                 html = resp.read().decode("utf-8")
 
             result = self._extract_all_sections(html, url, class_name, member_name)
-            return _ok(json.dumps(result, indent=2))
+            return ok_result(json.dumps(result, indent=2))
 
         except urllib.error.HTTPError as exc:
             if exc.code != 404:
-                return _err(f"HTTP Error {exc.code}: {exc}")
+                return error_result(f"HTTP Error {exc.code}: {exc}")
             alternatives = []
             if not member_name:
                 alternatives.append(
@@ -294,12 +285,9 @@ class DocumentationProvider:
                 "alternatives_to_try": alternatives,
                 "fallback": "Use fetch_api_documentation for introspection results",
             }
-            return {
-                "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-                "isError": True,
-            }
+            return error_result(payload)
         except Exception as exc:
-            return _err(
+            return error_result(
                 f"ERROR fetching documentation: {exc}\n{traceback.format_exc()}"
             )
 

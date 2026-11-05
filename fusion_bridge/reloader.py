@@ -19,7 +19,6 @@ Fusion log and the Text Commands window.
 """
 
 import importlib
-import json
 import os
 import sys
 import threading
@@ -29,6 +28,7 @@ import uuid
 
 import adsk.core
 
+from .common.results import tool_result
 from .dispatch import get_app
 
 # Bumped for each successful reload; carried into the fresh module.
@@ -380,11 +380,6 @@ def release_stale_events():
             pass
 
 
-def _text(payload, is_error=False):
-    body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
-    return {"content": [{"type": "text", "text": body}], "isError": is_error}
-
-
 def _hand_over_event(job, event_id, event, handler):
     target = job.modules.get(job.root + _SUFFIX) or job.home
     if target is not None:
@@ -398,12 +393,12 @@ def reload_addin(arguments):
     modules = sys.modules
     root = package_root()
     if not root or root not in modules or root + ".addon_runtime" not in modules:
-        return _text("Error: cannot reload: the add-in package was not identified "
+        return tool_result("Error: cannot reload: the add-in package was not identified "
                      f"(module {__name__!r}). Restart it from Utilities > Add-Ins.", True)
 
     with _job_lock:
         if _active_job is not None:
-            return _text("Error: a reload is already in progress; wait and call bridge_info.", True)
+            return tool_result("Error: a reload is already in progress; wait and call bridge_info.", True)
 
         from . import bridge_info, python_exec, runtime
 
@@ -431,7 +426,7 @@ def reload_addin(arguments):
         _active_job = job
         threading.Thread(target=job.run, name="AutodeskFusionMCP-reload", daemon=True).start()
 
-    return _text({
+    return tool_result({
         "status": "reload scheduled",
         "reconnect_after_seconds": RECONNECT_AFTER_SECONDS,
         "next_step": NEXT_STEP,

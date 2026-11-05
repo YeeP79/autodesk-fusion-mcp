@@ -11,6 +11,7 @@ import adsk.core
 
 from ..lib import png_image
 from . import clean_view as clean
+from .common.results import error_result, ok_result
 
 VIEW_NAMES = {
     "front": "FrontViewOrientation", "back": "BackViewOrientation",
@@ -24,14 +25,6 @@ PROJECTIONS = {
     "orthographic": "OrthographicCameraType", "perspective": "PerspectiveCameraType",
     "perspective_with_ortho_faces": "PerspectiveWithOrthoFacesCameraType",
 }
-
-
-def _fail(message):
-    return {"content": [{"type": "text", "text": str(message)}], "isError": True}
-
-
-def _success(payload):
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": False}
 
 
 def _viewport():
@@ -135,9 +128,9 @@ def _state(vp):
 def get_viewport(arguments):
     """Return a camera snapshot that can be passed back to set_viewport."""
     try:
-        return _success(_state(_viewport()))
+        return ok_result(_state(_viewport()))
     except Exception as exc:
-        return _fail(f"Error reading viewport: {exc}")
+        return error_result(f"Error reading viewport: {exc}")
 
 
 def _validate_controls(arguments):
@@ -243,15 +236,15 @@ def set_viewport(arguments):
         original = vp.camera
         original.isSmoothTransition = False
         _apply_controls(vp, arguments)
-        return _success(_state(vp))
+        return ok_result(_state(vp))
     except Exception as exc:
         if vp is not None and original is not None:
             try:
                 vp.camera = original
                 vp.refresh()
             except Exception as restore_error:
-                return _fail(f"Error changing viewport: {exc}; restoring the camera also failed: {restore_error}")
-        return _fail(f"Error changing viewport: {exc}")
+                return error_result(f"Error changing viewport: {exc}; restoring the camera also failed: {restore_error}")
+        return error_result(f"Error changing viewport: {exc}")
 
 
 def _dimension(value, name):
@@ -326,7 +319,7 @@ def capture(arguments):
             png = png_image.transform(png, crop=crop, background=rgb)
         result = {"content": [{"type": "image", "data": base64.b64encode(png).decode("ascii"), "mimeType": "image/png"}], "isError": False}
     except Exception as exc:
-        result = _fail(f"Error capturing viewport: {exc}")
+        result = error_result(f"Error capturing viewport: {exc}")
     finally:
         if path:
             try:
@@ -345,7 +338,7 @@ def capture(arguments):
                 vp.camera = original
                 vp.refresh()
             except Exception as exc:
-                result = _fail(f"Capture finished but restoring the camera failed: {exc}")
+                result = error_result(f"Capture finished but restoring the camera failed: {exc}")
         if cleaner is not None:
             result["content"].append({"type": "text", "text": json.dumps({"clean_view": cleaner.report()}, indent=2)})
     return result
