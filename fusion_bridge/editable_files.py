@@ -97,11 +97,18 @@ def _safe(obj, name, default=None):
 
 
 def _items(collection):
-    """Yield items of a Fusion collection (count/item) or a plain list."""
+    """Yield items of a Fusion collection (count/item), a vector or a plain list.
+
+    Fusion vectors such as the DataFileVector from personalUseLimits.editableFiles
+    have len() and iteration but no count/item.
+    """
     if collection is None:
         return
-    if isinstance(collection, (list, tuple)):
-        yield from collection
+    if isinstance(collection, (list, tuple)) or not hasattr(collection, "item"):
+        try:
+            yield from (item for item in collection if item is not None)
+        except TypeError:
+            pass
         return
     count = _safe(collection, "count", 0)
     for i in range(count):

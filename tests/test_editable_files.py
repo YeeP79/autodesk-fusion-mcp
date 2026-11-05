@@ -524,5 +524,25 @@ class HandlerTests(unittest.TestCase):
         self.assertIn("boom", result["content"][0]["text"])
 
 
+class VectorItemsTests(unittest.TestCase):
+    """personalUseLimits.editableFiles is a DataFileVector: iterable, no count/item (seen live)."""
+
+    def test_vector_without_count_or_item_is_iterated(self):
+        class FakeVector:
+            def __init__(self, items):
+                self._items = items
+
+            def __iter__(self):
+                return iter(self._items)
+
+            def __len__(self):
+                return len(self._items)
+
+        self.assertEqual(list(ef._items(FakeVector(["a", None, "b"]))), ["a", "b"])
+
+    def test_non_iterable_without_item_yields_nothing(self):
+        self.assertEqual(list(ef._items(object())), [])
+
+
 if __name__ == "__main__":
     unittest.main()
