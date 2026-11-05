@@ -110,8 +110,13 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(rules.sections_for(selected), ["file", "bodies", "body_faces"])
 
     def test_a_filtered_run_reads_only_what_it_needs(self):
-        selected, _ = rules.select_checks("general", groups=["parameters"])
+        selected, _ = rules.select_checks("export-ready", groups=["parameters"])
         self.assertEqual(rules.sections_for(selected), ["parameters"])
+
+    def test_general_reads_no_parameters(self):
+        selected, off = rules.select_checks("general")
+        self.assertNotIn("parameters", rules.sections_for(selected))
+        self.assertIn("unused_user_parameter", off)
 
 
 # -- file -----------------------------------------------------------------------
@@ -215,6 +220,15 @@ class TimelineCheckTests(unittest.TestCase):
         facts = timeline_facts(row("Joint1", "error", entity_type="adsk::fusion::Joint"), row("Cut1", "error"))
         hits = run_check("timeline_errors", facts, ["timeline_errors", "joint_errors"], complete("joints"))
         self.assertEqual(wheres(hits), ["timeline: Cut1"])
+
+    def test_fusion_markup_is_stripped(self):
+        message = "Body 1 missing<b>1 Reference Failures</b><br/>The target body is lost."
+        hit = run_check("timeline_errors", timeline_facts(row("A", "error", 7, message=message)))[0]
+        self.assertEqual(hit["message"], "step 7: Body 1 missing 1 Reference Failures The target body is lost.")
+
+    def test_a_message_that_is_only_markup_counts_as_none(self):
+        hit = run_check("timeline_errors", timeline_facts(row("A", "error", 7, message="<br/>")))[0]
+        self.assertIn("no message", hit["message"])
 
     def test_a_broken_joint_stays_in_the_timeline_without_the_joint_check(self):
         facts = timeline_facts(row("Joint1", "error", entity_type="adsk::fusion::Joint"))
@@ -668,6 +682,120 @@ def report_of(findings, complete_run=True, max_findings=100, changes=None):
                               max_findings=max_findings, changes=changes)
 
 
+class CollapseTests(unittest.TestCase):
+    def test_repeats_become_one_row_with_a_count_and_a_sample(self):
+        findings = [finding("a", str(i), "info", "bodies") for i in range(5)]
+        rows = rules.collapse(findings)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["check"], rows[0]["count"], rows[0]["where"]), ("a", 5, "5 places"))
+        self.assertEqual(rows[0]["sample"], [{"where": str(i), "message": "m"} for i in range(3)])
+        self.assertEqual((rows[0]["group"], rows[0]["severity"], rows[0]["message"]), ("bodies", "info", "m"))
+
+    def test_a_lone_finding_stays_as_it_is(self):
+        only = finding("a", "1")
+        self.assertEqual(rules.collapse([only]), [only])
+
+    def test_nothing_in_is_nothing_out(self):
+        self.assertEqual(rules.collapse([]), [])
+
+    def test_two_is_already_a_repeat(self):
+        rows = rules.collapse([finding("a", "1"), finding("a", "2")])
+        self.assertEqual([row["count"] for row in rows], [2])
+        self.assertEqual(len(rows[0]["sample"]), 2)
+
+    def test_different_messages_are_not_reported_as_the_first_one(self):
+        findings = [{**finding("a", "1"), "message": "x"}, {**finding("a", "2"), "message": "y"}]
+        row = rules.collapse(findings)[0]
+        self.assertNotIn(row["message"], ("x", "y"))
+        self.assertEqual([s["message"] for s in row["sample"]], ["x", "y"])
+
+    def test_a_row_keeps_the_position_of_its_first_member(self):
+        findings = [finding("a", "1", "error"), finding("b", "2", "warning"), finding("a", "3", "error")]
+        self.assertEqual([row["check"] for row in rules.collapse(findings)], ["a", "b"])
+
+    def test_one_check_at_two_severities_stays_two_rows(self):
+        findings = [finding("x", "1", "error", "custom", source="s"), finding("x", "2", "error", "custom", source="s"),
+                    finding("x", "3", "info", "custom", source="s")]
+        self.assertEqual([row.get("count") for row in rules.collapse(findings)], [2, None])
+
+    def test_two_sources_of_one_check_stay_apart(self):
+        findings = [finding("x", "1", "info", "custom", source="a"), finding("x", "2", "info", "custom", source="b")]
+        self.assertEqual(len(rules.collapse(findings)), 2)
+
+    def test_a_named_check_stays_individual_and_the_rest_fold(self):
+        findings = [finding("a", "1"), finding("a", "2"), finding("b", "3"), finding("b", "4")]
+        rows = rules.collapse(findings, expanded=["a"])
+        self.assertEqual(wheres(rows), ["1", "2", "2 places"])
+
+    def test_detail_keeps_everything(self):
+        findings = [finding("a", "1"), finding("a", "2")]
+        self.assertEqual(rules.collapse(findings, detail=True), findings)
+
+    def test_folding_leaves_the_findings_themselves_alone(self):
+        findings = [finding("a", "1"), finding("a", "2")]
+        rules.collapse(findings)
+        self.assertEqual(set(findings[0]), set(finding()))
+
+    def test_changes_are_counted_and_the_row_reads_as_the_first(self):
+        findings = [finding("a", "1", change="new"), finding("a", "2", change="unchanged"),
+                    finding("a", "3", change="unchanged")]
+        row = rules.collapse(findings)[0]
+        self.assertEqual((row["change"], row["change_counts"]), ("new", {"new": 1, "unchanged": 2}))
+        self.assertEqual(row["sample"][0], {"where": "1", "message": "m", "change": "new"})
+
+    def test_the_cap_counts_rows_and_the_summary_counts_findings(self):
+        findings = [finding("a", str(i)) for i in range(50)] + [finding("b", "z")]
+        report = rules.build_report(findings, document="D", profile="general", units="in", token="t", complete=True,
+                                    checks_run=2, elapsed_s=0, skipped=[], max_findings=2, show=rules.collapse)
+        self.assertEqual(len(report["findings"]), 2)
+        self.assertFalse(report["findings_truncated"])
+        self.assertEqual(report["summary"]["findings"], 51)
+
+    def test_changes_fold_with_the_same_rows(self):
+        labeled = [finding("a", str(i), change="new") for i in range(4)]
+        changes = rules.changes_report("t", record(), labeled, [], [], 100, now=100.0, show=rules.collapse)
+        self.assertEqual(changes["new"], 4)
+        self.assertEqual(len(changes["new_findings"]), 1)
+        self.assertEqual(changes["new_findings"][0]["count"], 4)
+
+
+class FirstIssuesTests(unittest.TestCase):
+    def test_broken_items_come_in_step_order(self):
+        facts = timeline_facts(row("Late", "error", 9), row("Early", "warning", 2), row("Fine", "healthy", 1))
+        rows, total = rules.first_issues(facts, 20)
+        self.assertEqual([(r["step"], r["name"], r["severity"]) for r in rows],
+                         [(2, "Early", "warning"), (9, "Late", "error")])
+        self.assertEqual(total, 2)
+
+    def test_suppressed_items_are_left_out(self):
+        self.assertEqual(rules.first_issues(timeline_facts(row("A", "error", 1, suppressed=True)), 20), ([], 0))
+
+    def test_a_clean_timeline_is_an_empty_list_and_an_unread_one_is_none(self):
+        self.assertEqual(rules.first_issues(timeline_facts(row("A", "healthy", 1)), 20), ([], 0))
+        self.assertEqual(rules.first_issues({}, 20), (None, None))
+
+    def test_a_broken_joint_stays_in_its_place(self):
+        facts = timeline_facts(row("Joint1", "error", 3, entity_type="adsk::fusion::Joint"), row("Cut1", "error", 8))
+        self.assertEqual([r["name"] for r in rules.first_issues(facts, 20)[0]], ["Joint1", "Cut1"])
+
+    def test_the_limit_keeps_the_earliest_and_the_total_counts_all(self):
+        facts = timeline_facts(*[row(f"F{i}", "error", 10 - i) for i in range(5)])
+        rows, total = rules.first_issues(facts, 2)
+        self.assertEqual([r["step"] for r in rows], [6, 7])
+        self.assertEqual(total, 5)
+
+    def test_an_item_with_no_slot_sits_at_the_step_before_it(self):
+        facts = timeline_facts(row("A", "healthy", 4), row("Inside", "error", None), row("B", "error", 5))
+        rows, _ = rules.first_issues(facts, 20)
+        self.assertEqual([(r["step"], r["name"]) for r in rows], [(4, "Inside"), (5, "B")])
+
+    def test_messages_are_plain_and_short(self):
+        facts = timeline_facts(row("A", "error", 1, message="<b>x</b>" + "y" * 500))
+        message = rules.first_issues(facts, 20)[0][0]["message"]
+        self.assertNotIn("<", message)
+        self.assertLessEqual(len(message), rules.MAX_MESSAGE_CHARS)
+
+
 class ReportTests(unittest.TestCase):
     def test_key_order_puts_the_verdict_first_and_skipped_last(self):
         keys = list(report_of([], changes={"new": 0}))
@@ -1079,8 +1207,9 @@ class ToolTests(unittest.TestCase):
         report = self.run_tool()
         self.assertTrue(report["complete"], report["skipped"])
         checks = {f["check"] for f in report["findings"]}
-        self.assertTrue({"generic_body_name", "tiny_faces", "under_constrained_sketch", "unused_user_parameter",
+        self.assertTrue({"generic_body_name", "tiny_faces", "under_constrained_sketch",
                          "unheld_occurrence", "read_only"} <= checks, checks)
+        self.assertNotIn("unused_user_parameter", checks)
         self.assertTrue(report["baseline_token"])
         self.assertNotIn("changes", report)
 
@@ -1090,9 +1219,15 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(next(f for f in report["findings"] if f["check"] == "tiny_faces")["severity"], "warning")
 
     def test_a_group_filter_gathers_only_that_group(self):
-        report = self.run_tool(groups=["parameters"])
+        report = self.run_tool(profile="export-ready", groups=["parameters"])
         self.assertEqual({f["group"] for f in report["findings"]}, {"parameters"})
         self.assertEqual(report["checks_run"], 1)
+
+    def test_a_group_the_profile_switches_off_says_so(self):
+        report = self.run_tool(groups=["parameters"])
+        self.assertEqual((report["findings"], report["checks_run"]), ([], 0))
+        self.assertEqual([(row["check"], row["status"]) for row in report["skipped"]],
+                         [("unused_user_parameter", "off")])
 
     def test_a_named_check_the_profile_switches_off_is_listed_not_silent(self):
         report = self.run_tool(checks=["face_count_outlier"])
@@ -1100,14 +1235,14 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(report["skipped"][0]["status"], "off")
 
     def test_baseline_round_trip(self):
-        first = self.run_tool()
+        first = self.run_tool(profile="export-ready")
         self.design.userParameters._members.clear()
         self.design.userParameters.__dict__["count"] = 0
         self.design.allParameters._members.clear()
         self.design.allParameters.__dict__["count"] = 0
         self.design.rootComponent.sketches._members.append(fake_sketch("Sketch2", False))
         self.design.rootComponent.sketches.__dict__["count"] = 2
-        second = self.run_tool(baseline_token=first["baseline_token"])
+        second = self.run_tool(profile="export-ready", baseline_token=first["baseline_token"])
         changes = second["changes"]
         self.assertEqual([f["where"] for f in changes["new_findings"]], ["sketch: Root/Sketch2"])
         self.assertEqual([f["where"] for f in changes["resolved_findings"]], ["parameter: spare"])
@@ -1115,11 +1250,66 @@ class ToolTests(unittest.TestCase):
         self.assertNotEqual(second["baseline_token"], first["baseline_token"])
 
     def test_a_narrower_run_does_not_call_the_rest_resolved(self):
-        first = self.run_tool()
-        second = self.run_tool(groups=["parameters"], baseline_token=first["baseline_token"])
+        first = self.run_tool(profile="export-ready")
+        second = self.run_tool(profile="export-ready", groups=["parameters"], baseline_token=first["baseline_token"])
         self.assertEqual(second["changes"]["resolved"], 0)
         self.assertEqual(second["changes"]["unchanged"], 1)
         self.assertIn("generic_body_name", second["changes"]["not_compared_checks"])
+
+    def many_generic_names(self):
+        self.design = fake_design(bodies=[fake_body(f"Body{i}") for i in range(1, 7)])
+
+    def test_repeats_fold_by_default_and_the_summary_still_counts_them(self):
+        self.many_generic_names()
+        report = self.run_tool(groups=["bodies"])
+        rows = [f for f in report["findings"] if f["check"] == "generic_body_name"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["count"], rows[0]["where"]), (6, "6 places"))
+        self.assertEqual(len(rows[0]["sample"]), rules.COLLAPSE_SAMPLE_SIZE)
+        self.assertEqual(report["summary"]["by_check"]["generic_body_name"], 6)
+
+    def test_detail_lists_every_finding(self):
+        self.many_generic_names()
+        report = self.run_tool(groups=["bodies"], detail=True)
+        rows = [f for f in report["findings"] if f["check"] == "generic_body_name"]
+        self.assertEqual(len(rows), 6)
+        self.assertNotIn("count", rows[0])
+
+    def test_naming_a_check_lists_it(self):
+        self.many_generic_names()
+        report = self.run_tool(checks=["generic_body_name"])
+        self.assertEqual(len(report["findings"]), 6)
+
+    def test_the_baseline_matches_items_under_folded_rows(self):
+        self.many_generic_names()
+        first = self.run_tool(groups=["bodies"])
+        self.design = fake_design(bodies=[fake_body(f"Body{i}") for i in range(2, 8)])
+        changes = self.run_tool(groups=["bodies"], baseline_token=first["baseline_token"])["changes"]
+        self.assertEqual((changes["new"], changes["resolved"], changes["unchanged"]), (1, 1, 5))
+        self.assertEqual(wheres(changes["new_findings"]), ["body: root/Body7"])
+        self.assertEqual(wheres(changes["resolved_findings"]), ["body: root/Body1"])
+
+    def test_a_folded_row_leads_with_what_is_new(self):
+        self.many_generic_names()
+        first = self.run_tool(groups=["bodies"])
+        self.design = fake_design(bodies=[fake_body(f"Body{i}") for i in range(2, 8)])
+        report = self.run_tool(groups=["bodies"], baseline_token=first["baseline_token"])
+        row = next(f for f in report["findings"] if f["check"] == "generic_body_name")
+        self.assertEqual(row["change"], "new")
+        self.assertEqual(row["change_counts"], {"new": 1, "unchanged": 5})
+        self.assertEqual(row["sample"][0]["where"], "body: root/Body7")
+
+    def test_detail_must_be_a_boolean(self):
+        self.assertIn("detail", self.run_tool(detail="yes"))
+
+    def test_first_issues_is_null_when_the_timeline_was_not_read(self):
+        report = self.run_tool(groups=["bodies"])
+        self.assertIsNone(report["first_issues"])
+        self.assertIsNone(report["first_issues_total"])
+
+    def test_first_issues_lists_the_timeline_before_the_findings(self):
+        keys = list(self.run_tool())
+        self.assertLess(keys.index("first_issues"), keys.index("findings"))
 
     def test_the_cap_does_not_cut_what_the_baseline_stores(self):
         first = self.run_tool(max_findings=1)

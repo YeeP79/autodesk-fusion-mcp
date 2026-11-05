@@ -4,7 +4,19 @@ Cloud-backed properties and proxies of deleted entities raise on access, so a
 report reads them through ``safe`` rather than failing on one bad member.
 """
 
+import html
+import re
 from itertools import islice
+
+
+# A tag opens with a letter or "/", so "x < 5" and "a > b" survive.
+_MARKUP = re.compile(r"</?[a-zA-Z][^<>]*>")
+
+
+def plain_text(text):
+    """Fusion's message markup as plain text, one space where a tag stood."""
+    spaced = " ".join(html.unescape(_MARKUP.sub(" ", str(text))).split())
+    return re.sub(r" ([,.;:])", r"\1", spaced)
 
 
 def safe(obj, name, default=None):

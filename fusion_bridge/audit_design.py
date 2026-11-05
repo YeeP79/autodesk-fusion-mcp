@@ -10,6 +10,7 @@ gathering runs on a budget under that limit. Sections run cheapest first; one th
 runs out reports how far it got, and what never ran is listed under ``skipped``.
 """
 
+import functools
 import traceback
 
 import adsk.core
@@ -19,7 +20,7 @@ from . import audit_rules as rules
 from . import solid_check as sc
 from . import timeline_health
 from .common.api import items, safe, strict_items
-from .common.args import int_arg, is_finite_number, reject_unknown, require_object, text_arg
+from .common.args import bool_arg, int_arg, is_finite_number, reject_unknown, require_object, text_arg
 from .common.bodies import iter_body_entries
 from .common.documents import open_documents
 from .common.geometry import UNIT_FACTORS
@@ -36,7 +37,7 @@ MAX_OPEN_CURVE_SCAN = 200
 TIME_REASON = "the time budget ran out"
 
 _KNOWN_ARGS = {"profile", "checks", "groups", "units", "max_findings", "baseline_token", "time_budget_s",
-               "extra_findings"}
+               "extra_findings", "detail"}
 
 BASELINES = rules.BaselineStore()
 
@@ -82,6 +83,7 @@ def validate_arguments(arguments):
         "checks": _name_list(arguments, "checks", rules.CHECK_NAMES),
         "groups": _name_list(arguments, "groups", rules.GROUPS),
         "max_findings": int_arg(arguments, "max_findings", rules.DEFAULT_MAX_FINDINGS, 1, rules.MAX_FINDINGS_LIMIT),
+        "detail": bool_arg(arguments, "detail", False),
         "baseline_token": text_arg(arguments, "baseline_token"),
         "time_budget_s": float(budget),
         "extra_findings": None if extras is None else rules.validate_extra_findings(extras),
@@ -364,18 +366,24 @@ def run_audit(state, opts, baseline, document_id, document_name):
     extras_supplied = extras is not None
     findings.extend(extras or [])
 
+    # Stored and compared one by one: only the rows of the report are folded.
+    show = functools.partial(rules.collapse, expanded=opts["checks"] or (), detail=opts["detail"])
     token = BASELINES.store(rules.baseline_record(document_id, document_name, opts["profile"], findings,
                                                   fully_run, extras_supplied))
     changes = None
     if baseline is not None:
         findings, resolved, not_compared = rules.compare_to_baseline(baseline, findings, fully_run, extras_supplied)
         changes = rules.changes_report(opts["baseline_token"], baseline, findings, resolved, not_compared,
-                                       opts["max_findings"])
+                                       opts["max_findings"], show=show)
     return rules.build_report(
         findings, document=document_name, profile=opts["profile"], units=opts["units"], token=token,
         complete=rules.is_complete(sections, crashed), checks_run=ran,
         elapsed_s=state.budget.elapsed(), max_findings=opts["max_findings"], changes=changes,
-        skipped=rules.skipped_report(sections, selected, crashed, switched_off if opts["checks"] else ()),
+        issues=rules.first_issues(facts, opts["max_findings"] if opts["detail"]
+                                  else min(rules.FIRST_ISSUES_LIMIT, opts["max_findings"])),
+        show=show,
+        skipped=rules.skipped_report(sections, selected, crashed,
+                                     switched_off if opts["checks"] or opts["groups"] else ()),
     )
 
 

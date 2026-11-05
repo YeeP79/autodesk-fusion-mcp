@@ -142,6 +142,10 @@ Every finding has this shape, and `extra_findings` takes the same one, so anothe
 | `fix_tool` | The tool to go to next (may be null) |
 | `source` | Extra findings only: who supplied it |
 
+The report folds repeats of a check into one row: `count`, `where` reading `N places`, and a `sample` of the first few (with `change_counts` beside a baseline). A lone finding stays as it is. `detail: true` lists everything, and naming a check in `checks` lists that check. Baselines always compare item by item, whatever the report shows.
+
+`first_issues` lists the broken timeline items in step order, joints included, because repairs start at the earliest: `step`, `name`, `severity`, `component`, `message`. It is null when the timeline was not read. Fusion's message markup is stripped.
+
 Checks say what they found, never how much it matters: `SEVERITY_TABLE` in `audit_rules.py` sets each check's severity per profile, and a check off there does not run. To add a check, write a function over the gathered facts, add it to `CHECKS`, and give it a row.
 
 ### Generic API example
