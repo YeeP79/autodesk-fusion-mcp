@@ -50,6 +50,8 @@ DIRECT_TOOL_NAMES = frozenset({FUSION_DIALOGS, TAIL_LOG, FUSION_STATUS})
 CLOSE_DOCUMENT = "close_document"
 UPDATE_REFERENCES = "update_references"
 PROBE_GEOMETRY = "probe_geometry"
+TIMELINE_INSERT = "timeline_insert"
+COMPARE_FILES = "compare_files"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -1264,6 +1266,53 @@ TOOL_DEFINITIONS = [
             "required": ["action", "units"],
         },
     },
+    {
+        "name": TIMELINE_INSERT,
+        "description": (
+            "Run Python with the timeline marker rolled back before a named item, then restore it, so new "
+            "features land before that item (for example before a mirror, so the mirror picks them up). "
+            "dry_run defaults to true: it reports the item, the marker position and the items after it, and "
+            "runs nothing. Refuses when the name does not match exactly one item, the timeline has errors, "
+            "or the marker is not at the end. The marker is moved back to the end even when the code raises; "
+            "anything added before the failure stays. Reports items added, health counts before and after, "
+            "and which later items went to error. In the code, get objects fresh: those held from before "
+            "may be rolled back. Avoid editing existing features here: that can drop participant bodies. "
+            "Rolling back and restoring recomputes everything after the item, which takes time on a big design."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "before": {"type": "string",
+                           "description": "Timeline item name; new features land right before it."},
+                "code": {"type": "string",
+                         "description": "Python to run while rolled back, in the same environment as execute_python."},
+                "session_id": {"type": "string",
+                               "description": "execute_python session to run in. Omitted: an independent run."},
+                "dry_run": {"type": "boolean", "description": "Report only, run nothing (default true)."},
+            },
+            "required": ["before", "code"],
+        },
+    },
+    {
+        "name": COMPARE_FILES,
+        "description": (
+            "Compare two cloud design files: occurrence count, body count, total volume, component names and "
+            "timeline length. Each file is read in turn, reusing an open instance, and only files this call "
+            "opened are closed. Returns same plus a list of differences. Matching numbers are not proof of "
+            "identical geometry. Open a very large file first (open_document): the call must fit the 120 s "
+            "limit and a slow first file stops the second with complete=false."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "file_a": {"type": "string", "description": "DataFile id ('urn:...') or a path like 'Folder/File'."},
+                "file_b": {"type": "string", "description": "DataFile id ('urn:...') or a path like 'Folder/File'."},
+                "project": {"type": "string", "description": "Project name or id; required for paths."},
+                "project_b": {"type": "string", "description": "Project of file_b when it differs from 'project'."},
+            },
+            "required": ["file_a", "file_b"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -1315,6 +1364,8 @@ def build_tool_handlers(
     close_document,
     update_references,
     probe_geometry,
+    timeline_insert,
+    compare_files,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -1366,6 +1417,8 @@ def build_tool_handlers(
         CLOSE_DOCUMENT: close_document,
         UPDATE_REFERENCES: update_references,
         PROBE_GEOMETRY: probe_geometry,
+        TIMELINE_INSERT: timeline_insert,
+        COMPARE_FILES: compare_files,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")

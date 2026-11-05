@@ -8,6 +8,7 @@ import adsk.core
 
 from . import (
     annotations,
+    compare_files,
     delete_files,
     app_log,
     bridge_info,
@@ -34,6 +35,7 @@ from . import (
     timeline_health,
     sketch_profile,
     solid_check,
+    timeline_insert,
     tool_surface,
     value_builders,
     viewport,
@@ -191,6 +193,8 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     delete_script=_wrap(script_store.delete_script),
     get_active_selection=_wrap(selection.get_active_selection),
     manage_annotations=_wrap(annotations.manage_annotations),
+    timeline_insert=_wrap(timeline_insert.timeline_insert),
+    compare_files=_wrap(compare_files.compare_files),
     probe_geometry=_wrap(probe_geometry.probe_geometry),
     close_document=_wrap(document_lifecycle.close_document),
     update_references=_wrap(document_lifecycle.update_references),
