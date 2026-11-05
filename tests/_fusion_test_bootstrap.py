@@ -195,3 +195,7 @@ if _PARENT_PKG not in sys.modules:
     _fb.__package__ = f"{_PARENT_PKG}.fusion_bridge"
     _fb.__name__ = f"{_PARENT_PKG}.fusion_bridge"
     _root_pkg.fusion_bridge = _fb
+
+    # A test's ``from fusion_bridge.common import x`` must reach the modules the
+    # tools use, not a second copy imported under the short name.
+    sys.modules["fusion_bridge.common"] = importlib.import_module(f"{_PARENT_PKG}.fusion_bridge.common")

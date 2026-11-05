@@ -1,5 +1,6 @@
 """Tests for the shared helpers in ``fusion_bridge/common``."""
 
+import ast
 import json
 import os
 import tempfile
@@ -8,7 +9,7 @@ from datetime import datetime
 from unittest import mock
 
 import _fusion_test_bootstrap  # noqa: F401
-from fusion_bridge.common import api, app_log, args, bodies, cloud, geometry, results, timeline
+from fusion_bridge.common import api, app_log, args, bodies, cloud, documents, geometry, results, timeline
 
 
 class ResultsTests(unittest.TestCase):
@@ -672,6 +673,67 @@ class OpenFileIdsTests(unittest.TestCase):
         opened, unreadable = cloud.open_file_ids([saved, Fake(name="New", dataFile=None), Broken()])
         self.assertEqual(opened, {"urn:1": {"document": "Arm", "visible": False}})
         self.assertEqual(unreadable, ["Broken"])
+
+
+class DocumentTests(unittest.TestCase):
+    def test_open_documents(self):
+        self.assertEqual(documents.open_documents(Fake(documents=Indexed(["a", "b"]))), ["a", "b"])
+
+    def test_open_documents_raises_rather_than_drop_one(self):
+        with self.assertRaises(RuntimeError):
+            documents.open_documents(Fake(documents=Indexed(["a"], bad={0})))
+
+    def test_data_file_id(self):
+        self.assertEqual(documents.data_file_id({"data_file": {"id": "x"}}), "x")
+        self.assertIsNone(documents.data_file_id({"data_file": None}))
+        self.assertIsNone(documents.data_file_id({}))
+
+    def test_instances_of(self):
+        infos = [{"data_file": {"id": "a"}}, {"data_file": None}, {"data_file": {"id": "a"}}]
+        self.assertEqual(documents.instances_of(infos, "a"), [0, 2])
+        self.assertEqual(documents.instances_of(infos, "b"), [])
+
+    def test_unsaved_documents_are_not_instances_of_each_other(self):
+        infos = [{"data_file": None}, {"data_file": None}]
+        self.assertEqual(documents.instances_of(infos, None), [])
+        self.assertEqual(documents.instances_of(infos, ""), [])
+
+    def test_instances_of_with_a_flat_snapshot(self):
+        infos = [{"file_id": "a"}, {"file_id": "b"}]
+        self.assertEqual(documents.instances_of(infos, "b", key=lambda info: info["file_id"]), [1])
+
+    def test_pump_runs_events_and_times_them(self):
+        ticks = iter([10.0, 12.5])
+        clock = type("Clock", (), {"monotonic": staticmethod(lambda: next(ticks))})
+        calls = []
+        with mock.patch.object(documents, "time", clock), \
+                mock.patch.object(documents.adsk, "doEvents", lambda: calls.append(1), create=True):
+            self.assertEqual(documents.pump(), 2.5)
+        self.assertEqual(calls, [1])
+
+
+class LayerTests(unittest.TestCase):
+    """The Fusion-free modules must stay importable without ``adsk``."""
+
+    def imports(self, name):
+        path = os.path.join(os.path.dirname(results.__file__), f"{name}.py")
+        with open(path, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                found.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                found.add("." * node.level + (node.module or ""))
+        return found
+
+    def test_fusion_free_modules(self):
+        allowed = {".api", ".geometry"}
+        for name in ("results", "args", "api", "geometry", "cloud", "app_log"):
+            with self.subTest(module=name):
+                found = self.imports(name)
+                self.assertNotIn("adsk", found)
+                self.assertEqual({item for item in found if item.startswith(".")} - allowed, set())
 
 
 if __name__ == "__main__":

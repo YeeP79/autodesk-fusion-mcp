@@ -138,7 +138,7 @@ class GlueCase(unittest.TestCase):
         self.clock = FakeClock()
         for patcher in (mock.patch.object(lifecycle, "get_app", return_value=self.app),
                         mock.patch.object(lifecycle, "time", self.clock),
-                        mock.patch.object(lifecycle, "_pump", self.pump),
+                        mock.patch.object(lifecycle, "pump", self.pump),
                         mock.patch.object(lifecycle, "log")):
             patcher.start()
             self.addCleanup(patcher.stop)

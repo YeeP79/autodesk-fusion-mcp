@@ -7,7 +7,7 @@ from unittest import mock
 import _fusion_test_bootstrap  # noqa: F401
 
 from fusion_bridge import editable_state as es
-from fusion_bridge.common import api
+from fusion_bridge.common import api, documents
 from fusion_bridge import tool_surface
 
 
@@ -169,9 +169,9 @@ class FakeFusion:
 class FusionCase(unittest.TestCase):
     def setUp(self):
         self.clock = FakeClock()
-        patcher = mock.patch.object(es, "time", self.clock)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (mock.patch.object(es, "time", self.clock), mock.patch.object(documents, "time", self.clock)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         patcher = mock.patch.object(es, "log", lambda *a, **k: None)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -182,7 +182,7 @@ class FusionCase(unittest.TestCase):
         fusion.files[self.home.id] = self.home
         fusion.add_doc(self.home, active=True)
         for patcher in (mock.patch.object(es, "get_app", lambda: fusion),
-                        mock.patch.object(es, "adsk", type("A", (), {"doEvents": fusion.do_events}))):
+                        mock.patch.object(documents, "adsk", type("A", (), {"doEvents": fusion.do_events}))):
             patcher.start()
             self.addCleanup(patcher.stop)
         return fusion

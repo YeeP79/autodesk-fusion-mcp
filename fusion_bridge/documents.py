@@ -9,6 +9,7 @@ import traceback
 
 from . import document_guard
 from .common.api import safe
+from .common.documents import open_documents
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -103,11 +104,6 @@ def describe_document(document):
             "folder_path": folder_path(data_file),
         }
     return info
-
-
-def open_documents(app):
-    documents = app.documents
-    return [documents.item(i) for i in range(documents.count)]
 
 
 def attach_references(infos, referenced_id_sets):

@@ -23,18 +23,17 @@ Rules:
   no re-activation of the starting document.
 
 Planning and state logic are plain functions over dicts, so they test with
-fakes; the glue reads ``time`` and ``adsk.doEvents`` through this module.
+fakes; the glue reads ``time`` through this module.
 """
 
 import time
 import traceback
 from collections import Counter
 
-import adsk.core
-
 from .common.api import safe, strict_items
 from .common.args import bool_arg, is_int, reject_unknown, text_arg
 from .common.cloud import ID_PREFIX, path_segments, resolve_path, resolve_project
+from .common.documents import instances_of, open_documents, pump
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -62,6 +61,10 @@ MAX_QUIET_PUMP_S = 0.25
 _POLL_S = 0.1
 _STATE_POLL_S = 0.5
 _IDLE_COMMANDS = ("SelectCommand", None, "")
+
+
+def _row_file_id(info):
+    return info.get("file_id")
 
 
 # -- Validation ---------------------------------------------------------------
@@ -122,14 +125,9 @@ def state_name(is_read_only):
     return "editable" if is_read_only is False else None
 
 
-def instances_of(infos, file_id):
-    """Indexes of open documents whose DataFile id is *file_id*."""
-    return [i for i, info in enumerate(infos) if file_id and info.get("file_id") == file_id]
-
-
 def pick_instance(infos, file_id):
     """Index of the instance to reuse: active, then visible, then newest; or None."""
-    hits = instances_of(infos, file_id)
+    hits = instances_of(infos, file_id, key=_row_file_id)
     if not hits:
         return None
     return max(hits, key=lambda i: (infos[i].get("is_active") is True,
@@ -151,7 +149,7 @@ def plan_file(row, infos, target):
     if before == target:
         return {"action": "already"}
 
-    hits = instances_of(infos, row["id"])
+    hits = instances_of(infos, row["id"], key=_row_file_id)
     modified = [infos[i].get("name") for i in hits if infos[i].get("is_modified") is not False]
     if modified:
         return {"action": "skip", "reason": "unsaved_changes", "documents": modified,
@@ -274,13 +272,6 @@ def summarize(entries):
 # -- Fusion reads -------------------------------------------------------------
 
 
-def _pump():
-    """Run Fusion's event loop once; returns how long that took."""
-    started = time.monotonic()
-    adsk.doEvents()
-    return time.monotonic() - started
-
-
 def _read_state(app, file_id):
     """Current state from a fresh cloud lookup, or None."""
     try:
@@ -312,7 +303,7 @@ def _describe(document):
 
 def _snapshot(app):
     """(documents, infos) for everything open, hidden instances included."""
-    documents = strict_items(app.documents)
+    documents = open_documents(app)
     return documents, [_describe(document) for document in documents]
 
 
@@ -394,7 +385,7 @@ def _wait_settled(app, file_id, deadline, quiet_s=SETTLE_QUIET_S):
     started = time.monotonic()
     ui = app.userInterface
     while True:
-        pump_s = _pump()
+        pump_s = pump()
         now = time.monotonic()
         command = safe(ui, "activeCommand")
         target_active = file_id is None or _target_is_active(app, file_id)
@@ -410,7 +401,7 @@ def _wait_for_state(app, file_id, target, deadline):
     state = None
     next_read = 0.0
     while True:
-        _pump()
+        pump()
         now = time.monotonic()
         if now >= next_read or now >= deadline:
             state = _read_state(app, file_id)
@@ -423,9 +414,9 @@ def _wait_for_state(app, file_id, target, deadline):
 def _still_open(app, file_id, deadline):
     """Pump until no instance of the file is open; returns those that remain."""
     while True:
-        _pump()
+        pump()
         _, infos = _snapshot(app)
-        hits = [infos[i].get("name") for i in instances_of(infos, file_id)]
+        hits = [infos[i].get("name") for i in instances_of(infos, file_id, key=_row_file_id)]
         if not hits or time.monotonic() >= deadline:
             return hits
         time.sleep(_POLL_S)
@@ -529,7 +520,7 @@ def _change_file(app, cmd_def, row, target, batch_deadline, entry):
         return
 
     _, infos = _snapshot(app)
-    modified = [infos[i].get("name") for i in instances_of(infos, file_id)
+    modified = [infos[i].get("name") for i in instances_of(infos, file_id, key=_row_file_id)
                 if infos[i].get("is_modified") is not False]
     if modified:
         entry.update(status="skipped", reason="unsaved_changes", documents=modified,
@@ -623,7 +614,7 @@ def _restore_active(app, document, name, pending):
             document.activate()
         deadline = time.monotonic() + RESTORE_TIMEOUT_S
         while safe(document, "isActive") is not True and time.monotonic() < deadline:
-            _pump()
+            pump()
             time.sleep(_POLL_S)
         result["restored"] = safe(document, "isActive") is True
     except Exception as exc:

@@ -24,6 +24,7 @@ from .common import cloud
 from .common.api import safe, strict_items
 from .common.app_log import default_log_roots, entry_time, newest_log, read_tail_lines
 from .common.args import UNKNOWN_CAPITALIZED, int_or_none, is_int, is_number, reject_unknown, text_arg
+from .common.documents import data_file_id, instances_of, open_documents
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -87,27 +88,11 @@ def describe_document(document):
     return info
 
 
-def _open_documents(app):
-    documents = app.documents
-    return [documents.item(i) for i in range(documents.count)]
-
-
-def _file_id(info):
-    return (info.get("data_file") or {}).get("id")
-
-
 def _loaded_version(info):
     return int_or_none((info.get("data_file") or {}).get("version_number"))
 
 
 # -- Pure decision logic -------------------------------------------------------
-
-
-def instances_of(infos, file_id):
-    """Indexes of open documents whose DataFile id is *file_id*."""
-    if not file_id:
-        return []
-    return [i for i, info in enumerate(infos) if _file_id(info) == file_id]
 
 
 def describe_instances(infos, indexes):
@@ -147,13 +132,13 @@ def pick_target(infos, field, value):
     if not matches:
         return None, {
             "error": f"No open document matches {field}={value!r}",
-            "open_documents": [{"name": info.get("name"), "data_file_id": _file_id(info)} for info in infos],
+            "open_documents": [{"name": info.get("name"), "data_file_id": data_file_id(info)} for info in infos],
         }
-    ids = {_file_id(infos[i]) for i in matches}
+    ids = {data_file_id(infos[i]) for i in matches}
     if len(ids) > 1:
         return None, {
             "error": f"{len(matches)} open documents named {value!r} are different files; use data_file_id",
-            "candidates": [{"name": infos[i].get("name"), "data_file_id": _file_id(infos[i]),
+            "candidates": [{"name": infos[i].get("name"), "data_file_id": data_file_id(infos[i]),
                             "project": (infos[i].get("data_file") or {}).get("project"),
                             "folder": (infos[i].get("data_file") or {}).get("folder")} for i in matches],
         }
@@ -442,7 +427,7 @@ def save_document(arguments):
 
     try:
         app = get_app()
-        docs = _open_documents(app)
+        docs = open_documents(app)
         infos = [describe_document(doc) for doc in docs]
         target, error = pick_target(infos, field, value)
         if error:
@@ -508,7 +493,7 @@ def save_document(arguments):
             return tool_result(result)
 
         # Failure: explain it from fresh readings.
-        infos_after = [describe_document(doc) for doc in _open_documents(app)]
+        infos_after = [describe_document(doc) for doc in open_documents(app)]
         same = instances_of(infos_after, file_id)
         read_only = safe(safe(document, "dataFile"), "isReadOnly")
         result["stage"] = verifier.stage
@@ -577,7 +562,7 @@ def open_document(arguments):
         if isinstance(latest, int) and target_version > latest:
             return tool_result(f"Error: 'version' {version} is newer than the latest version (v{latest})", True)
 
-        docs = _open_documents(app)
+        docs = open_documents(app)
         infos = [describe_document(doc) for doc in docs]
         plan = plan_open(infos, file_id, target_version)
         warnings = []
@@ -603,7 +588,7 @@ def open_document(arguments):
             if not safe(document, "isActive"):
                 document.activate()
 
-        infos_after = [describe_document(doc) for doc in _open_documents(app)]
+        infos_after = [describe_document(doc) for doc in open_documents(app)]
         same = instances_of(infos_after, file_id)
         result_info = describe_document(document)
         result_info["latest_version_number"] = latest

@@ -13,18 +13,17 @@ with the cloud's latest itself, and judges ``getLatestVersion()`` by whether the
 reference's version number moved. A successful update leaves the parent modified,
 so nothing is finished until the parent is saved.
 
-Decision logic is Fusion-free and tested with fakes; the glue reads ``time`` and
-``adsk.doEvents`` through this module.
+Decision logic is Fusion-free and tested with fakes; the glue reads ``time`` through
+this module.
 """
 
 import time
 import traceback
 from collections import Counter
 
-import adsk.core
-
 from .common.api import safe, strict_items
 from .common.args import bool_arg, int_or_none, reject_unknown
+from .common.documents import open_documents, pump
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -406,10 +405,6 @@ def reference_advice(document, references, updates, document_modified):
 # -- Fusion reads -------------------------------------------------------------
 
 
-def _pump():
-    adsk.doEvents()
-
-
 def _reference_ids(document):
     """DataFile ids this document links, directly or through sub-assemblies."""
     ids = set()
@@ -440,7 +435,7 @@ def _describe(document):
 
 def _read_documents(app):
     """Return (documents, infos) from a fresh read of ``app.documents``."""
-    documents = strict_items(app.documents)
+    documents = open_documents(app)
     return documents, [_describe(document) for document in documents]
 
 
@@ -469,7 +464,7 @@ def _wait_for_close(app, before, targets):
     started = time.monotonic()
     watch = CloseWatch(before, targets, started)
     while True:
-        _pump()
+        pump()
         _, infos = _read_documents(app)
         if watch.observe(time.monotonic(), [instance_key(info) for info in infos]):
             return
@@ -497,7 +492,7 @@ def close_document(arguments):
         attempts = []
         for index in targets:
             attempts.append(_attempt_close(documents[index], before[index]))
-            _pump()
+            pump()
         _wait_for_close(app, before, targets)
 
         _, after = _read_with_references(app)
@@ -644,7 +639,7 @@ def _wait_for_versions(document, entries):
     """Pump until every reference's version moved, or time is up; return the last read."""
     deadline = time.monotonic() + UPDATE_VERIFY_TIMEOUT_S
     while True:
-        _pump()
+        pump()
         versions = _loaded_versions(document)
         if all(_moved(entry, versions) for entry in entries) or time.monotonic() >= deadline:
             return versions
@@ -660,7 +655,7 @@ def _apply_updates(document, entries, held):
             attempts.append(None)
             continue
         attempts.append(_attempt_update(_fresh_reference(document, entry) or ref, entry))
-        _pump()
+        pump()
 
     tried = [entry for entry, attempt in zip(entries, attempts) if attempt is not None]
     versions = _wait_for_versions(document, tried) if tried else {}

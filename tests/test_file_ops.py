@@ -13,7 +13,7 @@ import adsk
 
 from fusion_bridge import file_ops, tool_surface
 from fusion_bridge.common import cloud as data_tree
-from fusion_bridge.common.app_log import ServerLog
+from fusion_bridge.common import app_log
 
 OPAQUE = "2 : InternalValidationError : res"
 
@@ -41,7 +41,7 @@ class TempLog:
     def __enter__(self):
         handle, self.path = tempfile.mkstemp(suffix=".log")
         os.close(handle)
-        self.log = ServerLog(self.path)
+        self.log = app_log.ServerLog(self.path)
         return self
 
     def __exit__(self, *exc):
@@ -472,8 +472,8 @@ class ServerReasonTests(unittest.TestCase):
             log.write("20261105T113355 E 1 POST 500 https://api/co.a - requestId:r1\nResponse Body: <html>oops\n")
             reason = log.log.reason(offset, "urn:x:co.a", polls=1)
         self.assertEqual((reason["status"], reason["message"], reason["error_code"]), (500, "<html>oops", None))
-        self.assertIsNone(ServerLog().reason(ServerLog().mark(), "urn:x:co.a"))
-        missing = ServerLog("/nonexistent/AppLogFile.log")
+        self.assertIsNone(app_log.ServerLog().reason(app_log.ServerLog().mark(), "urn:x:co.a"))
+        missing = app_log.ServerLog("/nonexistent/AppLogFile.log")
         self.assertIsNone(missing.mark())
         self.assertEqual(missing.since(0), "")
 
@@ -768,7 +768,7 @@ class EmptyFolderTests(unittest.TestCase):
 
 class HandlerTests(unittest.TestCase):
     def setUp(self):
-        for name, value in (("_wait", mock.Mock()), ("current_log", lambda: ServerLog())):
+        for name, value in (("_wait", mock.Mock()), ("current_log", lambda: app_log.ServerLog())):
             patcher = mock.patch.object(file_ops, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
