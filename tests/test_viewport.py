@@ -83,6 +83,59 @@ class PNGTests(unittest.TestCase):
                 png_image.transform(source,crop)
 
 
+def solid_rows(width, height, pixel, dots=()):
+    """Unfiltered raw rows of one color, with (x, y, pixel) overrides."""
+    rows = [bytearray(pixel * width) for _ in range(height)]
+    for x, y, value in dots:
+        rows[y][x * len(pixel):(x + 1) * len(pixel)] = value
+    return b''.join(b'\0' + bytes(row) for row in rows)
+
+
+class BlankDetectionTests(unittest.TestCase):
+    def test_uniform_image_is_blank(self):
+        self.assertEqual(png_image.blank_coverage(make_png(400, 300, solid_rows(400, 300, b'\xc8\xc8\xc8\xff'))), 0)
+
+    def test_marker_dot_on_background_is_blank(self):
+        dot = [(x, y, b'\0\0\xff') for x in range(200, 206) for y in range(150, 156)]
+        coverage = png_image.blank_coverage(make_png(400, 300, solid_rows(400, 300, b'\xc8\xc8\xc8', dot), color=2))
+        self.assertIsNotNone(coverage)
+        self.assertLessEqual(coverage, png_image.BLANK_MAX_COVERAGE)
+
+    def test_vertical_gradient_background_is_blank(self):
+        raw = b''.join(b'\0' + bytes([100 + y // 3, 120 + y // 3, 140, 255]) * 400 for y in range(300))
+        self.assertEqual(png_image.blank_coverage(make_png(400, 300, raw)), 0)
+
+    def test_transparent_capture_ignores_hidden_rgb(self):
+        row = b'\0' + bytes(channel for x in range(400) for channel in ((x % 2) * 200, 0, 0, 0))
+        self.assertEqual(png_image.blank_coverage(make_png(400, 300, row * 300)), 0)
+
+    def test_model_on_background_is_not_blank(self):
+        block = [(x, y, b'\x30\x60\x90') for x in range(100, 300) for y in range(100, 200)]
+        self.assertIsNone(png_image.blank_coverage(make_png(400, 300, solid_rows(400, 300, b'\xc8\xc8\xc8', block), color=2)))
+
+    def test_row_uniform_band_filling_the_width_is_not_blank(self):
+        band = [(x, y, b'\x30\x60\x90') for x in range(400) for y in range(100, 200)]
+        self.assertIsNone(png_image.blank_coverage(make_png(400, 300, solid_rows(400, 300, b'\xc8\xc8\xc8', band), color=2)))
+
+    def test_detailed_image_skips_the_decode(self):
+        raw = b''.join(b'\0' + os.urandom(1200) for _ in range(300))
+        with patch.object(png_image, '_decode') as decode:
+            self.assertIsNone(png_image.blank_coverage(make_png(400, 300, raw, color=2)))
+        decode.assert_not_called()
+
+    def test_tiny_images_are_never_called_blank(self):
+        self.assertIsNone(png_image.blank_coverage(make_png(2, 1, b'\0' + bytes(8))))
+
+    def test_transform_output_is_unchanged_by_the_decode_split(self):
+        source = make_png(2, 1, b'\0\x01\x02\x03\x04\x05\x06', color=2)
+        self.assertEqual(read_unfiltered(png_image.transform(source)), ((2, 1), b'\0\x01\x02\x03\x04\x05\x06'))
+
+    def test_invalid_data_raises_for_the_caller_to_report(self):
+        for invalid in (b'garbage', png_image.SIGNATURE):
+            with self.assertRaises(ValueError):
+                png_image.blank_coverage(invalid)
+
+
 class Vec:
     def __init__(self, x=0, y=0, z=0):
         self.x, self.y, self.z = x, y, z
@@ -113,6 +166,7 @@ class Viewport:
         self.fail_save = False
         self.fail_refresh_once = False
         self.png = make_png(2, 1, b'\0' + bytes([255,0,0,255, 0,0,0,0]))
+        self.captured_cameras = []
 
     @property
     def camera(self):
@@ -136,6 +190,7 @@ class Viewport:
 
     def saveAsImageFile(self, path, width, height):
         self.saved.append((path, width, height))
+        self.captured_cameras.append(self.camera)
         if self.fail_save == 'exception':
             raise RuntimeError('export failed')
         if self.fail_save:
@@ -147,6 +202,125 @@ class Viewport:
     def saveAsImageFileWithOptions(self, options):
         self.options = options
         return self.saveAsImageFile(options.filename, options.width, options.height)
+
+
+class Box:
+    def __init__(self, low, high):
+        self.minPoint, self.maxPoint = Vec(*low), Vec(*high)
+
+
+def body(low, high, visible=True):
+    return SimpleNamespace(isVisible=visible, boundingBox=Box(low, high))
+
+
+def dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+class CaptureCameraMathTests(unittest.TestCase):
+    def assertVector(self, actual, expected):
+        for a, e in zip(actual, expected):
+            self.assertAlmostEqual(a, e)
+
+    def test_z_up_views_match_the_viewcube_of_a_z_up_model(self):
+        expected = {'front': ((0,-1,0),(0,0,1)), 'back': ((0,1,0),(0,0,1)),
+                    'right': ((1,0,0),(0,0,1)), 'left': ((-1,0,0),(0,0,1)),
+                    'top': ((0,0,1),(0,1,0)), 'bottom': ((0,0,-1),(0,-1,0))}
+        for name, (back, up) in expected.items():
+            with self.subTest(view=name):
+                axes = viewport._model_view_axes(name, 'z')
+                self.assertVector(axes[0], back)
+                self.assertVector(axes[1], up)
+
+    def test_y_up_views_match_fusion_standard_views(self):
+        expected = {'front': ((0,0,1),(0,1,0)), 'right': ((1,0,0),(0,1,0)), 'top': ((0,1,0),(0,0,-1)), 'bottom': ((0,-1,0),(0,0,1))}
+        for name, (back, up) in expected.items():
+            with self.subTest(view=name):
+                axes = viewport._model_view_axes(name, 'y')
+                self.assertVector(axes[0], back)
+                self.assertVector(axes[1], up)
+
+    def test_model_x_runs_screen_right_in_front_top_and_iso_views(self):
+        for up_axis in viewport.MODEL_AXES:
+            for name in ('front', 'top', 'bottom', 'iso'):
+                with self.subTest(up_axis=up_axis, view=name):
+                    pose = viewport._frame_model((0,0,0), (1,1,1), name, up_axis, 1)
+                    back = viewport._unit(viewport._sub(pose['eye'], pose['target']))
+                    self.assertGreater(viewport._cross(pose['up'], back)[0], 0)
+
+    def test_frame_centers_on_the_box_and_clears_it(self):
+        pose = viewport._frame_model((-10,0,0), (30,10,20), 'front', 'z', 1)
+        self.assertVector(pose['target'], (10,5,10))
+        self.assertEqual(pose['projection'], 'orthographic')
+        radius = math.hypot(20,5,10)
+        self.assertGreater(math.dist(pose['eye'], pose['target']), radius)
+        self.assertVector(pose['eye'][::2], (10,10))
+
+    def test_extents_follow_what_the_view_sees_and_the_image_shape(self):
+        low, high = (0,0,0), (40,10,20)  # half sizes 20, 5, 10
+        margin = viewport.MODEL_VIEW_MARGIN
+        square = viewport._frame_model(low, high, 'front', 'z', 1)['extents']
+        self.assertAlmostEqual(square, 20 * margin)
+        # Wide images fit the 40-wide model at a smaller radius; height then limits.
+        self.assertAlmostEqual(viewport._frame_model(low, high, 'front', 'z', 4)['extents'], 10 * margin)
+        # Portrait images: the smaller side is the width.
+        self.assertAlmostEqual(viewport._frame_model(low, high, 'front', 'z', .5)['extents'], 20 * margin)
+        # Looking down X sees 10 wide, 20 tall.
+        self.assertAlmostEqual(viewport._frame_model(low, high, 'right', 'z', 1)['extents'], 10 * margin)
+
+    def test_iso_looks_from_front_right_top_with_perpendicular_up(self):
+        pose = viewport._frame_model((-1,-1,-1), (1,1,1), 'iso', 'z', 1)
+        self.assertGreater(pose['eye'][0], 0)
+        self.assertLess(pose['eye'][1], 0)
+        self.assertGreater(pose['eye'][2], 0)
+        back = viewport._unit(pose['eye'])
+        self.assertAlmostEqual(dot(pose['up'], back), 0)
+        self.assertGreater(pose['up'][2], 0)
+
+    def test_degenerate_box_refused(self):
+        with self.assertRaises(ValueError):
+            viewport._frame_model((1,1,1), (1,1,1), 'top', 'z', 1)
+
+    def test_parse_converts_lengths_but_not_the_up_direction(self):
+        for units, factor in (('in',2.54),('mm',.1),('cm',1)):
+            with self.subTest(units=units):
+                pose = viewport._parse_capture_camera({'eye':{'x':10,'y':0,'z':0},'target':{'x':0,'y':0,'z':0},
+                                                       'up':{'x':0,'y':0,'z':5},'units':units,'extents':2})
+                self.assertVector(pose['eye'], (10*factor,0,0))
+                self.assertVector(pose['up'], (0,0,1))
+                self.assertAlmostEqual(pose['extents'], 2*factor)
+                self.assertIsNone(pose['projection'])
+
+    def test_parse_defaults_to_cm_and_makes_up_perpendicular(self):
+        pose = viewport._parse_capture_camera({'eye':{'x':0,'y':-1,'z':1},'target':{'x':0,'y':0,'z':0},'up':{'x':0,'y':0,'z':1}})
+        self.assertVector(pose['eye'], (0,-1,1))
+        self.assertIsNone(pose['extents'])
+        self.assertAlmostEqual(dot(pose['up'], (0,-1,1)), 0)
+
+    def test_parse_rejects_bad_cameras(self):
+        point = {'x':0,'y':0,'z':0}
+        good = {'eye':{'x':1,'y':0,'z':0},'target':point,'up':{'x':0,'y':0,'z':1}}
+        bad = [None, 'top', {}, {'eye':good['eye']}, {**good,'extra':1}, {**good,'eye':point},
+               {**good,'up':point}, {**good,'up':{'x':2,'y':0,'z':0}}, {**good,'up':{'x':0,'y':0,'z':float('nan')}},
+               {**good,'eye':{'x':'1','y':0,'z':0}}, {**good,'units':'ft'}, {**good,'units':['in']},
+               {**good,'extents':0}, {**good,'extents':-1}, {**good,'extents':True},
+               {**good,'projection':'fisheye'}, {**good,'projection':['orthographic']}]
+        for value in bad:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    viewport._parse_capture_camera(value)
+
+    def test_bounds_cover_visible_root_and_occurrence_bodies_only(self):
+        root = SimpleNamespace(
+            bRepBodies=[body((0,0,0),(1,1,1)), body((-500,0,0),(0,1,1),visible=False)],
+            allOccurrences=[SimpleNamespace(isVisible=True, bRepBodies=[body((5,-2,0),(6,0,9))]),
+                            SimpleNamespace(isVisible=False, bRepBodies=[body((0,0,0),(900,1,1))])])
+        self.assertEqual(viewport._visible_bounds(root), ((0,-2,0),(6,1,9),2,2))
+
+    def test_bounds_refuse_a_design_with_nothing_visible(self):
+        root = SimpleNamespace(bRepBodies=[body((0,0,0),(1,1,1),visible=False)], allOccurrences=[])
+        with self.assertRaisesRegex(ValueError, '1 hidden'):
+            viewport._visible_bounds(root)
 
 
 class ViewportTests(unittest.TestCase):
@@ -255,6 +429,108 @@ class ViewportTests(unittest.TestCase):
                 self.assertTrue(viewport.capture(args)['isError'])
         self.assertEqual(self.vp.saved,[])
 
+    def set_design(self, *bodies):
+        self.app.activeProduct=SimpleNamespace(rootComponent=SimpleNamespace(bRepBodies=list(bodies),allOccurrences=[]))
+
+    def notes(self, result):
+        self.assertFalse(result['isError'],result)
+        self.assertEqual(result['content'][0]['type'],'image')
+        return json.loads(result['content'][1]['text'])
+
+    def test_camera_applies_in_cm_for_the_capture_then_restores(self):
+        before=self.result(viewport.get_viewport({}))
+        result=viewport.capture({'camera':{'eye':{'x':10,'y':0,'z':0},'target':{'x':0,'y':0,'z':0},'up':{'x':0,'y':0,'z':1},
+                                           'units':'in','extents':5,'projection':'perspective'}})
+        camera=self.vp.captured_cameras[-1]
+        self.assertAlmostEqual(camera.eye.x,25.4)
+        self.assertEqual((camera.upVector.x,camera.upVector.y,camera.upVector.z),(0,0,1))
+        self.assertAlmostEqual(camera.viewExtents,12.7)
+        self.assertEqual(camera.cameraType,1)
+        self.assertFalse(camera.isFitView)
+        self.assertAlmostEqual(self.notes(result)['camera']['eye']['x'],25.4)
+        self.assertEqual(self.result(viewport.get_viewport({})),before)
+
+    def test_omitted_extents_and_projection_keep_the_current_camera(self):
+        viewport.capture({'camera':{'eye':{'x':1,'y':0,'z':0},'target':{'x':0,'y':0,'z':0},'up':{'x':0,'y':0,'z':1}}})
+        camera=self.vp.captured_cameras[-1]
+        self.assertFalse(hasattr(camera,'viewExtents'))
+        self.assertEqual(camera.cameraType,0)
+
+    def test_camera_restored_on_every_failure(self):
+        self.set_design(body((0,0,0),(10,10,10)))
+        pose={'eye':{'x':1,'y':0,'z':0},'target':{'x':0,'y':0,'z':0},'up':{'x':0,'y':0,'z':1},'projection':'perspective'}
+        for args in ({'camera':pose},{'model_view':'top'}):
+            for fail in (True,'exception'):
+                with self.subTest(args=args,failure=fail):
+                    before=self.result(viewport.get_viewport({}))
+                    self.vp.fail_save=fail
+                    self.assertTrue(viewport.capture(args)['isError'])
+                    self.assertEqual(self.result(viewport.get_viewport({})),before)
+
+    def test_model_view_frames_visible_bodies_and_reports(self):
+        self.set_design(body((0,0,0),(20,10,4)),body((-900,0,0),(0,1,1),visible=False))
+        before=self.result(viewport.get_viewport({}))
+        notes=self.notes(viewport.capture({'model_view':'front','width':400,'height':400}))
+        camera=self.vp.captured_cameras[-1]
+        self.assertEqual((camera.target.x,camera.target.y,camera.target.z),(10,5,2))
+        self.assertLess(camera.eye.y,0)
+        self.assertEqual(camera.upVector.z,1)
+        self.assertAlmostEqual(camera.viewExtents,10*viewport.MODEL_VIEW_MARGIN)
+        self.assertEqual(camera.cameraType,0)
+        self.assertEqual(notes['model_view'],{'view':'front','up_axis':'z','visible_bodies':1,'hidden_bodies_skipped':1})
+        self.assertEqual(self.result(viewport.get_viewport({})),before)
+
+    def test_model_view_up_axis_y_and_native_size(self):
+        self.set_design(body((0,0,0),(1,1,1)))
+        result=viewport.capture({'model_view':'front','up_axis':'y','width':0,'height':0})
+        self.assertEqual(self.notes(result)['model_view']['up_axis'],'y')
+        self.assertGreater(self.vp.captured_cameras[-1].eye.z,1)
+
+    def test_model_view_without_a_usable_design_fails_and_keeps_the_camera(self):
+        before=self.result(viewport.get_viewport({}))
+        self.app.activeProduct=SimpleNamespace()
+        self.assertIn('active design',viewport.capture({'model_view':'top'})['content'][0]['text'])
+        self.set_design(body((0,0,0),(1,1,1),visible=False))
+        self.assertIn('visible body',viewport.capture({'model_view':'top'})['content'][0]['text'])
+        self.assertEqual(self.vp.saved,[])
+        self.assertEqual(self.result(viewport.get_viewport({})),before)
+
+    def test_camera_argument_conflicts_do_not_render(self):
+        self.set_design(body((0,0,0),(1,1,1)))
+        pose={'eye':{'x':1,'y':0,'z':0},'target':{'x':0,'y':0,'z':0},'up':{'x':0,'y':0,'z':1}}
+        for args in ({'camera':pose,'view':'top'},{'camera':pose,'model_view':'top'},{'model_view':'top','view':'top'},
+                     {'camera':pose,'fit':True},{'model_view':'top','fit':True},{'up_axis':'z'},{'view':'top','up_axis':'z'},
+                     {'camera':pose,'up_axis':'z'},{'model_view':'isometric'},{'model_view':'top','up_axis':'x'},
+                     {'model_view':['top']},{'model_view':'top','up_axis':['z']},{'camera':'top'}):
+            with self.subTest(args=args):
+                self.assertTrue(viewport.capture(args)['isError'])
+        self.assertEqual(self.vp.saved,[])
+
+    def test_blank_capture_warns_without_failing(self):
+        self.vp.png=make_png(400,300,solid_rows(400,300,b'\xc8\xc8\xc8\xff'))
+        warning=self.notes(viewport.capture({}))['warnings'][0]
+        self.assertTrue(warning.startswith('image looks blank:'),warning)
+        self.assertIn('active document just changed',warning)
+        self.assertIn('fit',warning)
+        pose={'eye':{'x':1,'y':0,'z':0},'target':{'x':0,'y':0,'z':0},'up':{'x':0,'y':0,'z':1}}
+        notes=self.notes(viewport.capture({'camera':pose}))
+        self.assertIn('aimed away',notes['warnings'][0])
+        self.assertIn('camera',notes)
+
+    def test_blank_check_reads_the_full_render_not_the_crop(self):
+        block=[(x,y,b'\x30\x60\x90\xff') for x in range(100,300) for y in range(100,200)]
+        self.vp.png=make_png(400,300,solid_rows(400,300,b'\xc8\xc8\xc8\xff',block))
+        result=viewport.capture({'width':400,'height':300,'crop':{'x':0,'y':0,'width':50,'height':50}})
+        self.assertEqual([item['type'] for item in result['content']],['image'])
+
+    def test_normal_capture_has_no_extra_content(self):
+        self.assertEqual([item['type'] for item in viewport.capture({})['content']],['image'])
+
+    def test_failed_blank_check_is_a_warning_not_an_error(self):
+        with patch.object(png_image,'blank_coverage',side_effect=ValueError('odd PNG')):
+            notes=self.notes(viewport.capture({}))
+        self.assertEqual(notes['warnings'],['blank-image check skipped: odd PNG'])
+
     def test_absent_viewport_returns_tool_errors(self):
         self.app.activeViewport=None
         for function in (viewport.get_viewport,viewport.set_viewport,viewport.capture):
@@ -263,6 +539,15 @@ class ViewportTests(unittest.TestCase):
     def test_schema_and_implementation_have_same_views_and_projections(self):
         self.assertEqual(set(tool_surface.STANDARD_VIEWS),set(viewport.VIEW_NAMES))
         self.assertEqual(set(tool_surface.PROJECTIONS),set(viewport.PROJECTIONS))
+
+    def test_schema_matches_capture_camera_options(self):
+        schema=next(t for t in tool_surface.TOOL_DEFINITIONS if t['name']==tool_surface.CAPTURE_VIEWPORT)['inputSchema']['properties']
+        self.assertEqual(set(schema['model_view']['enum']),set(viewport.MODEL_VIEWS))
+        self.assertEqual(set(schema['up_axis']['enum']),set(viewport.MODEL_AXES))
+        camera=schema['camera']
+        self.assertEqual(set(camera['properties']['units']['enum']),set(viewport.CAPTURE_UNITS))
+        self.assertEqual(set(camera['required']),{'eye','target','up'})
+        self.assertFalse(camera['additionalProperties'])
 
 
 class Flags:

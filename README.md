@@ -114,6 +114,10 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `delete_files` | Permanently delete cloud files, parents first; dry run by default, refuses open or outside-linked files, reports the server's reason per file |
 | `fusion_status` | Check from outside the main thread whether Fusion is responsive, what is running or queued, and why it looks busy; optionally wait until it is idle |
 
+`capture_viewport` also takes a temporary `camera` (eye, target and up in model
+coordinates) or a `model_view` that frames the visible bodies with a chosen
+`up_axis`, and warns when the image looks blank.
+
 ### Generic API example
 
 ```json
