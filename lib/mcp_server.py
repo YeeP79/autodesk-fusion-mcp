@@ -57,8 +57,17 @@ DEFAULT_PROTOCOL_VERSION = "2025-03-26"
 # Server info
 SERVER_INFO = {"name": "autodesk-fusion-mcp", "version": "1.6.0"}
 
-# Server capabilities
-SERVER_CAPABILITIES = {"tools": {}, "resources": {}}
+# Server capabilities (legacy initialize). listChanged: each new GET /mcp
+# stream starts with notifications/tools/list_changed, see TOOLS_LIST_CHANGED.
+SERVER_CAPABILITIES = {"tools": {"listChanged": True}, "resources": {}}
+
+# Sent once at the start of every legacy GET /mcp stream. A client that
+# reconnects after the add-in restarted (Fusion restart or reload_addin)
+# may still hold the previous server's tool list, and this server cannot
+# tell what the client cached, so every new stream is told to re-list.
+# Streams of a stopped server are closed, so nothing can be pushed to a
+# client that has not opened a stream on the current server.
+TOOLS_LIST_CHANGED = {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}
 
 
 def negotiate_protocol_version(requested):
@@ -375,6 +384,7 @@ class MCPServer:
 
                 # Keep alive until client disconnects or server stops
                 try:
+                    self._write_sse_event(json.dumps(TOOLS_LIST_CHANGED), event="message")
                     while server_ref.is_running:
                         try:
                             self.wfile.write(b": keepalive\n\n")

@@ -84,7 +84,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `list_scripts` | List saved scripts with metadata |
 | `delete_script` | Delete a saved script |
 | `bridge_info` | Running vs on-disk add-in code: commits, load time, changed files, modules |
-| `reload_addin` | Restart the add-in in place to pick up code changed on disk |
+| `reload_addin` | Restart the add-in in place to pick up code changed on disk; re-list tools afterwards (new GET /mcp streams get `tools/list_changed`) |
 
 ### Generic API example
 
