@@ -19,6 +19,7 @@ from .. import settings
 from ..lib import fusionAddInUtils as futil
 from ..lib import mcp_server as mcp_server_module
 from . import document_guard
+from . import macros
 from . import primitives
 from . import timeline_health
 from .common.results import error_result, ok_result
@@ -39,6 +40,7 @@ _INJECTED_NAMES = frozenset({
     "inspect",
     "io",
     "json",
+    "macros",
     "mcp",
     "mcp_server_module",
     "os",
@@ -128,6 +130,7 @@ def _build_runtime_globals():
         "inspect": inspect,
         "io": io,
         "json": json,
+        "macros": macros.Macros(),
         "mcp": create_mcp_bridge(),
         "mcp_server_module": mcp_server_module,
         "os": os,

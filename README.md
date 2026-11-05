@@ -189,6 +189,66 @@ marker. The exemption ends with the code, whether it finished or raised, and the
 other preflight refusals still apply inside it. `sketch_profile` has no preflight,
 so it writes wherever the marker is.
 
+### Macros in scripts
+
+The same code also gets `macros`: four parts built from the primitives, in
+`fusion_bridge/macros/`. There are no MCP tools for them yet. Each takes keyword
+arguments, with `units` (`in`, `cm`, `mm`; default `in`). Points and vectors are
+world coordinates, and every dimension is an argument: nothing is read from a
+name. `tolerance` is how far a point may sit from what it names and a found
+diameter from the one asked for (default 0.001 in, in any units).
+
+| Macro | Required | Optional | What it makes |
+| --- | --- | --- | --- |
+| `bored_boss` | `body`, `point`, `outer_diameter`, `height`, `bore_diameter` | `normal`, `bore_depth`, `rim_chamfer` | A boss joined to a planar face at `point`, bored from its end, through `body` unless `bore_depth` is given |
+| `flanged_plate` | `outline`, `plane` or `plane_token`, `direction`, `thickness`, `pilot_center`, `pilot_diameter`, `first_bolt`, `bolt_diameter`, `bolt_count` | `arcs`, `bolt_chamfer`, `body_name`, `occurrence_path` | A new plate with a pilot bore, and bolt holes patterned around the bore |
+| `gusset` | `body_a`, `body_b`, `point_a`, `point_b`, `leg_a`, `leg_b`, `thickness`, `overlap` | `fillet_radius` with `fillet_points`, `body_name`, `plane_name` | A plate between two faces, each a plane or a cylinder, cut by both bodies with the bodies kept |
+| `drilled_hole` | `body`, `point`, `diameter` | `normal`, `depth`, `chamfer`, or `countersink_diameter` with `countersink_angle`; `thread` | A hole in a planar face, its rim treated, then threaded |
+
+```python
+hole = macros.drilled_hole(body={"occurrence_path": "root", "body_name": "Plate"}, point=[1, 1, 1], diameter=0.25,
+                           countersink_diameter=0.5, countersink_angle=82)
+if not hole["ok"]:
+    raise RuntimeError(hole["stopped_at"], hole["built"])
+```
+
+`thread` holds `apply_thread`'s keys: `family`, `designation` and `modeled`
+required, and `thread_class`, `right_handed`, `full_length`, `length`, `offset`
+and `measured_from`. The designation is looked up before the hole is cut.
+
+A `gusset` corner lies on a plane, or on a cylinder's axis, so a leg on a tube is
+measured from the axis. Each leg runs from the corner toward its point. Two planes
+need `point_a` and `point_b` in one plane across the line where the faces meet, and
+two tubes need axes that meet within `tolerance`. `overlap` runs the outline back
+past the corner so the cut leaves an exact cope, and the cut can leave pieces: the
+largest is `body`, the rest are `stray_bodies`, and the status is `suspect`.
+
+Bad arguments are refused before any step, and a macro stops at the first step
+that is not ok. What it built stays: nothing is undone. There is no dry run,
+because each step needs what the one before it built. The result:
+
+| Key | Meaning |
+| --- | --- |
+| `status`, `ok` | See below; `ok` only for `built` |
+| `steps` | Each step taken: `step`, `name` (the primitive), `status`, `ok`, `result` (its key values), and `warnings` and `why` when it has them |
+| `built` | `sketches`, `planes`, `anchors`, `features` and `bodies` now in the design. A step that was undone adds nothing; a feature that could not be taken back has `not_taken_back` |
+| `stopped_at`, `not_run` | The step that ended the run and why, and the steps left |
+| `kept` | Said whenever the design keeps something from a run that did not finish clean |
+| `baseline_token` | The first write's, for `check_solids` |
+| `body` and a macro's own key | What it made, as far as it got: `boss`, `plate`, `gusset` or `hole` |
+
+| `status` | Meaning |
+| --- | --- |
+| `built` | Every step ran and was ok |
+| `refused` | Stopped with nothing left in the design; `refusals` says why |
+| `partial` | Stopped with something left in the design. This includes a `suspect` step short of the end, which stops the run |
+| `suspect` | Every step ran, and something disagrees: a last step's check, `check_solids`, a stray piece, or a chamfer nothing could measure. Read `warnings` |
+| `failed` | A step or the macro raised, so what changed is unknown past `built`; `error` and `traceback` when the macro did |
+
+`sketch_profile` has no preflight, so a macro run where preflight would refuse
+(a broken timeline, or the marker short of the end outside `timeline_insert`) can
+leave its sketch behind before the extrude refuses. `partial` and `built` say so.
+
 ### Generic API example
 
 ```json
