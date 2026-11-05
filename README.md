@@ -83,6 +83,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `load_script` | Load a previously saved script |
 | `list_scripts` | List saved scripts with metadata |
 | `delete_script` | Delete a saved script |
+| `delete_files` | Permanently delete cloud files, parents first; dry run by default, refuses open or outside-linked files, reports the server's reason per file |
 
 ### Generic API example
 
