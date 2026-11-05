@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 import _fusion_test_bootstrap  # noqa: F401
 from fusion_bridge import sketch_geometry as geo
-from fusion_bridge import sketch_profile, tool_surface
+from fusion_bridge import sketch_profile, tool_surface, value_builders
+import adsk.core
 
 SQUARE = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
 
@@ -313,6 +314,102 @@ class ParseRequestTests(unittest.TestCase):
         self.assertIn("crosses", payload["problems"][0])
 
 
+class CircleParsingTests(unittest.TestCase):
+    def test_circles_converted_to_cm(self):
+        circles = geo.parse_circles([{"center": [1, 2], "diameter": 0.5}], 2, 2.54)
+        self.assertEqual(circles, [{"center": (2.54, 5.08), "radius": 0.635}])
+
+    def test_bad_circles_refused(self):
+        good = {"center": [0, 0], "diameter": 1}
+        cases = (None, [], "nope", ["circle"], [{"center": [0, 0]}], [{"diameter": 1}],
+                 [{**good, "diameter": 0}], [{**good, "diameter": -1}], [{**good, "diameter": True}],
+                 [{**good, "diameter": "1"}], [{**good, "diameter": float("nan")}],
+                 [{**good, "diameter": float("inf")}], [{**good, "diameter": 1e-6}],
+                 [{**good, "center": [0]}], [{**good, "center": [0, 0, 0]}], [{**good, "center": [0, None]}],
+                 [{**good, "radius": 2}], [good] * (geo.MAX_POINTS + 1))
+        for bad in cases:
+            with self.subTest(circles=bad if not isinstance(bad, list) or len(bad) < 5 else "too many"):
+                with self.assertRaises(geo.GeometryError):
+                    geo.parse_circles(bad, 2, 1.0)
+
+    def test_every_bad_circle_is_reported(self):
+        problems = problems_of(geo.parse_circles, [{"center": [0, 0], "diameter": 0}, {"center": [1], "diameter": 1}],
+                               2, 1.0)
+        self.assertEqual(len(problems), 2)
+
+
+class ValidateCirclesTests(unittest.TestCase):
+    @staticmethod
+    def circle(x, y, r):
+        return {"center": (x, y), "radius": r}
+
+    def test_apart_and_nested_are_valid(self):
+        geo.validate_circles([self.circle(0, 0, 1), self.circle(5, 0, 1)])
+        geo.validate_circles([self.circle(0, 0, 2), self.circle(0, 0, 1)])  # Tube wall.
+        geo.validate_circles([self.circle(0, 0, 2), self.circle(0.5, 0, 1)])  # Eccentric, inside.
+
+    def test_duplicate_refused(self):
+        problems = problems_of(geo.validate_circles, [self.circle(1, 1, 1), self.circle(1, 1, 1)])
+        self.assertEqual(problems, ["circles 0 and 1 are the same circle"])
+
+    def test_crossing_and_touching_refused(self):
+        for second in (self.circle(1, 0, 1), self.circle(2, 0, 1), self.circle(1, 0, 2)):
+            with self.subTest(second=second):
+                problems = problems_of(geo.validate_circles, [self.circle(0, 0, 1), second])
+                self.assertEqual(problems, ["circles 0 and 1 cross or touch"])
+
+    def test_gap_just_over_tolerance_is_valid(self):
+        geo.validate_circles([self.circle(0, 0, 1), self.circle(2 + 2 * geo.LENGTH_TOL_CM, 0, 1)])
+
+    def test_flatten_refuses_off_plane_center_in_user_units(self):
+        circles = [{"center": (0.0, 0.0, 0.0), "radius": 1.0}, {"center": (5.0, 2.54, 0.0), "radius": 1.0}]
+        problems = problems_of(geo.flatten_circles, circles, "xz", 2.54, "in")
+        self.assertEqual(problems, ["circles[1].center is 1 in off the sketch plane"])
+
+    def test_flatten_uses_the_plane_frame(self):
+        flat = geo.flatten_circles([{"center": (3.0, 0.0, -5.0), "radius": 1.0}], "xz")
+        self.assertEqual(flat, [{"center": (3.0, 5.0), "radius": 1.0}])
+
+
+class CircleRequestTests(unittest.TestCase):
+    BASE = {"action": "circles", "units": "in", "sketch_plane": "xy",
+            "circles": [{"center": [1, 1], "diameter": 0.5}, {"center": [3, 1], "diameter": 0.5}]}
+
+    def test_valid_request(self):
+        request = sketch_profile.parse_request(self.BASE)
+        self.assertEqual(request["circles"][1], {"center": (7.62, 2.54), "radius": 0.635})
+
+    def test_argument_errors(self):
+        for changes in ({"circles": []}, {"points": [[0, 0], [1, 0], [1, 1]]}, {"arcs": []}, {"point": [1, 1]},
+                        {"plane_entity_token": "abc"}, {"sketch_plane": "zx"}, {"space": "model"}):
+            with self.subTest(changes=changes), self.assertRaises(geo.GeometryError):
+                sketch_profile.parse_request({**self.BASE, **changes})
+        missing = {k: v for k, v in self.BASE.items() if k != "sketch_plane"}
+        with self.assertRaises(geo.GeometryError):
+            sketch_profile.parse_request(missing)
+
+    def test_circles_key_belongs_to_the_circles_action(self):
+        args = {"action": "closed_polyline", "units": "in", "sketch_plane": "xy", "circles": [],
+                "points": [[0, 0], [2, 0], [2, 2]]}
+        self.assertIn("only used by circles", problems_of(sketch_profile.parse_request, args)[0])
+        args = {"action": "profiles", "units": "in", "name": "S", "circles": []}
+        self.assertIn("only used by circles", problems_of(sketch_profile.parse_request, args)[0])
+
+    def test_model_space_checked_on_a_root_plane(self):
+        args = {**self.BASE, "space": "model", "sketch_plane": "xz",
+                "circles": [{"center": [1, 1, 1], "diameter": 0.5}]}
+        self.assertIn("off the sketch plane", problems_of(sketch_profile.parse_request, args)[0])
+
+    def test_crossing_circles_never_touch_fusion(self):
+        args = {**self.BASE, "circles": [{"center": [0, 0], "diameter": 2}, {"center": [1, 0], "diameter": 2}]}
+        with patch.object(sketch_profile, "get_app", side_effect=AssertionError("Fusion touched")):
+            result = sketch_profile.sketch_profile(args)
+        self.assertTrue(result["isError"])
+        payload = json.loads(result["content"][0]["text"])
+        self.assertIn("nothing was created", payload["error"])
+        self.assertIn("cross or touch", payload["problems"][0])
+
+
 # -- Fakes for the Fusion-facing builder ---------------------------------------------------
 
 
@@ -343,12 +440,21 @@ class FakeCurve:
         end.curves.append(self)
 
 
+class FakeCircle:
+    def __init__(self, sketch, center, radius):
+        self.centerSketchPoint = FakePoint(sketch, center[0], center[1])
+        self.centerSketchPoint.curves.append(self)
+        self.center_z, self.radius = center[2], radius
+        self.entityToken = f"circle-{len(sketch.circles)}"
+
+
 class FakeSketch:
     """Arcs mimic Fusion: always counterclockwise, so a clockwise request swaps ends."""
 
     def __init__(self):
         self.merges = 0
         self.curves = []
+        self.circles = []
         sketch = self
 
         def point(ref):
@@ -369,8 +475,14 @@ class FakeSketch:
             sketch.curves.append(curve)
             return curve
 
+        def add_circle(center, radius):
+            circle = FakeCircle(sketch, center, radius)
+            sketch.circles.append(circle)
+            return circle
+
         self.sketchCurves = SimpleNamespace(sketchLines=SimpleNamespace(addByTwoPoints=add_line),
-                                            sketchArcs=SimpleNamespace(addByThreePoints=add_arc))
+                                            sketchArcs=SimpleNamespace(addByThreePoints=add_arc),
+                                            sketchCircles=SimpleNamespace(addByCenterRadius=add_circle))
         self.geometricConstraints = SimpleNamespace(addCoincident=lambda a, b: None)
 
 
@@ -412,6 +524,212 @@ class BuildLoopTests(unittest.TestCase):
             sketch_profile.build_loop(sketch, SQUARE, {}, tuple_point)
 
 
+class Collection:
+    def __init__(self, members):
+        self.members = list(members)
+        self.count = len(self.members)
+
+    def item(self, i):
+        return self.members[i]
+
+
+def fake_profile(area, curves, outer=True):
+    """One profile with a single loop; *curves* are (sketch entity, geometry type) pairs."""
+    profile_curves = [SimpleNamespace(sketchEntity=e, geometryType=t) for e, t in curves]
+    loop = SimpleNamespace(isOuter=outer, profileCurves=Collection(profile_curves))
+    return SimpleNamespace(entityToken=f"profile-{area}", profileLoops=Collection([loop]),
+                           areaProperties=lambda _: SimpleNamespace(
+                               area=area, centroid=SimpleNamespace(x=0.0, y=0.0, z=0.0)))
+
+
+CIRCLE_TYPE, ARC_TYPE = 2, 1
+
+
+class BuildSketch(FakeSketch):
+    """A FakeSketch that computes profiles, maps model space and records its life."""
+
+    def __init__(self, model_offset=(0.0, 0.0, 0.0)):
+        super().__init__()
+        self.name, self.entityToken = "Sketch1", "sketch-token"
+        self.model_offset = model_offset
+        self.deleted = False
+        self.deferred_history = []
+        self.fixed_profiles = None
+
+    @property
+    def isComputeDeferred(self):
+        return self.deferred_history[-1] if self.deferred_history else False
+
+    @isComputeDeferred.setter
+    def isComputeDeferred(self, value):
+        self.deferred_history.append(value)
+
+    @property
+    def profiles(self):
+        if self.fixed_profiles is not None:
+            return Collection(self.fixed_profiles)
+        found = [fake_profile(math.pi * c.radius ** 2, [(c, CIRCLE_TYPE)]) for c in self.circles]
+        if self.curves:
+            found.append(fake_profile(100.0, [(c, ARC_TYPE) for c in self.curves]))
+        return Collection(found)
+
+    def modelToSketchSpace(self, p):
+        x, y, z = (a - b for a, b in zip(p, self.model_offset))
+        return SimpleNamespace(x=x, y=y, z=z)
+
+    def deleteMe(self):
+        self.deleted = True
+        return True
+
+
+def fake_design(sketch):
+    sketches = SimpleNamespace(add=lambda plane: sketch, itemByName=lambda name: None)
+    component = SimpleNamespace(name="root", sketches=sketches, xYConstructionPlane="xy-plane",
+                                xZConstructionPlane="xz-plane", yZConstructionPlane="yz-plane")
+    return SimpleNamespace(rootComponent=component, findEntityByToken=lambda token: [])
+
+
+class HandlerCase(unittest.TestCase):
+    """Runs the tool handler against a fake design."""
+
+    def setUp(self):
+        for patcher in (patch.object(adsk.core.Point3D, "create", staticmethod(tuple_point)),
+                        patch.dict(value_builders.OBJECT_STORE, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_tool(self, design, **arguments):
+        with patch.object(sketch_profile, "_design", return_value=design):
+            result = sketch_profile.sketch_profile({"units": "cm", **arguments})
+        text = result["content"][0]["text"]
+        return result, {"error": text} if text.startswith("Error:") else json.loads(text)
+
+
+class BuildCirclesTests(unittest.TestCase):
+    def test_one_entity_per_circle_at_sketch_z_zero(self):
+        sketch = FakeSketch()
+        curves = sketch_profile.build_circles(sketch, [{"center": (1.0, 2.0), "radius": 0.5},
+                                                       {"center": (4.0, 2.0), "radius": 0.25}], tuple_point)
+        self.assertEqual(curves, sketch.circles)
+        self.assertEqual(sketch.curves, [])  # No arcs or lines: nothing to split the wall.
+        self.assertEqual([c.center_z for c in curves], [0.0, 0.0])
+        self.assertEqual([c.radius for c in curves], [0.5, 0.25])
+
+    def test_failed_circle_raises_and_keeps_what_was_drawn(self):
+        sketch = FakeSketch()
+        real = sketch.sketchCurves.sketchCircles.addByCenterRadius
+        answers = iter([real((0.0, 0.0, 0.0), 1.0), None])
+        sketch.sketchCurves.sketchCircles.addByCenterRadius = lambda c, r: next(answers)
+        drawn = []
+        with self.assertRaises(RuntimeError):
+            sketch_profile.build_circles(sketch, [{"center": (0.0, 0.0), "radius": 1.0},
+                                                  {"center": (5.0, 0.0), "radius": 1.0}], tuple_point, drawn)
+        self.assertEqual(len(drawn), 1)
+
+
+class CircleStatesTests(unittest.TestCase):
+    def sketch_with(self, *profiles):
+        return SimpleNamespace(profiles=Collection(profiles))
+
+    def test_whole_cut_and_absent(self):
+        whole, cut, absent = object(), object(), object()
+        sketch = self.sketch_with(fake_profile(1.0, [(whole, CIRCLE_TYPE)]),
+                                  fake_profile(2.0, [(cut, ARC_TYPE), ("line", 0)]),
+                                  fake_profile(3.0, [(cut, ARC_TYPE)]))
+        self.assertEqual(sketch_profile.circle_states(sketch, [whole, cut, absent]), [True, False, None])
+
+    def test_circle_bounding_two_profiles_stays_whole(self):
+        hole = object()
+        sketch = self.sketch_with(fake_profile(1.0, [(hole, CIRCLE_TYPE)]), fake_profile(9.0, [(hole, CIRCLE_TYPE)]))
+        self.assertEqual(sketch_profile.circle_states(sketch, [hole]), [True])
+
+    def test_no_profiles(self):
+        self.assertEqual(sketch_profile.circle_states(self.sketch_with(), [object()]), [None])
+
+
+class CirclesActionTests(HandlerCase):
+    ARGS = {"action": "circles", "sketch_plane": "xy", "name": "Holes"}
+
+    def test_draws_many_circles_and_reports_them(self):
+        sketch = BuildSketch()
+        result, payload = self.run_tool(fake_design(sketch), **self.ARGS, circles=[
+            {"center": [1, 1], "diameter": 2}, {"center": [5, 1], "diameter": 1}])
+        self.assertFalse(result["isError"])
+        self.assertEqual(sketch.name, "Holes")
+        self.assertEqual(len(sketch.circles), 2)
+        self.assertEqual(sketch.curves, [])
+        self.assertEqual(sketch.deferred_history, [True, False])
+        self.assertEqual(payload["curve_count"], 2)
+        self.assertEqual(payload["profile_count"], 2)
+        self.assertEqual(payload["profile"]["index"], 0)  # The larger circle.
+        self.assertEqual(payload["warnings"], [])
+        self.assertEqual(payload["circles"][1], {"index": 1, "center": [5.0, 1.0], "diameter": 1.0,
+                                                 "entity_token": "circle-1", "whole": True})
+        self.assertIs(value_builders.OBJECT_STORE[sketch_profile.SKETCH_KEY], sketch)
+
+    def test_user_units_round_trip(self):
+        sketch = BuildSketch()
+        _, payload = self.run_tool(fake_design(sketch), **self.ARGS, units="in",
+                                   circles=[{"center": [1, 2], "diameter": 0.25}])
+        self.assertEqual(sketch.circles[0].radius, 0.125 * 2.54)
+        self.assertAlmostEqual(payload["circles"][0]["diameter"], 0.25)
+        self.assertAlmostEqual(payload["circles"][0]["center"][1], 2.0)
+
+    def test_model_space_drops_z_after_refusing_off_plane(self):
+        sketch = BuildSketch(model_offset=(0.0, 0.0, 3.0))
+        design = fake_design(sketch)
+        design.findEntityByToken = lambda token: [SimpleNamespace(objectType="adsk::fusion::ConstructionPlane")]
+        _, payload = self.run_tool(design, action="circles", plane_entity_token="t", space="model",
+                                   circles=[{"center": [1, 2, 3], "diameter": 1}])
+        self.assertEqual(payload["circles"][0]["center"], [1.0, 2.0])
+        self.assertEqual(sketch.circles[0].center_z, 0.0)
+
+    def test_off_plane_center_deletes_the_new_sketch(self):
+        sketch = BuildSketch(model_offset=(0.0, 0.0, 3.0))
+        design = fake_design(sketch)
+        design.findEntityByToken = lambda token: [SimpleNamespace(objectType="adsk::fusion::ConstructionPlane")]
+        result, payload = self.run_tool(design, action="circles", plane_entity_token="t", space="model",
+                                        circles=[{"center": [1, 2, 0], "diameter": 1}])
+        self.assertTrue(result["isError"])
+        self.assertIn("circles[0].center is 3 cm off", payload["problems"][0])
+        self.assertTrue(sketch.deleted)
+        self.assertEqual(sketch.circles, [])
+
+    def test_no_profile_deletes_the_new_sketch(self):
+        sketch = BuildSketch()
+        sketch.fixed_profiles = []
+        result, payload = self.run_tool(fake_design(sketch), **self.ARGS, circles=[{"center": [0, 0], "diameter": 1}])
+        self.assertTrue(result["isError"])
+        self.assertTrue(sketch.deleted)
+
+    def test_cut_circle_warns(self):
+        sketch = BuildSketch()
+        sketch.fixed_profiles = [fake_profile(1.0, [("line", 0)])]
+        _, payload = self.run_tool(fake_design(sketch), **self.ARGS, circles=[{"center": [0, 0], "diameter": 1}])
+        self.assertIsNone(payload["circles"][0]["whole"])
+        self.assertIn("bounds no profile", payload["warnings"][0])
+        sketch = BuildSketch()
+        drawn = sketch.sketchCurves.sketchCircles.addByCenterRadius
+
+        def add_and_cut(center, radius):
+            circle = drawn(center, radius)
+            sketch.fixed_profiles = [fake_profile(1.0, [(circle, ARC_TYPE)])]
+            return circle
+
+        sketch.sketchCurves.sketchCircles.addByCenterRadius = add_and_cut
+        _, payload = self.run_tool(fake_design(sketch), **self.ARGS, circles=[{"center": [0, 0], "diameter": 1}])
+        self.assertIs(payload["circles"][0]["whole"], False)
+        self.assertIn("cannot be threaded", payload["warnings"][0])
+
+    def test_existing_name_refused_before_a_sketch_exists(self):
+        design = fake_design(BuildSketch())
+        design.rootComponent.sketches.itemByName = lambda name: object()
+        design.rootComponent.sketches.add = lambda plane: self.fail("sketch created")
+        result, payload = self.run_tool(design, **self.ARGS, circles=[{"center": [0, 0], "diameter": 1}])
+        self.assertTrue(result["isError"])
+        self.assertIn("already exists", payload["problems"][0])
+
+
 class ChooseProfileTests(unittest.TestCase):
     def test_largest_and_containing(self):
         described = [{"index": 0, "area": 0.01, "contains_point": False},
@@ -434,6 +752,8 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["sketch_plane"]["enum"], ["xy", "xz", "yz"])
         self.assertFalse(schema["properties"]["arcs"]["items"]["additionalProperties"])
         self.assertEqual(schema["properties"]["points"]["items"]["items"], {"type": "number"})
+        self.assertFalse(schema["properties"]["circles"]["items"]["additionalProperties"])
+        self.assertEqual(schema["properties"]["circles"]["items"]["required"], ["center", "diameter"])
 
 
 if __name__ == "__main__":

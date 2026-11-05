@@ -873,6 +873,11 @@ TOOL_DEFINITIONS = [
             "has a zero-length segment, doubles back, encloses no area or (model space) leaves the plane. "
             "Returns sketch and profile entity tokens, warns when more than one profile results, and stores "
             "$sketch_profile_sketch / $sketch_profile_profile for follow-up calls. "
+            "circles: each circle in circles as one entity (never two arcs, whose extruded wall is two faces "
+            "and cannot be threaded), on sketch_plane or plane_entity_token. center is [x,y] in sketch space or, "
+            "with space 'model', [x,y,z] on the plane. Refused if two circles repeat, cross or touch; nested "
+            "circles are fine. Each entry of the result's circles has whole: true when a profile uses the "
+            "circle uncut, false when other sketch curves cut it, null when it bounds no profile. "
             "profiles: for a sketch by name (in component) or sketch_entity_token, list every profile with "
             "area, centroid (sketch space) and loop counts, the largest_profile, and with point the "
             "profile_containing it. Areas are in units squared. Profile tokens change when the sketch recomputes."
@@ -880,15 +885,15 @@ TOOL_DEFINITIONS = [
         "inputSchema": {
             "type": "object", "additionalProperties": False,
             "properties": {
-                "action": {"type": "string", "enum": ["closed_polyline", "profiles"]},
+                "action": {"type": "string", "enum": ["closed_polyline", "circles", "profiles"]},
                 "units": {"type": "string", "enum": ["in", "cm", "mm"],
                           "description": "Units of every coordinate in and out."},
                 "space": {"type": "string", "enum": ["sketch", "model"],
-                          "description": "Coordinate space of points/mid_point/point (default sketch)."},
+                          "description": "Coordinate space of points/mid_point/center/point (default sketch)."},
                 "sketch_plane": {"type": "string", "enum": ["xy", "xz", "yz"],
-                                 "description": "closed_polyline: construction plane of the component."},
+                                 "description": "closed_polyline, circles: construction plane of the component."},
                 "plane_entity_token": {"type": "string",
-                                       "description": "closed_polyline: construction plane or planar face token."},
+                                       "description": "closed_polyline, circles: construction plane or planar face token."},
                 "component": {"type": "string", "description": "Component name (default root)."},
                 "points": {"type": "array", "items": _COORD_SCHEMA,
                            "description": "closed_polyline: 2-500 outline vertices; the loop closes itself."},
@@ -904,8 +909,20 @@ TOOL_DEFINITIONS = [
                         "required": ["index"],
                     },
                 },
+                "circles": {
+                    "type": "array",
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {
+                            "center": _COORD_SCHEMA,
+                            "diameter": {"type": "number", "description": "Above zero."},
+                        },
+                        "required": ["center", "diameter"],
+                    },
+                    "description": "circles: 1-500 circles, drawn into one sketch.",
+                },
                 "name": {"type": "string",
-                         "description": "closed_polyline: new sketch name (must be unused). profiles: sketch to inspect."},
+                         "description": "closed_polyline, circles: new sketch name (must be unused). profiles: sketch to inspect."},
                 "sketch_entity_token": {"type": "string", "description": "profiles: sketch to inspect."},
                 "point": {**_COORD_SCHEMA, "description": "profiles: report which profile contains this point."},
             },
