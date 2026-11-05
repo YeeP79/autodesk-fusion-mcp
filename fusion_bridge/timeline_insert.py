@@ -37,7 +37,7 @@ import adsk.fusion
 
 from . import python_exec
 from .common.results import tool_result
-from .common.timeline import broken_refusal, marker_refusal, read_rows, timeline_of as _timeline_of
+from .common.timeline import broken_refusal, find_row, marker_refusal, read_rows, timeline_of as _timeline_of
 from .dispatch import get_app, log
 
 MAX_LISTED = 200
@@ -112,20 +112,12 @@ def _list(rows):
 
 def resolve_target(rows, name):
     """Return (position in rows, None), or (None, refusal text)."""
-    hits = [i for i, row in enumerate(rows) if row["name"] == name]
-    if not hits:
-        close = difflib.get_close_matches(name, [row["name"] for row in rows], n=5)
-        hint = f" Close matches: {close}." if close else ""
-        return None, f"No timeline item named {name!r}.{hint}"
-    if len(hits) > 1:
-        listed = "; ".join(
-            f"index {rows[i]['index']}, {rows[i].get('entity_type')}, component {rows[i].get('component')}"
-            for i in hits)
-        return None, (f"{len(hits)} timeline items are named {name!r} ({listed}). "
-                      "Rename one so the name is unique, then call again.")
-    row = rows[hits[0]]
+    position, refusal = find_row(rows, name)
+    if refusal:
+        return None, refusal
+    row = rows[position]
     if row["rollable"]:
-        return hits[0], None
+        return position, None
     if row["kind"] == "group":
         return None, (f"{name!r} is an expanded group, which Fusion cannot roll to. "
                       "Name the first item in it, or collapse the group.")

@@ -71,7 +71,7 @@ def from_cm(value, units, digits=DIGITS):
 
 def display_point(xyz_cm, units):
     """A cm point in *units*, as a list for a report."""
-    return [to_units(c, units) for c in xyz_cm]
+    return [to_units(c, units) + 0.0 for c in xyz_cm]
 
 
 def display_direction(vector):

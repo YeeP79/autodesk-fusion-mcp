@@ -1,5 +1,6 @@
 """Read the health of timeline items, list them, and check the marker."""
 
+import difflib
 from contextlib import contextmanager
 
 import adsk.fusion
@@ -110,6 +111,22 @@ def read_rows(timeline):
             rows.append(_row(child, child_index, group=name, rollable=in_slot))
             objects.append(child)
     return rows, objects
+
+
+def find_row(rows, name):
+    """Return (position in rows, None), or (None, refusal text): names are looked up, never guessed."""
+    hits = [i for i, row in enumerate(rows) if row["name"] == name]
+    if not hits:
+        close = difflib.get_close_matches(name, [row["name"] for row in rows], n=5)
+        hint = f" Close matches: {close}." if close else ""
+        return None, f"No timeline item named {name!r}.{hint}"
+    if len(hits) > 1:
+        listed = "; ".join(
+            f"index {rows[i]['index']}, {rows[i].get('entity_type')}, component {rows[i].get('component')}"
+            for i in hits)
+        return None, (f"{len(hits)} timeline items are named {name!r} ({listed}). "
+                      "Rename one so the name is unique, then call again.")
+    return hits[0], None
 
 
 def timeline_of(design):
