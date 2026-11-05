@@ -294,6 +294,24 @@ fusion_bridge/script_store.py -- script CRUD
 adsk.core / adsk.fusion     -- Fusion 360 SDK (main thread)
 ```
 
+## Shared code
+
+New tools must use `fusion_bridge/common/` instead of private copies of its helpers. A tool module holds what is specific to its tool; anything a second tool could want goes here.
+
+| Module | Holds |
+| --- | --- |
+| `results.py` | `ok_result`, `error_result`, `tool_result` |
+| `args.py` | Typed argument checks, unknown-key rejection, `error_pair` |
+| `api.py` | `safe`, `present`, `attempt` reads; `items` (skips what it cannot read) and `strict_items` (raises); both handle count/item collections and Fusion vectors |
+| `geometry.py` | Vector math, unit conversion |
+| `bodies.py` | Body enumeration, `bbox`, `native` |
+| `timeline.py` | Timeline health |
+| `documents.py` | Open documents, instances of a file, the event pump |
+| `cloud.py` | Cloud paths, projects, folders, files, the project tree walk |
+| `app_log.py` | Locating and scanning Fusion's log, the server's reason for a failed cloud write |
+
+`results`, `args`, `api`, `geometry`, `cloud` and `app_log` must not import `adsk` or `dispatch` (`tests/test_common.py` checks this). Tests import these modules as `from fusion_bridge.common import cloud`.
+
 ## Testing
 
 ### Unit tests

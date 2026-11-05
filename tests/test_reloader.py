@@ -113,6 +113,28 @@ class PurgeSelectionTests(unittest.TestCase):
             f"{ROOT}.fusion_bridge.dispatch",
         ])
 
+    def test_common_subpackage_is_purged_with_its_parent(self):
+        common = types.ModuleType(f"{ROOT}.fusion_bridge.common")
+        api = types.ModuleType(f"{ROOT}.fusion_bridge.common.api")
+        common.api = api
+        modules = {ROOT: types.ModuleType(ROOT),
+                   f"{ROOT}.fusion_bridge": types.ModuleType(f"{ROOT}.fusion_bridge"),
+                   common.__name__: common, api.__name__: api}
+        modules[f"{ROOT}.fusion_bridge"].common = common
+        names = reloader.select_purge(modules, ROOT, {ROOT})
+        self.assertEqual(names, [f"{ROOT}.fusion_bridge", common.__name__, api.__name__])
+        removed = reloader.purge(modules, names)
+        self.assertEqual(set(modules), {ROOT})
+        self.assertIs(removed[api.__name__], api)
+
+    def test_restore_brings_the_common_subpackage_back(self):
+        common = types.ModuleType(f"{ROOT}.fusion_bridge.common")
+        api = types.ModuleType(f"{ROOT}.fusion_bridge.common.api")
+        modules = {ROOT: types.ModuleType(ROOT), f"{ROOT}.fusion_bridge.common.api": types.ModuleType("half-imported")}
+        reloader.restore(modules, {common.__name__: common, api.__name__: api}, ROOT, {ROOT})
+        self.assertIs(modules[api.__name__], api)
+        self.assertIs(modules[common.__name__], common)
+
     def test_empty_root_selects_nothing(self):
         modules, _ = _fake_modules([])
         self.assertEqual(reloader.select_purge(modules, "", set()), [])
@@ -336,6 +358,22 @@ class BridgeInfoTests(unittest.TestCase):
         self.assertNotIn(f"{ROOT}x.other", rows)
         self.assertFalse(any(name.startswith(ROOT) for name in rows))
         self.assertNotIn("", rows)  # the root package is reported as `package`, not here
+
+    def test_loaded_modules_list_the_common_subpackage(self):
+        api = types.ModuleType(f"{ROOT}.fusion_bridge.common.api")
+        api.__file__ = "/addin/fusion_bridge/common/api.py"
+        rows = dict(bridge_info.loaded_modules({api.__name__: api}, ROOT, "/addin"))
+        self.assertEqual(rows, {"fusion_bridge.common.api": os.path.join("fusion_bridge", "common", "api.py")})
+
+    def test_changed_sources_see_the_common_subpackage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "fusion_bridge", "common"))
+            path = os.path.join(tmp, "fusion_bridge", "common", "api.py")
+            open(path, "w").close()
+            os.utime(path, (200, 200))
+            newest, changed = bridge_info.changed_sources(tmp, 100)
+        self.assertEqual(newest, 200)
+        self.assertEqual(changed, [os.path.join("fusion_bridge", "common", "api.py")])
 
     def test_loaded_modules_short_names_from_synthetic_root(self):
         root = "__main__%2FUsers%2Fme%2FAutodeskFusionMCP"
