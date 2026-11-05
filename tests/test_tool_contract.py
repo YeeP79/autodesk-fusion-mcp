@@ -58,6 +58,8 @@ class ToolSurfaceTests(unittest.TestCase):
         "close_document",
         "update_references",
         "probe_geometry",
+        "timeline_insert",
+        "compare_files",
     }
 
     def test_all_expected_tools_present(self):

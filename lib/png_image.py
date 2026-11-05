@@ -4,11 +4,23 @@ This intentionally handles the PNG format Fusion exports, not arbitrary image
 formats. Decode allocation is bounded and unsupported formats fail explicitly.
 """
 
+import collections
+import math
 import struct
 import zlib
 
 MAX_PIXELS = 16_777_216
 SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+# A file larger than raw/25 holds too much detail to be blank, so it skips the
+# pure-Python decode (which runs on Fusion's main thread).
+BLANK_MIN_COMPRESSION = 25
+# Channel difference (0-255) that counts as a different color, not dither.
+BLANK_TOLERANCE = 8
+# Share of pixels off the background at or below which an image reads as blank.
+# A lone marker dot is about 0.05% of an 800x600 capture.
+BLANK_MAX_COVERAGE = 0.002
+BLANK_SAMPLES = 100_000
 
 
 def _chunk(kind, data):
@@ -22,8 +34,8 @@ def _paeth(a, b, c):
     return a if pa <= pb and pa <= pc else b if pb <= pc else c
 
 
-def transform(png, crop=None, background=None):
-    """Return a PNG cropped in rendered pixels, optionally over an RGB tuple."""
+def _decode(png, crop=None, background=None):
+    """Return (color type, width, height, color chunks, unfiltered output rows)."""
     if not png.startswith(SIGNATURE):
         raise ValueError("Capture did not produce a PNG")
     position, header, compressed = 8, None, bytearray()
@@ -109,6 +121,51 @@ def transform(png, crop=None, background=None):
                     cropped[i + 3] = 255
             output.append(0)  # Emit unfiltered rows; zlib still compresses them.
             output.extend(cropped)
+    return color, out_width, out_height, color_chunks, output
+
+
+def transform(png, crop=None, background=None):
+    """Return a PNG cropped in rendered pixels, optionally over an RGB tuple."""
+    color, out_width, out_height, color_chunks, output = _decode(png, crop, background)
     header = struct.pack(">IIBBBBB", out_width, out_height, 8, color, 0, 0, 0)
     return (SIGNATURE + _chunk(b"IHDR", header) + color_chunks
             + _chunk(b"IDAT", zlib.compress(output)) + _chunk(b"IEND", b""))
+
+
+def _color_distance(a, b):
+    return max(abs(x - y) for x, y in zip(a, b))
+
+
+def blank_coverage(png):
+    """Return the share of pixels off the background if the image looks blank, else None.
+
+    The background is each row's most common color, so Fusion's vertical
+    gradient reads as blank; a jump between rows is an edge, so it does not.
+    Fully transparent pixels are one color whatever RGB they carry.
+    """
+    if not png.startswith(SIGNATURE) or len(png) < 33:
+        raise ValueError("Capture did not produce a PNG")
+    width, height = struct.unpack_from(">II", png, 16)
+    channels = 4 if png[25] == 6 else 3
+    if len(png) * BLANK_MIN_COMPRESSION > width * height * channels:
+        return None
+    _, width, height, _, rows = _decode(png)
+    stride = width * channels + 1
+    step = math.isqrt(width * height // BLANK_SAMPLES) + 1
+    sampled = off_background = 0
+    previous = None
+    for y in range(0, height, step):
+        start = y * stride + 1
+        counts = collections.Counter()
+        for i in range(start, start + width * channels, channels * step):
+            pixel = bytes(rows[i:i + channels])
+            counts[bytes(4) if channels == 4 and not pixel[3] else pixel] += 1
+        background = counts.most_common(1)[0][0]
+        if previous is not None and _color_distance(background, previous) > BLANK_TOLERANCE:
+            return None
+        previous = background
+        sampled += sum(counts.values())
+        off_background += sum(n for pixel, n in counts.items()
+                              if _color_distance(pixel, background) > BLANK_TOLERANCE)
+    coverage = off_background / sampled
+    return coverage if coverage <= BLANK_MAX_COVERAGE else None

@@ -248,6 +248,32 @@ restored after success or failure:
 {"width": 1600, "height": 1200, "view": "isometric", "fit": true, "background": "transparent"}
 ```
 
+Standard views assume Y-up, so `front` on a Z-up model shows its plan. For a
+view from a named side of the model, use `model_view` (top, bottom, front, back,
+left, right, iso) with `up_axis` `z` (default) or `y`. It frames the visible
+bodies in an orthographic view:
+
+```json
+{"model_view": "front", "up_axis": "z"}
+```
+
+For an exact view, pass `camera` in model coordinates. `units` is `in`, `cm`
+(default) or `mm`; `extents` is the radius around the target kept in view:
+
+```json
+{"camera": {"eye": {"x": 40, "y": -40, "z": 30}, "target": {"x": 0, "y": 0, "z": 10},
+            "up": {"x": 0, "y": 0, "z": 1}, "units": "in", "extents": 20, "projection": "orthographic"}}
+```
+
+`camera`, `model_view` and `view` are mutually exclusive, and `fit` does not
+combine with `camera` or `model_view`. Both are temporary, and both add a text
+item with the camera used, in cm, ready to pass to `set_viewport` as
+`{"camera": ...}` to keep that view.
+
+A nearly uniform image still succeeds but adds `warnings: ["image looks blank: ..."]`.
+The camera may be aimed away from the model, or the active document just changed;
+try `fit`.
+
 `background` accepts `viewport` (default), `transparent`, or `#RRGGBB`.
 `anti_aliasing` defaults to true. Width/height default to 800/600; a zero uses
 the corresponding current viewport dimension. Each explicit dimension is

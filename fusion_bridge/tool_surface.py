@@ -50,6 +50,8 @@ DIRECT_TOOL_NAMES = frozenset({FUSION_DIALOGS, TAIL_LOG, FUSION_STATUS})
 CLOSE_DOCUMENT = "close_document"
 UPDATE_REFERENCES = "update_references"
 PROBE_GEOMETRY = "probe_geometry"
+TIMELINE_INSERT = "timeline_insert"
+COMPARE_FILES = "compare_files"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -65,6 +67,20 @@ UNITS_SCHEMA = {"type": "string", "enum": ["in", "cm", "mm"],
 POINT_SCHEMA = {
     "type": "object", "properties": {axis: {"type": "number", "minimum": -1e12, "maximum": 1e12} for axis in ("x", "y", "z")},
     "required": ["x", "y", "z"], "additionalProperties": False,
+}
+MODEL_VIEWS = ["top", "bottom", "front", "back", "left", "right", "iso"]
+CAPTURE_CAMERA_SCHEMA = {
+    "type": "object",
+    "description": "Temporary camera in model coordinates. Excludes view, model_view and fit.",
+    "properties": {
+        "eye": POINT_SCHEMA, "target": POINT_SCHEMA,
+        "up": {**POINT_SCHEMA, "description": "Screen-up direction; a direction, so units do not apply."},
+        "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Units of eye, target and extents (default: cm)."},
+        "extents": {"type": "number", "minimum": 1e-9, "maximum": 1e12,
+                    "description": "Radius around target kept in view, across the image's smaller side. Omit to keep the current extents."},
+        "projection": {"type": "string", "enum": PROJECTIONS, "description": "Omit to keep the current projection."},
+    },
+    "required": ["eye", "target", "up"], "additionalProperties": False,
 }
 CAMERA_SCHEMA = {
     "type": "object",
@@ -191,7 +207,11 @@ TOOL_DEFINITIONS = [
     {
         "name": CAPTURE_VIEWPORT,
         "description": (
-            "Capture the active Fusion viewport as a PNG. Optional view and fit are temporary: "
+            "Capture the active Fusion viewport as a PNG. camera aims from model coordinates; model_view "
+            "frames the visible bodies from a named side of the model, honoring up_axis (standard views "
+            "assume Y-up, so a front view of a Z-up model shows its plan). Either adds a text item with the "
+            "camera used. A nearly uniform image adds a text item with warnings; the capture still succeeds. "
+            "Optional view, fit, camera and model_view are temporary: "
             "the original camera is restored even on failure. Background can be viewport, "
             "transparent, or #RRGGBB. Crop uses pixels in the rendered image, origin top-left. "
             "Returns only the cropped region when crop is provided; limit 16 megapixels. "
@@ -213,6 +233,10 @@ TOOL_DEFINITIONS = [
                     "description": "Rendered image height in pixels (default: 600; 0 uses viewport height)",
                 },
                 "view": {"type": "string", "enum": STANDARD_VIEWS, "description": "Temporary ViewCube-relative standard view; omit to keep current view."},
+                "camera": CAPTURE_CAMERA_SCHEMA,
+                "model_view": {"type": "string", "enum": MODEL_VIEWS,
+                               "description": "Temporary orthographic view framing the visible bodies. Excludes view, camera and fit."},
+                "up_axis": {"type": "string", "enum": ["z", "y"], "description": "Model up axis for model_view (default: z)."},
                 "fit": {"type": "boolean", "description": "Temporarily fit all graphics before capture (default: false)."},
                 "background": {"type": "string", "description": "viewport (default), transparent, or a solid #RRGGBB color."},
                 "anti_aliasing": {"type": "boolean", "description": "Smooth rendered edges (default: true)."},
@@ -1242,6 +1266,53 @@ TOOL_DEFINITIONS = [
             "required": ["action", "units"],
         },
     },
+    {
+        "name": TIMELINE_INSERT,
+        "description": (
+            "Run Python with the timeline marker rolled back before a named item, then restore it, so new "
+            "features land before that item (for example before a mirror, so the mirror picks them up). "
+            "dry_run defaults to true: it reports the item, the marker position and the items after it, and "
+            "runs nothing. Refuses when the name does not match exactly one item, the timeline has errors, "
+            "or the marker is not at the end. The marker is moved back to the end even when the code raises; "
+            "anything added before the failure stays. Reports items added, health counts before and after, "
+            "and which later items went to error. In the code, get objects fresh: those held from before "
+            "may be rolled back. Avoid editing existing features here: that can drop participant bodies. "
+            "Rolling back and restoring recomputes everything after the item, which takes time on a big design."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "before": {"type": "string",
+                           "description": "Timeline item name; new features land right before it."},
+                "code": {"type": "string",
+                         "description": "Python to run while rolled back, in the same environment as execute_python."},
+                "session_id": {"type": "string",
+                               "description": "execute_python session to run in. Omitted: an independent run."},
+                "dry_run": {"type": "boolean", "description": "Report only, run nothing (default true)."},
+            },
+            "required": ["before", "code"],
+        },
+    },
+    {
+        "name": COMPARE_FILES,
+        "description": (
+            "Compare two cloud design files: occurrence count, body count, total volume, component names and "
+            "timeline length. Each file is read in turn, reusing an open instance, and only files this call "
+            "opened are closed. Returns same plus a list of differences. Matching numbers are not proof of "
+            "identical geometry. Open a very large file first (open_document): the call must fit the 120 s "
+            "limit and a slow first file stops the second with complete=false."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "file_a": {"type": "string", "description": "DataFile id ('urn:...') or a path like 'Folder/File'."},
+                "file_b": {"type": "string", "description": "DataFile id ('urn:...') or a path like 'Folder/File'."},
+                "project": {"type": "string", "description": "Project name or id; required for paths."},
+                "project_b": {"type": "string", "description": "Project of file_b when it differs from 'project'."},
+            },
+            "required": ["file_a", "file_b"],
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -1293,6 +1364,8 @@ def build_tool_handlers(
     close_document,
     update_references,
     probe_geometry,
+    timeline_insert,
+    compare_files,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -1344,6 +1417,8 @@ def build_tool_handlers(
         CLOSE_DOCUMENT: close_document,
         UPDATE_REFERENCES: update_references,
         PROBE_GEOMETRY: probe_geometry,
+        TIMELINE_INSERT: timeline_insert,
+        COMPARE_FILES: compare_files,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
