@@ -252,6 +252,12 @@ class VectorTests(unittest.TestCase):
     def test_cross_is_right_handed(self):
         self.assertEqual(geometry.cross((1, 0, 0), (0, 1, 0)), (0, 0, 1))
 
+    def test_to_local_undoes_a_moved_and_turned_frame(self):
+        frame = ((10, 0, 0), (0, 1, 0), (-1, 0, 0), (0, 0, 1))  # A quarter turn about z, then +10 in x.
+        self.assertEqual(geometry.to_local((10, 2, 5), frame), (2, 0, 5))
+        self.assertEqual(geometry.to_local((9, 0, 0), frame), (0, 1, 0))
+        self.assertEqual(geometry.to_local((10, 0, 0), frame), (0, 0, 0))
+
     def test_unit(self):
         self.assertEqual(geometry.unit((0.0, 3.0, 4.0)), (0.0, 0.6, 0.8))
         self.assertIsNone(geometry.unit((0.0, 0.0, 0.0)))

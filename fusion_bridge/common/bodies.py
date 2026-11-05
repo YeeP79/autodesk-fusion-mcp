@@ -35,6 +35,12 @@ def iter_body_entries(root):
             }
 
 
+def find_occurrence(root, path):
+    """The occurrence whose ``fullPathName`` is *path*, or None."""
+    return next((occ for occ in strict_items(safe(root, "allOccurrences"))
+                 if safe(occ, "fullPathName") == path), None)
+
+
 def is_hidden(entry):
     """Hidden if the body is hidden or its owning occurrence is."""
     return entry["visible"] is False or entry["occurrence_visible"] is False

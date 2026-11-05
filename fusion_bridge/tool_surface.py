@@ -107,7 +107,7 @@ BODY_REF_SCHEMA = {
 }
 
 _COORD_SCHEMA = {"type": "array", "items": {"type": "number"},
-                 "description": "[x, y] in sketch space or [x, y, z] in model space."}
+                 "description": "[x, y] in sketch space or [x, y, z] in model or world space."}
 
 NUMBERS_SCHEMA = {"type": "array", "items": {"type": "number"}}
 
@@ -865,24 +865,27 @@ TOOL_DEFINITIONS = [
             "Build a closed sketch outline safely, or inspect a sketch's profiles. "
             "closed_polyline: on a new sketch on sketch_plane (xy|xz|yz of the component) or plane_entity_token, or "
             "added to the existing sketch at sketch_entity_token, so an outline and its holes share a sketch; "
-            "points are [x,y] in sketch space or, with space 'model', [x,y,z] in the component's model space "
-            "(mapped with Sketch.modelToSketchSpace; on XZ, sketch y is model -z). The loop closes itself; "
+            "points are [x,y] in sketch space, or [x,y,z] with space 'model' (the component's own frame, mapped with "
+            "Sketch.modelToSketchSpace; on XZ, sketch y is model -z) or space 'world' (the root assembly's frame). "
+            "Under a moved occurrence model is not world: world in a sub-component needs occurrence_path, the "
+            "instance to go through, and the result's world_points are read back from Fusion and refused if they "
+            "are not where asked. The loop closes itself; "
             "every curve shares SketchPoints with its neighbors, so moving a vertex keeps the profile closed. "
             "arcs replace segment i (points i -> i+1) with a 3-point arc via mid_point, or bulge "
             "(DXF tan(sweep/4), + = counterclockwise about the sketch normal, 1 = semicircle). "
             "The outline is refused before anything is created if it self-intersects, repeats a point, "
-            "has a zero-length segment, doubles back, encloses no area or (model space) leaves the plane. "
+            "has a zero-length segment, doubles back, encloses no area or (model or world space) leaves the plane. "
             "Returns sketch and profile entity tokens, warns when more than one profile results, and stores "
             "$sketch_profile_sketch / $sketch_profile_profile for follow-up calls. "
             "circles: each circle in circles as one entity (never two arcs, whose extruded wall is two faces "
-            "and cannot be threaded), on the same three targets. center is [x,y] in sketch space or, "
-            "with space 'model', [x,y,z] on the plane. Refused if two circles repeat, cross or touch; nested "
-            "circles are fine. Each entry of the result's circles has whole: true when a profile uses the "
+            "and cannot be threaded), on the same three targets. center is [x,y] in sketch space or [x,y,z] "
+            "on the plane with space 'model' or 'world'; world_center reads it back. Refused if two circles "
+            "repeat, cross or touch; nested circles are fine. Each entry of the result's circles has whole: true when a profile uses the "
             "circle uncut, false when other sketch curves cut it, null when it bounds no profile. "
             "Adding to a sketch: name and component are refused, added_to_existing and profile_count_before "
             "are reported, a failed build removes only what it drew, and a feature that already uses the "
             "sketch recomputes against its new profiles. "
-            "profiles: for a sketch by name (in component) or sketch_entity_token, list every profile with "
+            "profiles: for a sketch by name (in component or occurrence_path) or sketch_entity_token, list every profile with "
             "area, centroid (sketch space) and loop counts, the largest_profile, and with point the "
             "profile_containing it. Areas are in units squared. Profile tokens change when the sketch recomputes."
         ),
@@ -892,13 +895,18 @@ TOOL_DEFINITIONS = [
                 "action": {"type": "string", "enum": ["closed_polyline", "circles", "profiles"]},
                 "units": {"type": "string", "enum": ["in", "cm", "mm"],
                           "description": "Units of every coordinate in and out."},
-                "space": {"type": "string", "enum": ["sketch", "model"],
-                          "description": "Coordinate space of points/mid_point/center/point (default sketch)."},
+                "space": {"type": "string", "enum": ["sketch", "model", "world"],
+                          "description": "Coordinate space of points/mid_point/center/point (default sketch). "
+                                         "model is the component's frame; world the root assembly's."},
                 "sketch_plane": {"type": "string", "enum": ["xy", "xz", "yz"],
                                  "description": "closed_polyline, circles: construction plane of the component."},
                 "plane_entity_token": {"type": "string",
                                        "description": "closed_polyline, circles: construction plane or planar face token."},
                 "component": {"type": "string", "description": "Component name (default root)."},
+                "occurrence_path": {"type": "string",
+                                    "description": "Instance of the component, as list_bodies names it "
+                                                   "(e.g. 'Sub:1'); sets the component. Required for space world "
+                                                   "in a sub-component."},
                 "points": {"type": "array", "items": _COORD_SCHEMA,
                            "description": "closed_polyline: 2-500 outline vertices; the loop closes itself."},
                 "arcs": {
