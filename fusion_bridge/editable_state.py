@@ -34,6 +34,7 @@ import adsk.core
 
 from .common.api import safe, strict_items
 from .common.args import bool_arg, is_int, reject_unknown, text_arg
+from .common.cloud import ID_PREFIX, path_segments, resolve_path, resolve_project
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -41,7 +42,6 @@ COMMAND_IDS = {
     "read_only": "ActiveDocumentDeactivateCommand",
     "editable": "ActiveDocumentActivateCommand",
 }
-ID_PREFIX = "urn:"
 MAX_FILES = 10
 _ARGS = {"files", "project", "state", "dry_run"}
 
@@ -88,11 +88,6 @@ def validate_arguments(arguments):
     if not project and not all(spec.startswith(ID_PREFIX) for spec in files):
         raise ValueError(f"'project' is required for entries that are paths, not ids ('{ID_PREFIX}...')")
     return files, project.strip() if project else None, state, dry_run
-
-
-def path_segments(path):
-    """Split "Folder/Sub/File" into non-empty segments; the last is the file."""
-    return [part.strip() for part in path.replace("\\", "/").split("/") if part.strip()]
 
 
 def match_named(objects, name, label):
@@ -330,19 +325,14 @@ def _linked_file_ids(document):
 
 
 def _resolve_project(app, project):
-    projects = strict_items(app.data.dataProjects)
-    by_id = [p for p in projects if safe(p, "id") == project]
-    return by_id[0] if by_id else match_named(projects, project, "project")
+    return resolve_project(strict_items(app.data.dataProjects), project, match_named)
 
 
 def _resolve_path(project_obj, path):
     segments = path_segments(path)
     if not segments:
         raise LookupError(f"{path!r} does not name a file")
-    folder = project_obj.rootFolder
-    for segment in segments[:-1]:
-        folder = match_named(strict_items(folder.dataFolders), segment, "folder")
-    return match_named(strict_items(folder.dataFiles), segments[-1], "file")
+    return resolve_path(project_obj.rootFolder, segments, match_named)
 
 
 def _resolve_one(app, spec, project_obj):

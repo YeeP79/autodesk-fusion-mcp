@@ -2,7 +2,7 @@
 
 Every tool plans first and changes nothing unless ``dry_run`` is false. Planning,
 validation and the link check are Fusion-free (duck-typed over ``DataProject`` /
-``DataFolder`` / ``DataFile`` like ``data_tree``) so they can be tested with fakes.
+``DataFolder`` / ``DataFile`` like ``common.cloud``) so they can be tested with fakes.
 
 Rules this module enforces:
 
@@ -33,9 +33,11 @@ from functools import partial
 
 import adsk
 
-from . import data_tree, project_tree
+from . import project_tree
+from .common import cloud
 from .common.app_log import INTERNAL_ERROR, LOCKED_CODE, LOCKED_STATUS, ServerLog, current_log
 from .common.args import bool_arg, reject_unknown, require_object, text_arg
+from .common.cloud import Refusal, describe_file, problem, project_arg, resolve_file
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
@@ -44,7 +46,6 @@ _result = partial(tool_result, indent=1)
 
 MAX_FILES_PER_CALL = 50
 LINK_CHECK_MAX_FILES = 100
-ID_PREFIX = "urn:"
 _TEMP_SUFFIX = "__case_rename_tmp"
 # Live, a rename sent right after a rename was locked; one sent ~0.4 s after that worked.
 _STEP_SETTLE_S = 1.0
@@ -57,19 +58,7 @@ NOTES = [
 ]
 
 
-class Refusal(Exception):
-    """A planning problem; *problem* is a dict reported to the caller."""
-
-    def __init__(self, problem):
-        super().__init__(problem.get("message", ""))
-        self.problem = problem
-
-
 # -- Small helpers -----------------------------------------------------------
-
-
-def _problem(kind, message, **extra):
-    return dict({"problem": kind, "message": message}, **extra)
 
 
 def _wait(seconds):
@@ -111,10 +100,6 @@ def _file_key(name, extension):
     return (name.casefold(), (extension or "").casefold())
 
 
-def _describe(data_file, resolver):
-    return {"path": resolver.file_path(data_file), "version": data_file.versionNumber, "id": data_file.id}
-
-
 def validate_new_name(value, what):
     """Return the stripped name, or raise ValueError."""
     if not isinstance(value, str) or not value.strip():
@@ -129,65 +114,10 @@ def validate_new_name(value, what):
 
 def open_file_ids(documents):
     """Map dataFile id -> {document, visible} for every document open in Fusion."""
-    opened = {}
-    for doc in data_tree.items(documents):
-        try:
-            data_file = doc.dataFile
-        except Exception:  # unsaved documents have no data file; some raise instead
-            data_file = None
-        if data_file is None:
-            continue
-        opened[data_file.id] = {"document": doc.name, "visible": bool(getattr(doc, "isVisible", True))}
-    return opened
+    return cloud.open_file_ids(documents)[0]
 
 
 # -- Resolution --------------------------------------------------------------
-
-
-def resolve_file(project, spec, find_by_id, resolver):
-    """Resolve a file path or id inside *project*; raise Refusal when it is missing or ambiguous."""
-    if spec.startswith(ID_PREFIX):
-        try:
-            data_file = find_by_id(spec)
-        except Exception as exc:
-            raise Refusal(_problem("not_found", f"No file with id {spec!r}: {exc}", file=spec))
-        if data_file is None:
-            raise Refusal(_problem("not_found", f"No file with id {spec!r}", file=spec))
-        owner = data_file.parentProject
-        if owner is not None and owner.id != project.id:
-            raise Refusal(_problem(
-                "wrong_project", f"File {spec!r} is in project {owner.name!r}, not {project.name!r}", file=spec))
-        return data_file
-
-    try:
-        segments = data_tree.split_path(spec)
-    except ValueError as exc:
-        raise Refusal(_problem("bad_path", str(exc), file=spec))
-    if not segments:
-        raise Refusal(_problem("bad_path", "file path is empty", file=spec))
-    try:
-        folder, _ = data_tree.resolve_folder(project.rootFolder, segments[:-1])
-    except LookupError as exc:
-        raise Refusal(_problem("not_found", str(exc), file=spec))
-
-    wanted = segments[-1].casefold()
-    files = data_tree.items(folder.dataFiles)
-    matches = [f for f in files
-               if f.name.casefold() == wanted or f"{f.name}.{f.fileExtension}".casefold() == wanted]
-    if len(matches) == 1:
-        return matches[0]
-    if not matches:
-        names = sorted({f.name for f in files}, key=str.casefold)
-        raise Refusal(_problem(
-            "not_found",
-            f"No file {segments[-1]!r} in {resolver.folder_path(folder)!r}. Files: "
-            + (", ".join(repr(n) for n in names) or "(none)"),
-            file=spec))
-    raise Refusal(_problem(
-        "ambiguous",
-        f"{spec!r} matches {len(matches)} files (names are not unique); pass one of these ids instead",
-        file=spec,
-        candidates=[_describe(f, resolver) for f in sorted(matches, key=lambda f: f.id)]))
 
 
 def resolve_folder_prefix(root, segments):
@@ -198,10 +128,10 @@ def resolve_folder_prefix(root, segments):
     """
     folder, actual = root, []
     for i, seg in enumerate(segments):
-        _, folded = data_tree.match_name(data_tree.items(folder.dataFolders), seg)
+        _, folded = cloud.match_name(cloud.items(folder.dataFolders), seg)
         if not folded:
             return folder, actual, list(segments[i:])
-        folder = data_tree.find_child_folder(folder, seg)
+        folder = cloud.find_child_folder(folder, seg)
         actual.append(folder.name)
     return folder, actual, []
 
@@ -212,11 +142,11 @@ def collect_files(folder, cap):
     stack = [folder]
     while stack:
         current = stack.pop()
-        for data_file in data_tree.items(current.dataFiles):
+        for data_file in cloud.items(current.dataFiles):
             if len(found) >= cap:
                 return found, True
             found.append(data_file)
-        stack.extend(reversed(data_tree.items(current.dataFolders)))
+        stack.extend(reversed(cloud.items(current.dataFolders)))
     return found, False
 
 
@@ -232,8 +162,8 @@ def _link_entry(data_file, resolver):
     except Exception as exc:
         entry["error"] = f"{type(exc).__name__}: {exc}"
     try:
-        uses = data_tree.items(data_file.childReferences) if data_file.hasChildReferences else []
-        used_by = data_tree.items(data_file.parentReferences) if data_file.hasParentReferences else []
+        uses = cloud.items(data_file.childReferences) if data_file.hasChildReferences else []
+        used_by = cloud.items(data_file.parentReferences) if data_file.hasParentReferences else []
         entry["uses"] = sorted(r.id for r in uses)
         entry["used_by"] = sorted(r.id for r in used_by)
         linked = uses + used_by
@@ -359,7 +289,7 @@ def plan_move(project, specs, target_project, to_segments, *, create_missing, fi
             problems.append(refusal.problem)
             continue
         if data_file.id in seen:
-            problems.append(_problem("listed_twice", f"{spec!r} and {seen[data_file.id]!r} are the same file",
+            problems.append(problem("listed_twice", f"{spec!r} and {seen[data_file.id]!r} are the same file",
                                      file=spec, id=data_file.id))
             continue
         seen[data_file.id] = spec
@@ -369,15 +299,15 @@ def plan_move(project, specs, target_project, to_segments, *, create_missing, fi
     try:
         target, actual, missing = resolve_folder_prefix(target_project.rootFolder, to_segments)
     except LookupError as exc:
-        problems.append(_problem("target_ambiguous", str(exc)))
-    target_path = data_tree.join_path(target_project.name, *actual, *missing)
+        problems.append(problem("target_ambiguous", str(exc)))
+    target_path = cloud.join_path(target_project.name, *actual, *missing)
     if missing and not create_missing:
-        problems.append(_problem(
+        problems.append(problem(
             "target_missing",
             f"Folder {'/'.join(missing)!r} does not exist under "
-            f"{data_tree.join_path(target_project.name, *actual)!r}; pass create_missing=true to create it"))
+            f"{cloud.join_path(target_project.name, *actual)!r}; pass create_missing=true to create it"))
 
-    existing = data_tree.items(target.dataFiles) if target is not None and not missing else []
+    existing = cloud.items(target.dataFiles) if target is not None and not missing else []
     existing_by_key = {}
     for data_file in existing:
         existing_by_key.setdefault(_file_key(data_file.name, data_file.fileExtension), []).append(data_file)
@@ -387,32 +317,32 @@ def plan_move(project, specs, target_project, to_segments, *, create_missing, fi
     for data_file in files:
         source = resolver.file_path(data_file)
         entries.append({"id": data_file.id, "name": data_file.name, "version": data_file.versionNumber,
-                        "from": source, "to": data_tree.join_path(target_path, data_file.name)})
+                        "from": source, "to": cloud.join_path(target_path, data_file.name)})
         if data_file.id in open_ids:
-            problems.append(_problem("open_in_fusion",
+            problems.append(problem("open_in_fusion",
                                      f"{source!r} is open in Fusion; close it yourself and retry",
                                      id=data_file.id, **open_ids[data_file.id]))
         if target is not None and not missing and data_file.parentFolder.id == target.id:
-            problems.append(_problem("already_there", f"{source!r} is already in {target_path!r}", id=data_file.id))
+            problems.append(problem("already_there", f"{source!r} is already in {target_path!r}", id=data_file.id))
             continue
         key = _file_key(data_file.name, data_file.fileExtension)
         clashes = [f for f in existing_by_key.get(key, []) if f.id != data_file.id]
         if clashes:
-            problems.append(_problem(
+            problems.append(problem(
                 "name_collision",
                 f"{target_path!r} already has a file named {data_file.name!r} (names compare ignoring case)",
-                id=data_file.id, existing=[_describe(f, resolver) for f in clashes]))
+                id=data_file.id, existing=[describe_file(f, resolver) for f in clashes]))
         incoming.setdefault(key, []).append(data_file)
     for group in incoming.values():
         if len(group) > 1:
-            problems.append(_problem(
+            problems.append(problem(
                 "name_collision",
                 f"{len(group)} files named {group[0].name!r} would land in {target_path!r}",
-                files=[_describe(f, resolver) for f in group]))
+                files=[describe_file(f, resolver) for f in group]))
 
     plan = {
         "target_folder": target_path,
-        "folders_to_create": [data_tree.join_path(target_project.name, *actual, *missing[:i + 1])
+        "folders_to_create": [cloud.join_path(target_project.name, *actual, *missing[:i + 1])
                               for i in range(len(missing))],
         "moves": entries,
     }
@@ -460,15 +390,15 @@ def plan_folder_rename(folder, new_name, resolver):
     path = resolver.folder_path(folder)
     plan = {"folder": path, "id": folder.id, "from": folder.name, "to": new_name, "steps": []}
     if folder.isRoot:
-        return plan, [_problem("root_folder", "The project root folder cannot be renamed")]
+        return plan, [problem("root_folder", "The project root folder cannot be renamed")]
     if folder.name == new_name:
         plan["no_change"] = True
         return plan, problems
     parent = folder.parentFolder
-    siblings = [f for f in data_tree.items(parent.dataFolders) if f.id != folder.id]
+    siblings = [f for f in cloud.items(parent.dataFolders) if f.id != folder.id]
     clashes = [f for f in siblings if f.name.casefold() == new_name.casefold()]
     if clashes:
-        problems.append(_problem(
+        problems.append(problem(
             "name_collision",
             f"{resolver.folder_path(parent)!r} already has a folder named {clashes[0].name!r}; "
             "Fusion folder names are case-insensitive",
@@ -491,7 +421,7 @@ def plan_folder_rename(folder, new_name, resolver):
 def _refetch_folder(folder):
     """A fresh DataFolder from its parent, or *folder* if that cannot be read."""
     try:
-        for sibling in data_tree.items(folder.parentFolder.dataFolders):
+        for sibling in cloud.items(folder.parentFolder.dataFolders):
             if sibling.id == folder.id:
                 return sibling
     except Exception as exc:
@@ -577,23 +507,23 @@ def plan_file_rename(data_file, new_name, open_ids, resolver):
             "from": data_file.name, "to": new_name}
     ext = data_file.fileExtension or ""
     if ext and new_name.casefold().endswith("." + ext.casefold()):
-        problems.append(_problem("extension_in_name",
+        problems.append(problem("extension_in_name",
                                  f"Give the name without the .{ext} extension (Fusion keeps it separately)"))
     if data_file.id in open_ids:
-        problems.append(_problem("open_in_fusion", f"{path!r} is open in Fusion; close it yourself and retry",
+        problems.append(problem("open_in_fusion", f"{path!r} is open in Fusion; close it yourself and retry",
                                  id=data_file.id, **open_ids[data_file.id]))
     if data_file.name == new_name:
         plan["no_change"] = True
         return plan, problems
     key = _file_key(new_name, ext)
-    clashes = [f for f in data_tree.items(data_file.parentFolder.dataFiles)
+    clashes = [f for f in cloud.items(data_file.parentFolder.dataFiles)
                if f.id != data_file.id and _file_key(f.name, f.fileExtension) == key]
     if clashes:
-        problems.append(_problem(
+        problems.append(problem(
             "name_collision",
             f"{resolver.folder_path(data_file.parentFolder)!r} already has a file named {clashes[0].name!r} "
             "(names compare ignoring case)",
-            existing=[_describe(f, resolver) for f in clashes]))
+            existing=[describe_file(f, resolver) for f in clashes]))
     return plan, problems
 
 
@@ -616,13 +546,13 @@ def find_empty_folders(start, start_path, *, budget_s=None, clock=time.monotonic
         if deadline is not None and clock() >= deadline:
             state["complete"] = False
             return False
-        if level > data_tree.MAX_DEPTH:
+        if level > cloud.MAX_DEPTH:
             state["complete"] = False
             return False
-        has_files = bool(data_tree.items(folder.dataFiles))
+        has_files = bool(cloud.items(folder.dataFiles))
         all_empty = True
-        for sub in sorted(data_tree.items(folder.dataFolders), key=lambda f: (f.name.casefold(), f.id)):
-            if not visit(sub, data_tree.join_path(path, sub.name), level + 1):
+        for sub in sorted(cloud.items(folder.dataFolders), key=lambda f: (f.name.casefold(), f.id)):
+            if not visit(sub, cloud.join_path(path, sub.name), level + 1):
                 all_empty = False
         is_empty = not has_files and all_empty
         if is_empty and level > 0:
@@ -646,8 +576,8 @@ def execute_delete_folders(empty, server_log=None):
     for i, (folder, path) in enumerate(empty):
         offset = server_log.mark()
         try:
-            files = data_tree.items(folder.dataFiles)
-            remaining = [s for s in data_tree.items(folder.dataFolders) if s.id not in deleted_ids]
+            files = cloud.items(folder.dataFiles)
+            remaining = [s for s in cloud.items(folder.dataFolders) if s.id not in deleted_ids]
             if files or remaining:
                 failure = {"error": (f"no longer empty ({len(files)} files, {len(remaining)} subfolders); "
                                      "something changed since planning")}
@@ -675,15 +605,12 @@ REMOVE_EMPTY_ARGS = _COMMON_ARGS | {"folder"}
 def _check_common(arguments, known):
     require_object(arguments)
     reject_unknown(arguments, known)
-    project = arguments.get("project")
-    if not isinstance(project, str) or not project.strip():
-        raise ValueError("'project' must be a non-empty string (project name or id)")
-    return {"project": project.strip(), "dry_run": bool_arg(arguments, "dry_run", True)}
+    return {"project": project_arg(arguments), "dry_run": bool_arg(arguments, "dry_run", True)}
 
 
 def _folder_segments(value, what, required):
     try:
-        segments = data_tree.split_path(value)
+        segments = cloud.split_path(value)
     except ValueError as exc:
         raise ValueError(f"'{what}': {exc}")
     if required and not segments:
@@ -762,9 +689,9 @@ def _guarded(tool, validator, body):
         started = time.monotonic()
         try:
             app = get_app()
-            projects = data_tree.items(app.data.dataProjects)
+            projects = cloud.items(app.data.dataProjects)
             try:
-                project = data_tree.find_project(projects, options["project"])
+                project = cloud.find_project(projects, options["project"])
             except LookupError as exc:
                 return error_result(f"Error: {exc}")
             result = body(app, projects, project, options)
@@ -785,7 +712,7 @@ def _apply_with_link_check(primary, expected_ids, data, change, resolver):
     before, capped = link_snapshot(primary, resolver)
     held = {f.id: f for f in primary}
     outcome = change()
-    after = link_snapshot_after(list(before), _finder(data, held), data_tree.PathResolver())
+    after = link_snapshot_after(list(before), _finder(data, held), cloud.PathResolver())
     report = diff_links(before, after, expected_ids)
     if capped:
         report["capped_at"] = LINK_CHECK_MAX_FILES
@@ -805,10 +732,10 @@ def _move_body(app, projects, project, options):
     target_project = project
     if options["to_project"]:
         try:
-            target_project = data_tree.find_project(projects, options["to_project"])
+            target_project = cloud.find_project(projects, options["to_project"])
         except LookupError as exc:
             return error_result(f"Error: 'to_project': {exc}")
-    resolver = data_tree.PathResolver()
+    resolver = cloud.PathResolver()
     find = getattr(data, "findFileById", None)
     find_by_id = find if callable(find) else (lambda fid: None)
     plan, problems, (files, target, missing) = plan_move(
@@ -832,9 +759,9 @@ def _move_body(app, projects, project, options):
 
 
 def _rename_folder_body(app, projects, project, options):
-    resolver = data_tree.PathResolver()
+    resolver = cloud.PathResolver()
     try:
-        folder, _ = data_tree.resolve_folder(project.rootFolder, options["segments"])
+        folder, _ = cloud.resolve_folder(project.rootFolder, options["segments"])
     except LookupError as exc:
         return error_result(f"Error: {exc}")
     plan, problems = plan_folder_rename(folder, options["new_name"], resolver)
@@ -861,7 +788,7 @@ def _rename_folder_body(app, projects, project, options):
 
 def _rename_file_body(app, projects, project, options):
     data = app.data
-    resolver = data_tree.PathResolver()
+    resolver = cloud.PathResolver()
     find = getattr(data, "findFileById", None)
     try:
         data_file = resolve_file(project, options["file"], find if callable(find) else (lambda fid: None), resolver)
@@ -897,10 +824,10 @@ def _rename_file_body(app, projects, project, options):
 
 def _remove_empty_body(app, projects, project, options):
     try:
-        folder, actual = data_tree.resolve_folder(project.rootFolder, options["segments"])
+        folder, actual = cloud.resolve_folder(project.rootFolder, options["segments"])
     except LookupError as exc:
         return error_result(f"Error: {exc}")
-    start_path = data_tree.join_path(project.name, *actual)
+    start_path = cloud.join_path(project.name, *actual)
     empty, complete = find_empty_folders(folder, start_path, budget_s=project_tree.time_budget())
     plan = {"root": start_path, "empty_folders": [p for _, p in empty], "top_level": top_level_paths(empty),
             "walk_complete": complete}

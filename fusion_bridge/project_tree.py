@@ -1,6 +1,6 @@
 """Read-only listing of a Fusion cloud project as a folder/file tree.
 
-The walk and path logic live in ``data_tree`` (Fusion-free); this module
+The walk and path logic live in ``common.cloud`` (Fusion-free); this module
 validates arguments, finds the project in the active hub and formats the
 result. Cloud reads are slow, so the walk stops early on ``max_files`` or a
 time budget kept below the main-thread dispatch timeout, and says so.
@@ -10,7 +10,7 @@ import time
 import traceback
 
 from .. import settings
-from . import data_tree
+from .common import cloud
 from .common.args import bool_arg, error_pair, int_arg, reject_unknown, require_object, text_arg
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
@@ -42,11 +42,11 @@ def validate_arguments(arguments):
         raise ValueError("'project' is required unless 'list_projects' is true")
 
     try:
-        segments = data_tree.split_path(arguments.get("folder"))
+        segments = cloud.split_path(arguments.get("folder"))
     except ValueError as exc:
         raise ValueError(f"'folder': {exc}")
 
-    depth = int_arg(arguments, "depth", DEFAULT_DEPTH, 0, data_tree.MAX_DEPTH)
+    depth = int_arg(arguments, "depth", DEFAULT_DEPTH, 0, cloud.MAX_DEPTH)
     max_files = int_arg(arguments, "max_files", DEFAULT_MAX_FILES, 1, MAX_FILES_LIMIT)
     include_links = bool_arg(arguments, "include_links", True)
 
@@ -83,7 +83,7 @@ def project_tree(arguments):
     started = time.monotonic()
     try:
         data = get_app().data
-        projects = data_tree.items(data.dataProjects)
+        projects = cloud.items(data.dataProjects)
 
         if options["list_projects"]:
             listing = sorted(({"name": p.name, "id": p.id} for p in projects),
@@ -92,18 +92,18 @@ def project_tree(arguments):
                 "hub": _hub_info(data),
                 "projects": listing,
                 # Same-name projects can only be told apart by id.
-                "duplicate_project_names": data_tree.case_collisions([p["name"] for p in listing]),
+                "duplicate_project_names": cloud.case_collisions([p["name"] for p in listing]),
                 "elapsed_seconds": round(time.monotonic() - started, 2),
             }, indent=1)
 
         try:
-            project = data_tree.find_project(projects, options["project"])
-            folder, actual = data_tree.resolve_folder(project.rootFolder, options["segments"])
+            project = cloud.find_project(projects, options["project"])
+            folder, actual = cloud.resolve_folder(project.rootFolder, options["segments"])
         except LookupError as exc:
             return error_result(f"Error: {exc}")
 
-        start_path = data_tree.join_path(project.name, *actual)
-        tree, summary = data_tree.build_tree(
+        start_path = cloud.join_path(project.name, *actual)
+        tree, summary = cloud.build_tree(
             folder, start_path,
             depth=options["depth"],
             max_files=options["max_files"],

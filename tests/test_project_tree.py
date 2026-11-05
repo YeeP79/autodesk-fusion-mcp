@@ -7,7 +7,8 @@ from unittest import mock
 
 import _fusion_test_bootstrap  # noqa: F401  (installs adsk mock + parent pkg shim)
 
-from fusion_bridge import data_tree, project_tree, tool_surface
+from fusion_bridge import project_tree, tool_surface
+from fusion_bridge.common import cloud as data_tree
 
 
 # -- Fakes shaped like DataProject / DataFolder / DataFile -------------------

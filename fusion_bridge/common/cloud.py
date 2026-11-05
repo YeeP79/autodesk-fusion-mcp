@@ -20,6 +20,9 @@ Gotchas this module encodes:
 import time
 from datetime import datetime, timezone
 
+from .api import safe, strict_items
+
+ID_PREFIX = "urn:"
 MAX_DEPTH = 50
 _MAX_PARENT_HOPS = 64
 
@@ -38,17 +41,11 @@ FILE_TYPES = {
 
 
 def items(collection):
-    """Return the members of a Fusion collection (or any iterable) as a list."""
-    if collection is None:
-        return []
+    """Members of a cloud collection; ``asArray`` fetches them in one go where it exists."""
     as_array = getattr(collection, "asArray", None)
     if callable(as_array):
         return list(as_array())
-    count = getattr(collection, "count", None)
-    item = getattr(collection, "item", None)
-    if isinstance(count, int) and callable(item):
-        return [item(i) for i in range(count)]
-    return list(collection)
+    return strict_items(collection)
 
 
 def iso_utc(epoch_seconds):
@@ -69,20 +66,25 @@ def file_type(extension):
 # -- Path parsing and lookup -----------------------------------------------
 
 
-def split_path(path):
+def path_segments(path):
+    """Split "Folder/Sub/File" into non-empty segments; the last is the file."""
+    return [part.strip() for part in path.replace("\\", "/").split("/") if part.strip()]
+
+
+def split_path(path, what="folder path"):
     """Split a folder path ("a/b/c", "/a/b/", "") into segments.
 
     Raises ValueError for '.' / '..' segments, which Fusion has no notion of.
+    *what* names the path in those messages.
     """
     if path is None:
         return []
     if not isinstance(path, str):
-        raise ValueError("folder path must be a string")
-    segments = [s.strip() for s in path.replace("\\", "/").split("/")]
-    segments = [s for s in segments if s]
+        raise ValueError(f"{what} must be a string")
+    segments = path_segments(path)
     for seg in segments:
         if seg in (".", ".."):
-            raise ValueError(f"folder path may not contain {seg!r}")
+            raise ValueError(f"{what} may not contain {seg!r}")
     return segments
 
 
@@ -119,11 +121,16 @@ def find_project(projects, name_or_id):
     raise LookupError(f"Project name {name_or_id!r} is ambiguous; pass the project id instead: {listed}")
 
 
+class AmbiguousFolder(LookupError):
+    """Several sibling folders match one path segment."""
+
+
 def find_child_folder(parent, name):
     """Find the subfolder of *parent* named *name* (case-insensitive, like Fusion).
 
-    Returns the folder, or raises LookupError when it is missing or when
-    several siblings match (differing only by case, or true duplicates).
+    Returns the folder. Raises LookupError when it is missing and
+    AmbiguousFolder when several siblings match (differing only by case, or
+    true duplicates).
     """
     children = items(parent.dataFolders)
     exact, folded = match_name(children, name)
@@ -138,7 +145,7 @@ def find_child_folder(parent, name):
             + (", ".join(repr(n) for n in names) or "(none)")
         )
     listed = "; ".join(f"{c.name!r} id={c.id}" for c in folded)
-    raise LookupError(
+    raise AmbiguousFolder(
         f"Folder name {name!r} matches several folders in {parent.name!r} "
         f"(Fusion folder names are case-insensitive): {listed}"
     )
@@ -152,6 +159,20 @@ def resolve_folder(root, segments):
         folder = find_child_folder(folder, seg)
         actual.append(folder.name)
     return folder, actual
+
+
+def resolve_project(projects, wanted, match):
+    """The project with id *wanted*, else the one *match(projects, wanted, "project")* picks."""
+    by_id = [p for p in projects if safe(p, "id") == wanted]
+    return by_id[0] if by_id else match(projects, wanted, "project")
+
+
+def resolve_path(root, segments, match):
+    """The file at *segments* below *root*; *match(objects, name, label)* picks each step."""
+    folder = root
+    for segment in segments[:-1]:
+        folder = match(strict_items(folder.dataFolders), segment, "folder")
+    return match(strict_items(folder.dataFiles), segments[-1], "file")
 
 
 def case_collisions(names):
@@ -201,6 +222,100 @@ class PathResolver:
 
     def file_path(self, data_file):
         return join_path(self.folder_path(data_file.parentFolder), data_file.name)
+
+
+# -- Addressing files by path or id -----------------------------------------
+
+
+class Refusal(Exception):
+    """A planning problem; *problem* is a dict reported to the caller."""
+
+    def __init__(self, problem):
+        super().__init__(problem.get("message", ""))
+        self.problem = problem
+
+
+def problem(kind, message, **extra):
+    return dict({"problem": kind, "message": message}, **extra)
+
+
+def project_arg(arguments):
+    """The required 'project' argument, stripped; raises ValueError."""
+    project = arguments.get("project")
+    if not isinstance(project, str) or not project.strip():
+        raise ValueError("'project' must be a non-empty string (project name or id)")
+    return project.strip()
+
+
+def describe_file(data_file, resolver):
+    return {"path": resolver.file_path(data_file), "version": data_file.versionNumber, "id": data_file.id}
+
+
+def resolve_file(project, spec, find_by_id, resolver, describe=describe_file):
+    """Resolve a file path or id inside *project*; raise Refusal when it is missing or ambiguous.
+
+    *describe(data_file, resolver)* writes the candidate rows of an ambiguous path.
+    """
+    if spec.startswith(ID_PREFIX):
+        try:
+            data_file = find_by_id(spec)
+        except Exception as exc:
+            raise Refusal(problem("not_found", f"No file with id {spec!r}: {exc}", file=spec))
+        if data_file is None:
+            raise Refusal(problem("not_found", f"No file with id {spec!r}", file=spec))
+        owner = data_file.parentProject
+        if owner is not None and owner.id != project.id:
+            raise Refusal(problem(
+                "wrong_project", f"File {spec!r} is in project {owner.name!r}, not {project.name!r}", file=spec))
+        return data_file
+
+    try:
+        segments = split_path(spec, "path")
+    except ValueError as exc:
+        raise Refusal(problem("bad_path", str(exc), file=spec))
+    if not segments:
+        raise Refusal(problem("bad_path", "file path is empty", file=spec))
+    try:
+        folder, _ = resolve_folder(project.rootFolder, segments[:-1])
+    except AmbiguousFolder as exc:
+        raise Refusal(problem("ambiguous", str(exc), file=spec))
+    except LookupError as exc:
+        raise Refusal(problem("not_found", str(exc), file=spec))
+
+    wanted = segments[-1].casefold()
+    files = items(folder.dataFiles)
+    matches = [f for f in files
+               if f.name.casefold() == wanted or f"{f.name}.{f.fileExtension}".casefold() == wanted]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        names = sorted({f.name for f in files}, key=str.casefold)
+        raise Refusal(problem(
+            "not_found",
+            f"No file {segments[-1]!r} in {resolver.folder_path(folder)!r}. Files: "
+            + (", ".join(repr(n) for n in names) or "(none)"),
+            file=spec))
+    raise Refusal(problem(
+        "ambiguous",
+        f"{spec!r} matches {len(matches)} files (names are not unique); pass one of these ids instead",
+        file=spec,
+        candidates=[describe(f, resolver) for f in sorted(matches, key=lambda f: f.id)]))
+
+
+def open_file_ids(documents):
+    """Return ``(id -> {document, visible}, unreadable document names)`` for open documents.
+
+    Hidden documents count: opening a parent loads the files it links.
+    """
+    opened, unreadable = {}, []
+    for doc in items(documents):
+        try:
+            data_file = doc.dataFile
+            if data_file is not None:  # unsaved documents have no data file
+                opened[data_file.id] = {"document": doc.name, "visible": bool(getattr(doc, "isVisible", True))}
+        except Exception:
+            unreadable.append(getattr(doc, "name", "?"))
+    return opened, unreadable
 
 
 # -- Tree walk --------------------------------------------------------------

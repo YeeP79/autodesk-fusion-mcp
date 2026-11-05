@@ -20,7 +20,8 @@ from datetime import datetime, timedelta
 
 import adsk.core
 
-from .common.api import safe
+from .common import cloud
+from .common.api import safe, strict_items
 from .common.app_log import default_log_roots, entry_time, newest_log, read_tail_lines
 from .common.args import UNKNOWN_CAPITALIZED, int_or_none, is_int, is_number, reject_unknown, text_arg
 from .common.results import tool_result
@@ -344,7 +345,7 @@ def path_segments(path):
     """Split "Folder/Sub/File" into non-empty segments; the last is the file."""
     if not isinstance(path, str):
         raise ValueError("'path' must be a string like 'Folder/Sub/File name'")
-    segments = [part.strip() for part in path.replace("\\", "/").split("/") if part.strip()]
+    segments = cloud.path_segments(path)
     if not segments:
         raise ValueError("'path' must name a file, e.g. 'Folder/Sub/File name'")
     return segments
@@ -529,27 +530,14 @@ def save_document(arguments):
 # -- Fusion glue: open_document ----------------------------------------------
 
 
-def _find_project(app, project):
-    projects = app.data.dataProjects
-    items = [projects.item(i) for i in range(projects.count)]
-    by_id = [p for p in items if safe(p, "id") == project]
-    if by_id:
-        return by_id[0]
-    rows = [{"name": safe(p, "name"), "id": safe(p, "id"), "obj": p} for p in items]
-    return match_named(rows, project, "project")["obj"]
+def _match_object(objects, name, label):
+    rows = [{"name": safe(o, "name"), "ext": safe(o, "fileExtension"), "id": safe(o, "id"), "obj": o} for o in objects]
+    return match_named(rows, name, label)["obj"]
 
 
 def _resolve_path(app, project, segments):
-    folder = _find_project(app, project).rootFolder
-    for segment in segments[:-1]:
-        subfolders = folder.dataFolders
-        rows = [{"name": safe(f, "name"), "id": safe(f, "id"), "obj": f}
-                for f in (subfolders.item(i) for i in range(subfolders.count))]
-        folder = match_named(rows, segment, "folder")["obj"]
-    files = folder.dataFiles
-    rows = [{"name": safe(f, "name"), "ext": safe(f, "fileExtension"), "id": safe(f, "id"), "obj": f}
-            for f in (files.item(i) for i in range(files.count))]
-    return match_named(rows, segments[-1], "file")["obj"]
+    found = cloud.resolve_project(strict_items(app.data.dataProjects), project, _match_object)
+    return cloud.resolve_path(found.rootFolder, segments, _match_object)
 
 
 def _version_file(data_file, version):

@@ -11,11 +11,11 @@ Decision logic (argument validation, refusal messages, list formatting) is
 kept in plain functions over dicts so it is testable without Fusion.
 """
 
-import datetime
 import traceback
 
 from .common.api import attempt
 from .common.args import UNKNOWN_CAPITALIZED, is_int, reject_unknown, require_object
+from .common.cloud import iso_utc
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -52,16 +52,6 @@ def validate_restore_args(arguments):
     if type(discard) is not bool:
         raise ValueError("'discard_unsaved' must be boolean")
     return number, confirm, discard
-
-
-def iso_date(epoch_seconds):
-    """UNIX epoch seconds to an ISO 8601 UTC string; None for missing/zero."""
-    if not isinstance(epoch_seconds, (int, float)) or isinstance(epoch_seconds, bool) or epoch_seconds <= 0:
-        return None
-    try:
-        return datetime.datetime.fromtimestamp(epoch_seconds, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-    except (OverflowError, OSError, ValueError):
-        return None
 
 
 def format_version_list(document_name, records, loaded_number, latest_number, limit):
@@ -203,7 +193,7 @@ def _version_record(data_file):
     creator = _user_name(attempt(lambda: data_file.createdBy)) or _user_name(attempt(lambda: data_file.lastUpdatedBy))
     return {
         "version_number": attempt(lambda: data_file.versionNumber),
-        "date_created": iso_date(attempt(lambda: data_file.dateCreated)),
+        "date_created": iso_utc(attempt(lambda: data_file.dateCreated)),
         "description": attempt(lambda: data_file.description) or None,
         "milestone": milestone,
         "created_by": creator,

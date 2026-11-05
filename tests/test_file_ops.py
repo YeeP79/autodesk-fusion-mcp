@@ -11,7 +11,8 @@ import _fusion_test_bootstrap  # noqa: F401  (installs adsk mock + parent pkg sh
 
 import adsk
 
-from fusion_bridge import data_tree, file_ops, tool_surface
+from fusion_bridge import file_ops, tool_surface
+from fusion_bridge.common import cloud as data_tree
 from fusion_bridge.common.app_log import ServerLog
 
 OPAQUE = "2 : InternalValidationError : res"
@@ -679,15 +680,15 @@ class FolderRenameTests(unittest.TestCase):
         fresh = mock.Mock(id=self.drive.id)
         fresh.name = "x"
         parent = self.drive.parentFolder
-        with mock.patch.object(file_ops.data_tree, "items", return_value=[fresh]):
+        with mock.patch.object(file_ops.cloud, "items", return_value=[fresh]):
             self.assertIs(file_ops._refetch_folder(self.drive), fresh)
         self.assertIs(parent, self.drive.parentFolder)
 
     def test_refetch_falls_back_to_the_held_folder(self):
-        with mock.patch.object(file_ops.data_tree, "items", side_effect=RuntimeError("offline")), \
+        with mock.patch.object(file_ops.cloud, "items", side_effect=RuntimeError("offline")), \
                 mock.patch.object(file_ops, "log"):
             self.assertIs(file_ops._refetch_folder(self.drive), self.drive)
-        with mock.patch.object(file_ops.data_tree, "items", return_value=[]):
+        with mock.patch.object(file_ops.cloud, "items", return_value=[]):
             self.assertIs(file_ops._refetch_folder(self.drive), self.drive)
 
     def test_no_change_and_root(self):

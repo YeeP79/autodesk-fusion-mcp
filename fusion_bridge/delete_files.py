@@ -30,11 +30,15 @@ import time
 import traceback
 from functools import partial
 
-from .. import settings
+from . import project_tree
 from .common.app_log import (
     LOG_POLLS, ServerLog, default_log_roots, failure_reason, newest_log, parse_requests, poll_reason
 )
 from .common.args import bool_arg, reject_unknown, require_object
+from .common.cloud import (
+    AmbiguousFolder, PathResolver, Refusal, find_project, items, open_file_ids, problem,
+    project_arg, resolve_file, resolve_folder, split_path
+)
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
@@ -42,12 +46,6 @@ from .dispatch import get_app, log
 _result = partial(tool_result, indent=1)
 
 MAX_FILES_PER_CALL = 200
-ID_PREFIX = "urn:"
-_MAX_PARENT_HOPS = 64
-# Leave headroom under the dispatcher's main-thread timeout so a long run
-# reports what it did instead of a "may still be executing" timeout.
-_BUDGET_MARGIN_S = 20.0
-_MIN_BUDGET_S = 10.0
 
 _KNOWN_ARGS = {"project", "files", "folder", "include_empty_folder", "dry_run", "confirm"}
 _DELETE_ENTRY = re.compile(r"^POST (\d{3}) (\S*/lineages/delete)\b(.*)$")
@@ -72,109 +70,6 @@ NOTES = [
 # -- Collections and lookup (duck-typed) -------------------------------------
 
 
-def items(collection):
-    """Members of a Fusion collection; vectors iterate but have no count/item."""
-    if collection is None:
-        return []
-    as_array = getattr(collection, "asArray", None)
-    if callable(as_array):
-        return list(as_array())
-    count = getattr(collection, "count", None)
-    item = getattr(collection, "item", None)
-    if isinstance(count, int) and callable(item):
-        return [item(i) for i in range(count)]
-    return list(collection)
-
-
-def split_path(path):
-    """Split "a/b/c" into segments; raise ValueError for '.' and '..'."""
-    if not isinstance(path, str):
-        raise ValueError("path must be a string")
-    segments = [s.strip() for s in path.replace("\\", "/").split("/")]
-    segments = [s for s in segments if s]
-    for seg in segments:
-        if seg in (".", ".."):
-            raise ValueError(f"path may not contain {seg!r}")
-    return segments
-
-
-def find_project(projects, name_or_id):
-    """Pick one project by id, exact name, then case-insensitive name; raise LookupError otherwise."""
-    by_id = [p for p in projects if p.id == name_or_id]
-    if by_id:
-        return by_id[0]
-    exact = [p for p in projects if p.name == name_or_id]
-    candidates = exact or [p for p in projects if p.name.casefold() == name_or_id.casefold()]
-    if len(candidates) == 1:
-        return candidates[0]
-    if not candidates:
-        names = ", ".join(repr(n) for n in sorted({p.name for p in projects}, key=str.casefold))
-        raise LookupError(f"No project named {name_or_id!r} in the active hub. Projects: {names}")
-    listed = "; ".join(f"{p.name!r} id={p.id}" for p in candidates)
-    raise LookupError(f"Project name {name_or_id!r} is ambiguous; pass the project id instead: {listed}")
-
-
-class AmbiguousFolder(LookupError):
-    """Several sibling folders match one path segment."""
-
-
-def resolve_folder(root, segments):
-    """Walk *segments* down from *root*, matching names case-insensitively like Fusion."""
-    folder = root
-    for seg in segments:
-        children = items(folder.dataFolders)
-        matches = [c for c in children if c.name.casefold() == seg.casefold()]
-        exact = [c for c in matches if c.name == seg]
-        if len(exact) == 1:
-            matches = exact
-        if not matches:
-            names = ", ".join(repr(c.name) for c in children) or "(none)"
-            raise LookupError(f"No folder {seg!r} in {folder.name!r}. Subfolders: {names}")
-        if len(matches) > 1:
-            listed = "; ".join(f"{c.name!r} id={c.id}" for c in matches)
-            raise AmbiguousFolder(f"Folder name {seg!r} matches several folders in {folder.name!r}: {listed}")
-        folder = matches[0]
-    return folder
-
-
-class PathResolver:
-    """Resolve "Project/folder/name" paths, cached by folder id."""
-
-    def __init__(self):
-        self._folders = {}
-
-    def folder_path(self, folder):
-        chain = []
-        current = folder
-        prefix = None
-        for _ in range(_MAX_PARENT_HOPS):
-            if current is None:
-                break
-            cached = self._folders.get(current.id)
-            if cached is not None:
-                prefix = cached
-                break
-            if current.isRoot:
-                project = current.parentProject
-                prefix = project.name if project is not None else current.name
-                self._folders[current.id] = prefix
-                break
-            chain.append(current)
-            current = current.parentFolder
-        path = prefix or "?"
-        for f in reversed(chain):
-            path = f"{path}/{f.name}"
-            self._folders[f.id] = path
-        return path
-
-    def file_path(self, data_file):
-        return f"{self.folder_path(data_file.parentFolder)}/{data_file.name}"
-
-
-def _problem(kind, message, **extra):
-    return dict({"problem": kind, "message": message}, **extra)
-
-
 def _safe_path(data_file, resolver):
     """A linked file can sit anywhere, even somewhere unreadable; its id still identifies it."""
     try:
@@ -187,63 +82,8 @@ def _describe(data_file, resolver):
     return {"path": _safe_path(data_file, resolver), "id": data_file.id}
 
 
-def resolve_file(project, spec, find_by_id, resolver):
-    """Return ``(data_file, None)``, or ``(None, problem)`` when *spec* is missing or ambiguous."""
-    if spec.startswith(ID_PREFIX):
-        try:
-            data_file = find_by_id(spec)
-        except Exception as exc:
-            return None, _problem("not_found", f"No file with id {spec!r}: {exc}", file=spec)
-        if data_file is None:
-            return None, _problem("not_found", f"No file with id {spec!r}", file=spec)
-        owner = data_file.parentProject
-        if owner is not None and owner.id != project.id:
-            return None, _problem(
-                "wrong_project", f"File {spec!r} is in project {owner.name!r}, not {project.name!r}", file=spec)
-        return data_file, None
-
-    try:
-        segments = split_path(spec)
-    except ValueError as exc:
-        return None, _problem("bad_path", str(exc), file=spec)
-    if not segments:
-        return None, _problem("bad_path", "file path is empty", file=spec)
-    try:
-        folder = resolve_folder(project.rootFolder, segments[:-1])
-    except AmbiguousFolder as exc:
-        return None, _problem("ambiguous", str(exc), file=spec)
-    except LookupError as exc:
-        return None, _problem("not_found", str(exc), file=spec)
-
-    wanted = segments[-1].casefold()
-    files = items(folder.dataFiles)
-    matches = [f for f in files
-               if f.name.casefold() == wanted or f"{f.name}.{f.fileExtension}".casefold() == wanted]
-    if len(matches) == 1:
-        return matches[0], None
-    if not matches:
-        names = ", ".join(sorted({repr(f.name) for f in files}, key=str.casefold)) or "(none)"
-        return None, _problem("not_found", f"No file {segments[-1]!r} in {folder.name!r}. Files: {names}", file=spec)
-    candidates = [dict(_describe(f, resolver), version=f.versionNumber) for f in sorted(matches, key=lambda f: f.id)]
-    return None, _problem(
-        "ambiguous", f"{spec!r} matches {len(matches)} files (names are not unique); pass one of these ids instead",
-        file=spec, candidates=candidates)
-
-
-def open_file_ids(documents):
-    """Return ``(id -> {document, visible}, unreadable document names)`` for open documents.
-
-    Hidden documents count: opening a parent loads the files it links.
-    """
-    opened, unreadable = {}, []
-    for doc in items(documents):
-        try:
-            data_file = doc.dataFile
-            if data_file is not None:  # unsaved documents have no data file
-                opened[data_file.id] = {"document": doc.name, "visible": bool(getattr(doc, "isVisible", True))}
-        except Exception:
-            unreadable.append(getattr(doc, "name", "?"))
-    return opened, unreadable
+def _candidate(data_file, resolver):
+    return dict(_describe(data_file, resolver), version=data_file.versionNumber)
 
 
 def parents_of(data_file):
@@ -324,9 +164,10 @@ def plan_delete(project, specs, folder, *, find_by_id, open_ids, resolver, out_o
     targets = {}
     from_files, from_folder = set(), set()
     for spec in specs:
-        data_file, problem = resolve_file(project, spec, find_by_id, resolver)
-        if problem:
-            problems.append(problem)
+        try:
+            data_file = resolve_file(project, spec, find_by_id, resolver, _candidate)
+        except Refusal as refusal:
+            problems.append(refusal.problem)
             continue
         targets.setdefault(data_file.id, data_file)
         from_files.add(data_file.id)
@@ -342,14 +183,14 @@ def plan_delete(project, specs, folder, *, find_by_id, open_ids, resolver, out_o
     outside = []
     for fid, data_file in targets.items():
         if out_of_time():
-            problems.append(_problem(
+            problems.append(problem(
                 "time_budget", "Ran out of time reading links, so the plan is incomplete. "
                 "Name fewer files per call."))
             break
         try:
             refs = parents_of(data_file)
         except Exception as exc:
-            problems.append(_problem(
+            problems.append(problem(
                 "links_unreadable", f"Could not read what links this file: {type(exc).__name__}: {exc}",
                 **_describe(data_file, resolver)))
             continue
@@ -358,13 +199,13 @@ def plan_delete(project, specs, folder, *, find_by_id, open_ids, resolver, out_o
         if linkers:
             outside.append(dict(_describe(data_file, resolver), linked_from=linkers))
     for row in outside:
-        problems.append(_problem(
+        problems.append(problem(
             "linked_from_outside", "Files outside this set link this file; add them to the set or remove the links.",
             **row))
 
     for fid, data_file in targets.items():
         if fid in open_ids:
-            problems.append(_problem(
+            problems.append(problem(
                 "open_in_fusion", "This file is open in Fusion (hidden documents count); close it first.",
                 **_describe(data_file, resolver), **open_ids[fid]))
 
@@ -517,9 +358,7 @@ def validate_arguments(arguments):
     """Return the options, or raise ValueError. Touches nothing in Fusion."""
     require_object(arguments)
     reject_unknown(arguments, _KNOWN_ARGS)
-    project = arguments.get("project")
-    if not isinstance(project, str) or not project.strip():
-        raise ValueError("'project' must be a non-empty string (project name or id)")
+    project = project_arg(arguments)
 
     flags = {name: bool_arg(arguments, name, default)
              for name, default in (("dry_run", True), ("confirm", False), ("include_empty_folder", False))}
@@ -537,7 +376,7 @@ def validate_arguments(arguments):
     if folder is not None:
         if not isinstance(folder, str):
             raise ValueError("'folder' must be a folder path")
-        segments = split_path(folder)
+        segments = split_path(folder, "path")
         if not segments:
             raise ValueError("'folder' must name a folder inside the project; the project root is not accepted "
                              "(projects cannot be deleted: DataProject has no delete in the Fusion API)")
@@ -547,11 +386,7 @@ def validate_arguments(arguments):
         raise ValueError("'include_empty_folder' needs 'folder'")
     if not flags["dry_run"] and not flags["confirm"]:
         raise ValueError("'confirm' must be true when 'dry_run' is false: this permanently deletes files")
-    return dict(flags, project=project.strip(), files=[f.strip() for f in files], segments=segments)
-
-
-def _time_budget():
-    return max(_MIN_BUDGET_S, settings.MCP_MAIN_THREAD_TIMEOUT - _BUDGET_MARGIN_S)
+    return dict(flags, project=project, files=[f.strip() for f in files], segments=segments)
 
 
 def _run(app, options, out_of_time):
@@ -566,13 +401,13 @@ def _run(app, options, out_of_time):
     folder = None
     if options["segments"] is not None:
         try:
-            folder = resolve_folder(project.rootFolder, options["segments"])
+            folder, _ = resolve_folder(project.rootFolder, options["segments"])
         except AmbiguousFolder as exc:
-            problem = _problem("ambiguous", str(exc), folder="/".join(options["segments"]))
-            return _result(dict(base, refused=True, changed=False, problems=[problem]), True)
+            refused = problem("ambiguous", str(exc), folder="/".join(options["segments"]))
+            return _result(dict(base, refused=True, changed=False, problems=[refused]), True)
         except LookupError as exc:
-            problem = _problem("not_found", str(exc), folder="/".join(options["segments"]))
-            return _result(dict(base, refused=True, changed=False, problems=[problem]), True)
+            refused = problem("not_found", str(exc), folder="/".join(options["segments"]))
+            return _result(dict(base, refused=True, changed=False, problems=[refused]), True)
 
     opened, unreadable = open_file_ids(app.documents)
     plan, problems, work = plan_delete(project, options["files"], folder, find_by_id=data.findFileById,
@@ -608,7 +443,7 @@ def delete_files(arguments):
     except ValueError as exc:
         return error_result(f"Error: {exc}")
     started = time.monotonic()
-    deadline = started + _time_budget()
+    deadline = started + project_tree.time_budget()
     try:
         result = _run(get_app(), options, lambda: time.monotonic() >= deadline)
         log(f"[MCP] delete_files in {options['project']!r} (dry_run={options['dry_run']}) "

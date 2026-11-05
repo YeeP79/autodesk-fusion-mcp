@@ -8,7 +8,7 @@ from datetime import datetime
 from unittest import mock
 
 import _fusion_test_bootstrap  # noqa: F401
-from fusion_bridge.common import api, app_log, args, bodies, geometry, results, timeline
+from fusion_bridge.common import api, app_log, args, bodies, cloud, geometry, results, timeline
 
 
 class ResultsTests(unittest.TestCase):
@@ -513,6 +513,165 @@ class BodyEntryTests(unittest.TestCase):
 
         target = Falsy()
         self.assertIs(bodies.native(Fake(nativeObject=target)), target)
+
+
+def fake_file(name, file_id, extension="f3d", version=1):
+    return Fake(name=name, id=file_id, fileExtension=extension, versionNumber=version, parentProject=None)
+
+
+def fake_folder(name, folder_id="f", files=(), folders=(), is_root=False):
+    folder = Fake(name=name, id=folder_id, dataFiles=Indexed(list(files)), dataFolders=Indexed(list(folders)),
+                  isRoot=is_root, parentProject=None, parentFolder=None)
+    for child in folders:
+        child.parentFolder = folder
+    for child in files:
+        child.parentFolder = folder
+    return folder
+
+
+def pick_first_named(objects, name, label):
+    return [o for o in objects if o.name == name][0]
+
+
+class CloudTests(unittest.TestCase):
+    def test_items_prefers_as_array(self):
+        class Listing(Indexed):
+            def asArray(self):
+                return ["from array"]
+
+        self.assertEqual(cloud.items(Listing(["from item"])), ["from array"])
+
+    def test_items_without_as_array(self):
+        self.assertEqual(cloud.items(Indexed([1])), [1])
+        self.assertEqual(cloud.items(Vector([1])), [1])
+        self.assertEqual(cloud.items(None), [])
+
+    def test_path_segments(self):
+        self.assertEqual(cloud.path_segments(" a / b\\c// "), ["a", "b", "c"])
+        self.assertEqual(cloud.path_segments("/"), [])
+
+    def test_split_path_names_what_it_read(self):
+        self.assertEqual(cloud.split_path(None), [])
+        with self.assertRaisesRegex(ValueError, "^folder path may not contain '..'"):
+            cloud.split_path("a/..")
+        with self.assertRaisesRegex(ValueError, "^path may not contain '.'"):
+            cloud.split_path("a/.", "path")
+        with self.assertRaisesRegex(ValueError, "^path must be a string"):
+            cloud.split_path(3, "path")
+
+    def test_ambiguous_folder_is_a_lookup_error(self):
+        root = fake_folder("root", folders=[fake_folder("Tubes", "1"), fake_folder("tubes", "2")])
+        with self.assertRaises(cloud.AmbiguousFolder):
+            cloud.find_child_folder(root, "TUBES")
+        with self.assertRaises(LookupError):
+            cloud.find_child_folder(root, "TUBES")
+
+    def test_missing_folder_is_not_ambiguous(self):
+        with self.assertRaises(LookupError) as caught:
+            cloud.find_child_folder(fake_folder("root"), "Nope")
+        self.assertNotIsInstance(caught.exception, cloud.AmbiguousFolder)
+
+    def test_resolve_project_by_id_then_match(self):
+        projects = [Fake(id="1", name="A"), Fake(id="2", name="1")]
+        self.assertEqual(cloud.resolve_project(projects, "1", pick_first_named).name, "A")
+        self.assertEqual(cloud.resolve_project(projects, "A", pick_first_named).id, "1")
+
+    def test_resolve_project_survives_an_unreadable_id(self):
+        project = Raises()
+        project.name = "A"
+        self.assertIs(cloud.resolve_project([project], "A", pick_first_named), project)
+
+    def test_resolve_path_walks_folders_then_the_file(self):
+        target = fake_file("Knuckle", "urn:k")
+        root = fake_folder("root", folders=[fake_folder("Sub", "1", files=[target])])
+        self.assertIs(cloud.resolve_path(root, ["Sub", "Knuckle"], pick_first_named), target)
+
+    def test_project_arg(self):
+        self.assertEqual(cloud.project_arg({"project": " Car "}), "Car")
+        for bad in ({}, {"project": ""}, {"project": 3}):
+            with self.assertRaisesRegex(ValueError, r"^'project' must be a non-empty string \(project name or id\)$"):
+                cloud.project_arg(bad)
+
+    def test_problem(self):
+        self.assertEqual(cloud.problem("x", "why", file="f"), {"problem": "x", "message": "why", "file": "f"})
+
+
+class ResolveFileTests(unittest.TestCase):
+    def setUp(self):
+        self.knuckle = fake_file("Knuckle", "urn:1")
+        self.twin = fake_file("Knuckle", "urn:2", "f2d")
+        self.root = fake_folder("root", "r", files=[self.knuckle, self.twin, fake_file("Arm", "urn:3")], is_root=True)
+        self.root.parentProject = Fake(id="p", name="Car")
+        self.project = Fake(id="p", name="Car", rootFolder=self.root)
+        self.resolver = cloud.PathResolver()
+
+    def resolve(self, spec, **kwargs):
+        return cloud.resolve_file(self.project, spec, lambda file_id: None, self.resolver, **kwargs)
+
+    def refusal(self, spec, **kwargs):
+        with self.assertRaises(cloud.Refusal) as caught:
+            self.resolve(spec, **kwargs)
+        return caught.exception.problem
+
+    def test_by_path_is_case_insensitive(self):
+        self.assertEqual(self.resolve("ARM").id, "urn:3")
+
+    def test_by_path_with_extension(self):
+        self.assertEqual(self.resolve("Knuckle.f2d").id, "urn:2")
+
+    def test_ambiguous_lists_candidates(self):
+        found = self.refusal("Knuckle")
+        self.assertEqual(found["problem"], "ambiguous")
+        self.assertEqual(found["candidates"][0], {"path": "Car/Knuckle", "version": 1, "id": "urn:1"})
+
+    def test_candidates_use_the_callers_rows(self):
+        found = self.refusal("Knuckle", describe=lambda data_file, resolver: data_file.id)
+        self.assertEqual(found["candidates"], ["urn:1", "urn:2"])
+
+    def test_missing_file_names_the_folder_path(self):
+        found = self.refusal("Nope")
+        self.assertEqual(found["problem"], "not_found")
+        self.assertIn("in 'Car'", found["message"])
+
+    def test_ambiguous_folder_is_reported_as_ambiguous(self):
+        self.root.dataFolders = Indexed([fake_folder("Sub", "1"), fake_folder("sub", "2")])
+        self.assertEqual(self.refusal("SUB/x")["problem"], "ambiguous")
+
+    def test_bad_paths(self):
+        self.assertEqual(self.refusal("/")["problem"], "bad_path")
+        self.assertEqual(self.refusal("a/../b")["problem"], "bad_path")
+
+    def test_id_not_found(self):
+        self.assertEqual(self.refusal("urn:none")["problem"], "not_found")
+
+    def test_id_lookup_that_raises(self):
+        def boom(file_id):
+            raise RuntimeError("offline")
+
+        with self.assertRaises(cloud.Refusal) as caught:
+            cloud.resolve_file(self.project, "urn:1", boom, self.resolver)
+        self.assertIn("offline", caught.exception.problem["message"])
+
+    def test_id_in_another_project(self):
+        other = Fake(parentProject=Fake(id="q", name="Bike"))
+        with self.assertRaises(cloud.Refusal) as caught:
+            cloud.resolve_file(self.project, "urn:9", lambda file_id: other, self.resolver)
+        self.assertEqual(caught.exception.problem["problem"], "wrong_project")
+
+
+class OpenFileIdsTests(unittest.TestCase):
+    def test_saved_unsaved_and_unreadable(self):
+        class Broken:
+            name = "Broken"
+
+            @property
+            def dataFile(self):
+                raise RuntimeError("no file")
+
+        saved = Fake(name="Arm", isVisible=False, dataFile=Fake(id="urn:1"))
+        opened, unreadable = cloud.open_file_ids([saved, Fake(name="New", dataFile=None), Broken()])
+        self.assertEqual(opened, {"urn:1": {"document": "Arm", "visible": False}})
+        self.assertEqual(unreadable, ["Broken"])
 
 
 if __name__ == "__main__":

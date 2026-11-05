@@ -222,11 +222,11 @@ class ValidationTests(unittest.TestCase):
 
 class HelperTests(unittest.TestCase):
     def test_iso_date(self):
-        self.assertEqual(dv.iso_date(0), None)
-        self.assertEqual(dv.iso_date(None), None)
-        self.assertEqual(dv.iso_date(True), None)
-        self.assertEqual(dv.iso_date(1_700_000_000), "2023-11-14T22:13:20Z")
-        self.assertIsNone(dv.iso_date(1e20))
+        self.assertEqual(dv.iso_utc(0), None)
+        self.assertEqual(dv.iso_utc(None), None)
+        self.assertEqual(dv.iso_utc(True), None)
+        self.assertEqual(dv.iso_utc(1_700_000_000), "2023-11-14T22:13:20Z")
+        self.assertIsNone(dv.iso_utc(1e20))
 
     def test_closed_documents_is_multiset_difference(self):
         self.assertEqual(dv.closed_documents(["A", "B", "B", "C"], ["B", "C"]), ["A", "B"])
