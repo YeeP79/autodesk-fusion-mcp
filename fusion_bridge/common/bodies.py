@@ -234,6 +234,16 @@ def temp_copy(manager, body):
     raise RuntimeError(f"the temporary copy of {safe(body, 'name')} did not land on the body")
 
 
+def volume_of(body):
+    """A boolean result's volume; an empty result is zero, not an error."""
+    if not strict_items(safe(body, "lumps")):
+        return 0.0
+    volume = safe(body, "volume")
+    if volume is None:
+        raise RuntimeError("a boolean result has no readable volume")
+    return volume
+
+
 # -- Faces --------------------------------------------------------------------
 
 

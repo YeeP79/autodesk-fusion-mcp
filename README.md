@@ -121,6 +121,7 @@ coordinates) or a `model_view` that frames the visible bodies with a chosen
 | `timeline_insert` | Run Python with the marker rolled back before a named timeline item, then always restore it and report what changed (dry run by default) |
 | `compare_files` | Compare two design files by occurrences, bodies, volume, component names and timeline length, closing only what it opened |
 | `compare_bodies` | Read-only: are two bodies the same solid, and where do they differ, by booleans on temporary copies with a sampled fallback; `unknown` rather than a false `same` |
+| `combine_bodies` | Join, cut or intersect existing bodies with `keep_tools` stated every time, a temporary-copy preview compared with what was built, and fresh references to every resulting body |
 | `apply_thread` | Read Fusion's thread library: narrow by family, size and designation to per-class diameters, or get the nearest thread to a diameter (applying a thread is not available yet) |
 
 ### Generic API example
@@ -313,7 +314,7 @@ New tools must use `fusion_bridge/common/` instead of private copies of its help
 | `args.py` | Typed argument checks, unknown-key rejection, `error_pair` |
 | `api.py` | `safe`, `present`, `attempt` reads; `items` (skips what it cannot read) and `strict_items` (raises); both handle count/item collections and Fusion vectors |
 | `geometry.py` | Vector math, unit conversion |
-| `bodies.py` | Body enumeration, `find_occurrence`, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy`, face records, snapshots, diffs and the baseline store |
+| `bodies.py` | Body enumeration, `find_occurrence`, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy`, `volume_of`, face records, snapshots, diffs and the baseline store |
 | `timeline.py` | Timeline health, `read_rows`, `find_row`, marker and broken-feature refusals, the rolled-back window flag |
 | `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
 | `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `add_feature`, `snapshot`, `baseline`, `undo`, `body_changes`, `envelope` |

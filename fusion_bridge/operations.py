@@ -8,6 +8,7 @@ import adsk.core
 from . import (
     annotations,
     apply_thread,
+    combine_bodies,
     compare_bodies,
     compare_files,
     delete_files,
@@ -184,6 +185,7 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     timeline_insert=_wrap(timeline_insert.timeline_insert),
     compare_files=_wrap(compare_files.compare_files),
     compare_bodies=_wrap(compare_bodies.compare_bodies),
+    combine_bodies=_wrap(combine_bodies.combine_bodies),
     apply_thread=_wrap(apply_thread.apply_thread),
     probe_geometry=_wrap(probe_geometry.probe_geometry),
     find_entities=_wrap(find_entities.find_entities),
