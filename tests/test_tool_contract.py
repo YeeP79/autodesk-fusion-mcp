@@ -57,6 +57,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "fusion_status",
         "close_document",
         "update_references",
+        "probe_geometry",
     }
 
     def test_all_expected_tools_present(self):

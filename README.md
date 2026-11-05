@@ -101,6 +101,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `set_editable_state` | Make cloud files read-only or editable, one at a time and verified (dry run by default) |
 | `close_document` | Close a document and verify it went; reports what stayed open and why, and what closed with it |
 | `update_references` | List a document's references with loaded and latest versions; optionally get the latest and verify |
+| `probe_geometry` | Read-only sampling in world coordinates: point containment, ray hits, grids, and solid intervals along or around an axis |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |
