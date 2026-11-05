@@ -187,7 +187,7 @@ def _on_body(entity, entry):
     return entry is None or same_body(safe(entity, "body"), entry)
 
 
-def _in_context(entity, entry):
+def in_context(entity, entry):
     """A native result for a body in an occurrence, as a proxy of that occurrence.
 
     Native entities ignore the occurrence transform, so their geometry reads in
@@ -245,7 +245,7 @@ def resolve(scene, ref, tolerance_cm=REF_TOLERANCE_CM):
         return refusal
     token, kind, point = ref["token"], ref["kind"], ref["point"]
 
-    found = [_in_context(e, entry) for e in scene.by_token(token)] if token else []
+    found = [in_context(e, entry) for e in scene.by_token(token)] if token else []
     if kind is not None:
         found = [e for e in found if entity_kind(e) == kind]
     found = unique_entities(found)
@@ -272,7 +272,7 @@ def resolve(scene, ref, tolerance_cm=REF_TOLERANCE_CM):
     search_kind = kind or (entity_kind(found[0]) if found else None)
     hits = []
     if search_kind is not None:
-        mapped = (_in_context(hit, entry) for hit in scene.at_point(point, search_kind, tolerance_cm))
+        mapped = (in_context(hit, entry) for hit in scene.at_point(point, search_kind, tolerance_cm))
         hits = unique_entities(hit for hit in mapped if _on_body(hit, entry))
     if len(hits) == 1:
         return Resolution(hits[0], search_kind, "point", [], None)

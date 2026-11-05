@@ -252,6 +252,15 @@ class VectorTests(unittest.TestCase):
     def test_cross_is_right_handed(self):
         self.assertEqual(geometry.cross((1, 0, 0), (0, 1, 0)), (0, 0, 1))
 
+    def test_from_local_undoes_to_local(self):
+        frame = ((1.0, 2.0, 3.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        back = geometry.from_local(geometry.to_local((4.0, -5.0, 6.0), frame), frame)
+        self.assertEqual(tuple(round(c, 9) for c in back), (4.0, -5.0, 6.0))
+
+    def test_a_direction_turns_with_a_frame_but_does_not_move(self):
+        frame = ((1.0, 2.0, 3.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        self.assertEqual(geometry.direction_from_local((1.0, 0.0, 0.0), frame), (0.0, 1.0, 0.0))
+
     def test_to_local_undoes_a_moved_and_turned_frame(self):
         frame = ((10, 0, 0), (0, 1, 0), (-1, 0, 0), (0, 0, 1))  # A quarter turn about z, then +10 in x.
         self.assertEqual(geometry.to_local((10, 2, 5), frame), (2, 0, 5))

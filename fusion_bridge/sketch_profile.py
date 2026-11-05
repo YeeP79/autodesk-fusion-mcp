@@ -27,7 +27,7 @@ import adsk.fusion
 from . import sketch_geometry as geo
 from . import value_builders
 from .common.api import attempt, items, present, safe
-from .common.bodies import ROOT_PATH, find_occurrence, native
+from .common.bodies import ROOT_PATH, find_occurrence, native, occurrence_frame
 from .common.geometry import to_local, xyz
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
@@ -194,13 +194,6 @@ def _occurrence(design, path):
         paths = [safe(o, "fullPathName") for o in items(safe(root, "allOccurrences"), limit=20)]
         raise geo.GeometryError([f"no occurrence at {path!r}; occurrences include {paths}"])
     return occurrence
-
-
-def _frame(occurrence):
-    """The occurrence's (origin, x, y, z) in world coordinates, or None in root."""
-    if occurrence is None:
-        return None
-    return tuple(xyz(part) for part in occurrence.transform2.getAsCoordinateSystem())
 
 
 def _plane(design, component, request):
@@ -504,10 +497,10 @@ def _open_target(design, request):
         occurrence = _sketch_occurrence(design, found, request)
         _refuse_linked(occurrence)
         sketch = native(found)  # Geometry is drawn on the native.
-        return Target(sketch, sketch.parentComponent, occurrence, _frame(occurrence), True, sketch.profiles.count)
+        return Target(sketch, sketch.parentComponent, occurrence, occurrence_frame(occurrence), True, sketch.profiles.count)
     component, occurrence = _named_component(design, request)
     _refuse_linked(occurrence)
-    frame = _frame(occurrence)
+    frame = occurrence_frame(occurrence)
     return Target(_new_sketch(design, component, occurrence, request), component, occurrence, frame, False, 0)
 
 
@@ -691,7 +684,7 @@ def _profiles(request):
     if request["point"] is not None:
         p = request["point"]
         if request["space"] == "world":
-            frame = _frame(_sketch_occurrence(design, sketch, request))
+            frame = occurrence_frame(_sketch_occurrence(design, sketch, request))
             p = xyz(native(sketch).modelToSketchSpace(_point3d(*_model_point(p, request, frame))))
         elif request["space"] == "model":
             p = xyz(sketch.modelToSketchSpace(_point3d(*p)))

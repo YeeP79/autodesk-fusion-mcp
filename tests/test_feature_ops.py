@@ -379,6 +379,14 @@ class BodyChangesTests(unittest.TestCase):
         after = {"root/B#0": rec(5.0), "root/B#1": rec(5.0, index=1)}
         self.assertEqual(fo.lost_outside(before, after, ["root/B#0"]), ["root/B#1"])
 
+    def test_grew_outside_finds_only_gains_outside_the_targets(self):
+        before = {"root/T": rec(), "root/X": rec(body="X"), "root/Y": rec(body="Y")}
+        after = {"root/T": rec(20.0), "root/X": rec(20.0, body="X"), "root/Y": rec(1.0, body="Y")}
+        self.assertEqual(fo.grew_outside(before, after, ["root/T"]), ["root/X"])
+
+    def test_grew_outside_ignores_what_vanished(self):
+        self.assertEqual(fo.grew_outside({"root/X": rec(body="X")}, {}, []), [])
+
 
 class UndoTests(unittest.TestCase):
     def run_undo(self, feature, before, after):

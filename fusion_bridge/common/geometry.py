@@ -53,6 +53,17 @@ def to_local(point, frame):
     return tuple(dot(offset, axis) for axis in axes)
 
 
+def direction_from_local(vector, frame):
+    """A vector in *frame*'s coordinates, in world coordinates."""
+    _, *axes = frame
+    return tuple(sum(c * axis[i] for c, axis in zip(vector, axes)) for i in range(3))
+
+
+def from_local(point, frame):
+    """A point in *frame*'s coordinates, in world coordinates; undoes ``to_local``."""
+    return add(frame[0], direction_from_local(point, frame))
+
+
 # -- Units ---------------------------------------------------------------------
 
 

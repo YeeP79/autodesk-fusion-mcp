@@ -289,6 +289,20 @@ def lost_outside(before, after, target_keys):
     return sorted(lost)
 
 
+def grew_outside(before, after, target_keys):
+    """Keys of bodies nobody targeted that gained volume: a join reaching past its targets."""
+    targets = set(target_keys)
+    target_records = [before[k] for k in targets if k in before]
+    grew = []
+    for key, old in before.items():
+        new = after.get(key)
+        if key in targets or new is None or _other_instance(old, target_records):
+            continue
+        if volume_changed(old["volume"], new["volume"]) and (new["volume"] or 0.0) > (old["volume"] or 0.0):
+            grew.append(key)
+    return sorted(grew)
+
+
 # -- Undo -----------------------------------------------------------------------
 
 
