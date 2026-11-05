@@ -47,6 +47,8 @@ FUSION_STATUS = "fusion_status"
 # main thread. Only for handlers that never call the Fusion API: they must
 # keep working while a modal dialog blocks the main thread.
 DIRECT_TOOL_NAMES = frozenset({FUSION_DIALOGS, TAIL_LOG, FUSION_STATUS})
+CLOSE_DOCUMENT = "close_document"
+UPDATE_REFERENCES = "update_references"
 
 # Resource constants
 RESOURCE_URI = "fusion://design-guide"
@@ -1123,6 +1125,51 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "name": CLOSE_DOCUMENT,
+        "description": (
+            "Close an open document and verify it went: one close attempt per instance, then a fresh "
+            "read of the open documents. Never retries, because Fusion ignores close on an instance "
+            "held by an open parent. Reports closed, still_open (with held_by and how to free it), "
+            "also_closed (closing a parent closes its children), discarded_changes and what is active "
+            "now. Refuses when the document, or an open document it links, has unsaved changes, unless "
+            "discard_unsaved is true. isError is true when anything asked for stayed open."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "name": {"type": "string",
+                         "description": "Document name (e.g. 'Frame v3') or file name ('Frame'). Give this or data_file_id."},
+                "data_file_id": {"type": "string", "description": "DataFile id. Give this or name."},
+                "all_instances": {"type": "boolean",
+                                  "description": "Close every open instance of the file. Default false: several matches are refused."},
+                "discard_unsaved": {"type": "boolean",
+                                    "description": "Lose unsaved changes in the document and in open documents it links. Default false."},
+            },
+        },
+    },
+    {
+        "name": UPDATE_REFERENCES,
+        "description": (
+            "List the active (or named) document's references: file, path, loaded and latest version, "
+            "isOutOfDate. Read-only unless apply is true, which calls getLatestVersion once per chosen "
+            "reference and checks that its version number moved. isOutOfDate can stay False while the "
+            "parent is open, so versions are compared directly: stale_not_flagged names references "
+            "behind the cloud that Fusion does not flag; reopen the parent for those. An update leaves "
+            "the parent modified: document_modified true means save it. isError is true when an "
+            "attempted update did not move the version."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "name": {"type": "string", "description": "Open document or file name. Default: the active document."},
+                "data_file_id": {"type": "string", "description": "Open document's DataFile id. Default: the active document."},
+                "apply": {"type": "boolean", "description": "Get the latest versions. Default false (read-only)."},
+                "files": {"type": "array", "items": {"type": "string"},
+                          "description": "Reference file names or DataFile ids to update. Default: all that are behind."},
+            },
+        },
+    },
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFINITIONS}
@@ -1171,6 +1218,8 @@ def build_tool_handlers(
     delete_files,
     set_editable_state,
     fusion_status,
+    close_document,
+    update_references,
 ):
     """Build a dict mapping tool name to handler function.
 
@@ -1219,6 +1268,8 @@ def build_tool_handlers(
         DELETE_FILES: delete_files,
         SET_EDITABLE_STATE: set_editable_state,
         FUSION_STATUS: fusion_status,
+        CLOSE_DOCUMENT: close_document,
+        UPDATE_REFERENCES: update_references,
     }
     if set(handlers) != _TOOL_NAMES:
         raise RuntimeError(f"Handler registry mismatch: {set(handlers) ^ _TOOL_NAMES}")
