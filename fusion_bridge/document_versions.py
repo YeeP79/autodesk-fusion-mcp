@@ -14,6 +14,7 @@ kept in plain functions over dicts so it is testable without Fusion.
 import datetime
 import traceback
 
+from .common.api import attempt
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -198,28 +199,21 @@ def closed_documents(before_names, after_names):
 # -- Fusion access ------------------------------------------------------------
 
 
-def _safe(fn, default=None):
-    try:
-        return fn()
-    except Exception:
-        return default
-
-
 def _user_name(user):
     if user is None:
         return None
-    return _safe(lambda: user.displayName) or _safe(lambda: user.userName) or None
+    return attempt(lambda: user.displayName) or attempt(lambda: user.userName) or None
 
 
 def _version_record(data_file):
     milestone = None
-    if _safe(lambda: data_file.isMilestone, False):
-        milestone = _safe(lambda: data_file.milestone.name)
-    creator = _user_name(_safe(lambda: data_file.createdBy)) or _user_name(_safe(lambda: data_file.lastUpdatedBy))
+    if attempt(lambda: data_file.isMilestone, False):
+        milestone = attempt(lambda: data_file.milestone.name)
+    creator = _user_name(attempt(lambda: data_file.createdBy)) or _user_name(attempt(lambda: data_file.lastUpdatedBy))
     return {
-        "version_number": _safe(lambda: data_file.versionNumber),
-        "date_created": iso_date(_safe(lambda: data_file.dateCreated)),
-        "description": _safe(lambda: data_file.description) or None,
+        "version_number": attempt(lambda: data_file.versionNumber),
+        "date_created": iso_date(attempt(lambda: data_file.dateCreated)),
+        "description": attempt(lambda: data_file.description) or None,
         "milestone": milestone,
         "created_by": creator,
     }
@@ -233,7 +227,7 @@ def _version_files(data_file):
     """
     files = {}
     for version in list(data_file.versions) + [data_file]:
-        number = _safe(lambda v=version: v.versionNumber)
+        number = attempt(lambda v=version: v.versionNumber)
         if _is_int(number) and number not in files:
             files[number] = version
     return files
@@ -243,7 +237,7 @@ def _active_data_file(app):
     doc = app.activeDocument
     if doc is None:
         raise ValueError("No active document")
-    if not _safe(lambda: doc.isSaved, False):
+    if not attempt(lambda: doc.isSaved, False):
         raise ValueError(f"'{doc.name}' has never been saved, so it has no version history")
     data_file = doc.dataFile
     if data_file is None:
@@ -275,9 +269,9 @@ def document_versions(arguments):
 def _open_document_names(app, visible_only=True):
     names = []
     for document in app.documents:
-        if visible_only and not _safe(lambda d=document: d.isVisible, True):
+        if visible_only and not attempt(lambda d=document: d.isVisible, True):
             continue
-        names.append(_safe(lambda d=document: d.name, "?"))
+        names.append(attempt(lambda d=document: d.name, "?"))
     return names
 
 
@@ -296,16 +290,16 @@ def restore_version(arguments):
         name = doc.name
         files = _version_files(data_file)
         other_modified = [
-            _safe(lambda d=d: d.name, "?") for d in app.documents
-            if not _safe(lambda d=d: d.isActive, False) and _safe(lambda d=d: d.isModified, False)
+            attempt(lambda d=d: d.name, "?") for d in app.documents
+            if not attempt(lambda d=d: d.isActive, False) and attempt(lambda d=d: d.isModified, False)
         ]
         state = {
             "document_name": name,
             "version_numbers": list(files),
             "loaded_version": data_file.versionNumber,
             "latest_version": data_file.latestVersionNumber,
-            "is_modified": _safe(lambda: doc.isModified, False),
-            "is_read_only": _safe(lambda: data_file.isReadOnly, False),
+            "is_modified": attempt(lambda: doc.isModified, False),
+            "is_read_only": attempt(lambda: data_file.isReadOnly, False),
             "other_modified": other_modified,
         }
         refusal, plan = plan_restore(state, version_number, confirm, discard_unsaved)
@@ -316,7 +310,7 @@ def restore_version(arguments):
         # any it links) become invalid once Fusion closes them.
         # DataFile.id (dm.lineage) is the version-independent id findFileById
         # takes; the fs.file form from versionId fails with "Invalid Version URI".
-        file_id = _safe(lambda: data_file.id)
+        file_id = attempt(lambda: data_file.id)
         before = [n for n in _open_document_names(app) if n != name]
 
         if not files[version_number].promote():
@@ -350,12 +344,12 @@ def restore_version(arguments):
         active_file = active.dataFile if active is not None else None
         after = _open_document_names(app)
         result = {
-            "document": _safe(lambda: active.name),
+            "document": attempt(lambda: active.name),
             "restored_from_version": version_number,
             "previous_latest_version": plan["current_latest_version"],
-            "new_version": _safe(lambda: active_file.versionNumber),
-            "latest_version": _safe(lambda: active_file.latestVersionNumber),
-            "is_active": _safe(lambda: active.name) == _safe(lambda: new_doc.name),
+            "new_version": attempt(lambda: active_file.versionNumber),
+            "latest_version": attempt(lambda: active_file.latestVersionNumber),
+            "is_active": attempt(lambda: active.name) == attempt(lambda: new_doc.name),
         }
         also_closed = closed_documents(before, [n for n in after if n != result["document"]])
         if also_closed:

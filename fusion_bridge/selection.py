@@ -6,6 +6,7 @@ import adsk.core
 import adsk.fusion
 
 from . import value_builders
+from .common.api import safe
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -41,12 +42,12 @@ def get_active_selection(arguments):
             }
 
             # Name (safe)
-            name = _safe_attr(entity, "name")
+            name = safe(entity, "name")
             if name is not None:
                 item["name"] = name
 
             # Entity token (safe)
-            token = _safe_attr(entity, "entityToken")
+            token = safe(entity, "entityToken")
             if token is not None:
                 item["entityToken"] = token
 
@@ -73,30 +74,21 @@ def get_active_selection(arguments):
         return error_result(f"Error: {exc}\n{tb}")
 
 
-def _safe_attr(obj, name):
-    """Get attribute or return None on any error."""
-    try:
-        val = getattr(obj, name, None)
-        return val
-    except Exception:
-        return None
-
-
 def _get_parent_component(entity):
     """Try to determine the parent component path."""
     try:
         if hasattr(entity, "body") and entity.body:
             pc = entity.body.parentComponent
             if pc:
-                return _safe_attr(pc, "name")
+                return safe(pc, "name")
         if hasattr(entity, "parentComponent"):
             pc = entity.parentComponent
             if pc:
-                return _safe_attr(pc, "name")
+                return safe(pc, "name")
         if hasattr(entity, "component"):
             c = entity.component
             if c:
-                return _safe_attr(c, "name")
+                return safe(c, "name")
     except Exception:
         pass
     return None
@@ -110,7 +102,7 @@ def _extract_extended_properties(entity):
     props = {}
 
     # Bounding box (most types)
-    bb = _safe_attr(entity, "boundingBox")
+    bb = safe(entity, "boundingBox")
     if bb is not None:
         try:
             props["boundingBox"] = {
@@ -124,27 +116,27 @@ def _extract_extended_properties(entity):
 
     # BRepBody
     if "BRepBody" in obj_type:
-        vol = _safe_attr(entity, "volume")
+        vol = safe(entity, "volume")
         if vol is not None:
             props["volume"] = vol
-        is_solid = _safe_attr(entity, "isSolid")
+        is_solid = safe(entity, "isSolid")
         if is_solid is not None:
             props["isSolid"] = is_solid
-        is_visible = _safe_attr(entity, "isVisible")
+        is_visible = safe(entity, "isVisible")
         if is_visible is not None:
             props["isVisible"] = is_visible
-        mat = _safe_attr(entity, "material")
+        mat = safe(entity, "material")
         if mat is not None:
-            mat_name = _safe_attr(mat, "name")
+            mat_name = safe(mat, "name")
             if mat_name is not None:
                 props["material"] = mat_name
 
     # BRepFace
     elif "BRepFace" in obj_type:
-        area = _safe_attr(entity, "area")
+        area = safe(entity, "area")
         if area is not None:
             props["area"] = area
-        centroid = _safe_attr(entity, "centroid")
+        centroid = safe(entity, "centroid")
         if centroid is not None:
             try:
                 props["centroid"] = {"x": centroid.x, "y": centroid.y, "z": centroid.z}
@@ -153,24 +145,24 @@ def _extract_extended_properties(entity):
 
     # BRepEdge
     elif "BRepEdge" in obj_type:
-        length = _safe_attr(entity, "length")
+        length = safe(entity, "length")
         if length is not None:
             props["length"] = length
 
     # Occurrence
     elif "Occurrence" in obj_type:
-        is_visible = _safe_attr(entity, "isVisible")
+        is_visible = safe(entity, "isVisible")
         if is_visible is not None:
             props["isVisible"] = is_visible
 
     # Sketch
     elif "Sketch" in obj_type and "Curve" not in obj_type and "Point" not in obj_type:
-        is_visible = _safe_attr(entity, "isVisible")
+        is_visible = safe(entity, "isVisible")
         if is_visible is not None:
             props["isVisible"] = is_visible
-        curves = _safe_attr(entity, "sketchCurves")
+        curves = safe(entity, "sketchCurves")
         if curves is not None:
-            count = _safe_attr(curves, "count")
+            count = safe(curves, "count")
             if count is not None:
                 props["numberOfCurves"] = count
 

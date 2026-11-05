@@ -48,6 +48,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
+from .common.api import items, safe
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
@@ -89,46 +90,26 @@ HEALTH_STATES = ("healthy", "warning", "error")
 # -- Small helpers -------------------------------------------------------------
 
 
-def _attr(obj, name):
-    try:
-        return getattr(obj, name, None)
-    except Exception:
-        return None
-
-
 def short_type(obj):
     """'adsk::fusion::ExtrudeFeature' -> 'ExtrudeFeature'."""
-    object_type = _attr(obj, "objectType")
+    object_type = safe(obj, "objectType")
     if not isinstance(object_type, str) or not object_type:
         return type(obj).__name__ if obj is not None else "None"
     return object_type.rsplit("::", 1)[-1]
 
 
 def _native(obj):
-    native = _attr(obj, "nativeObject")
+    native = safe(obj, "nativeObject")
     return native if native is not None else obj
 
 
 def _read(obj, name, errors):
-    """Like _attr, but record a read that raised: Fusion raises for inputs it cannot serve."""
+    """Like ``safe``, but record a read that raised: Fusion raises for inputs it cannot serve."""
     try:
         return getattr(obj, name, None)
     except Exception:
         errors.append(name)
         return None
-
-
-def _items(collection, limit=None):
-    count = _attr(collection, "count")
-    if not isinstance(count, int) or isinstance(count, bool):
-        return []
-    out = []
-    for i in range(count if limit is None else min(count, limit)):
-        try:
-            out.append(collection.item(i))
-        except Exception:
-            pass
-    return out
 
 
 # -- Argument validation -------------------------------------------------------
@@ -415,7 +396,7 @@ class EntityKeys:
 
     def key(self, obj, kind):
         obj = _native(obj)
-        token = _attr(obj, "entityToken")
+        token = safe(obj, "entityToken")
         if token in self._by_token:
             return self._by_token[token]
         for other, existing in self._known:
@@ -430,7 +411,7 @@ class EntityKeys:
         self._known.append((obj, key))
         if token is not None:
             self._by_token[token] = key
-        name = _attr(obj, "name")
+        name = safe(obj, "name")
         self.labels[key] = f"{short_type(obj)} {name!r}" if name else short_type(obj)
         return key
 
@@ -451,18 +432,18 @@ def collect_references(obj, keys, out, depth=0, errors=None):
     if kind.startswith("BRepBody"):
         out.add(keys.key(obj, "body"))
     elif kind.replace("Proxy", "") in _TOPOLOGY_TYPES:
-        body = _attr(obj, "body")
+        body = safe(obj, "body")
         if body is None:
-            body = _attr(_attr(obj, "face"), "body")
+            body = safe(safe(obj, "face"), "body")
         collect_references(body, keys, out, depth + 1, errors)
     elif kind == "Sketch":
         out.add(keys.key(obj, "sketch"))
     elif kind.replace("Proxy", "") in _CONSTRUCTION_TYPES:
         out.add(keys.key(obj, "construction"))
-    elif _attr(obj, "parentSketch") is not None:
+    elif safe(obj, "parentSketch") is not None:
         out.add(keys.key(obj.parentSketch, "sketch"))
-    elif _items(obj):
-        for item in _items(obj):
+    elif items(obj):
+        for item in items(obj):
             collect_references(item, keys, out, depth + 1, errors)
     else:
         for name in _NESTED_ATTRS:
@@ -476,9 +457,9 @@ def read_outputs(entity, keys):
     is created or modified bodies; faces can miss some, so both are used.
     """
     out = set()
-    for body in _items(_attr(entity, "bodies")):
+    for body in items(safe(entity, "bodies")):
         out.add(keys.key(body, "body"))
-    for face in _items(_attr(entity, "faces"), limit=_MAX_FACES_READ):
+    for face in items(safe(entity, "faces"), limit=_MAX_FACES_READ):
         collect_references(face, keys, out)
     return out
 
@@ -510,7 +491,7 @@ def _modifies_only(entity, kind):
     if kind in _MODIFY_ONLY_TYPES:
         return True
     operations = getattr(adsk.fusion, "FeatureOperations", None)
-    operation = _attr(entity, "operation")
+    operation = safe(entity, "operation")
     if operations is None or operation is None:
         return False
     return any(operation == getattr(operations, name, object()) for name in _MODIFY_OPERATIONS)
@@ -518,7 +499,7 @@ def _modifies_only(entity, kind):
 
 def _health(timeline_object):
     states = getattr(adsk.fusion, "FeatureHealthStates", None)
-    state = _attr(timeline_object, "healthState")
+    state = safe(timeline_object, "healthState")
     if states is None or state is None:
         return "unknown"
     if state == getattr(states, "HealthyFeatureHealthState", object()):
@@ -532,12 +513,12 @@ def _health(timeline_object):
 
 def _referenced_component_ids(design):
     ids = set()
-    for occurrence in _items(_attr(_attr(design, "rootComponent"), "allOccurrences")):
-        if _attr(occurrence, "isReferencedComponent"):
-            component = _attr(occurrence, "component")
-            ids.add(_attr(component, "id"))
-            for child in _items(_attr(component, "allOccurrences")):
-                ids.add(_attr(_attr(child, "component"), "id"))
+    for occurrence in items(safe(safe(design, "rootComponent"), "allOccurrences")):
+        if safe(occurrence, "isReferencedComponent"):
+            component = safe(occurrence, "component")
+            ids.add(safe(component, "id"))
+            for child in items(safe(component, "allOccurrences")):
+                ids.add(safe(safe(child, "component"), "id"))
     ids.discard(None)
     return ids
 
@@ -546,16 +527,16 @@ def _owning_component(entity, root):
     if entity is None:
         return None
     if short_type(entity).startswith("Occurrence"):
-        return _attr(entity, "sourceComponent") or root
-    return _attr(entity, "parentComponent") or _attr(entity, "component")
+        return safe(entity, "sourceComponent") or root
+    return safe(entity, "parentComponent") or safe(entity, "component")
 
 
 def _walk(timeline):
     """Yield (timeline_object, in_collapsed_group) in timeline order."""
-    for obj in _items(timeline):
-        if _attr(obj, "isGroup"):
+    for obj in items(timeline):
+        if safe(obj, "isGroup"):
             group = adsk.fusion.TimelineGroup.cast(obj) if hasattr(adsk.fusion, "TimelineGroup") else obj
-            for child in _items(group):
+            for child in items(group):
                 yield child, True
         else:
             yield obj, False
@@ -568,13 +549,13 @@ def snapshot(design, with_links=True):
     """
     keys = EntityKeys()
     referenced_ids = _referenced_component_ids(design)
-    root = _attr(design, "rootComponent")
+    root = safe(design, "rootComponent")
     entries, handles = [], {}
     for position, (obj, collapsed) in enumerate(_walk(design.timeline)):
-        entity = _attr(obj, "entity")
+        entity = safe(obj, "entity")
         component = _owning_component(entity, root)
-        referenced = bool(_attr(component, "id") in referenced_ids or
-                          (short_type(entity).startswith("Occurrence") and _attr(entity, "isReferencedComponent")))
+        referenced = bool(safe(component, "id") in referenced_ids or
+                          (short_type(entity).startswith("Occurrence") and safe(entity, "isReferencedComponent")))
         produces, consumes, unreadable = set(), set(), False
         kind = short_type(entity) if entity is not None else ""
         is_feature = kind.endswith("Feature")
@@ -591,19 +572,19 @@ def snapshot(design, with_links=True):
                 unreadable = inputs_unresolved(kind, failed, consumes, produces, modifies_only)
             except Exception:
                 unreadable = True
-        deletable = _attr(obj, "isDeletable")
+        deletable = safe(obj, "isDeletable")
         entries.append({
             "position": position,
-            "index": _attr(obj, "index") if isinstance(_attr(obj, "index"), int) else -1,
-            "name": _attr(obj, "name") or "",
+            "index": safe(obj, "index") if isinstance(safe(obj, "index"), int) else -1,
+            "name": safe(obj, "name") or "",
             "entity_type": short_type(entity) if entity is not None else "Unknown",
-            "component": _attr(component, "name"),
+            "component": safe(component, "name"),
             "referenced": referenced,
             "in_collapsed_group": collapsed,
             "deletable": deletable if isinstance(deletable, bool) else None,
             "health": _health(obj),
-            "message": _attr(obj, "errorOrWarningMessage") or "",
-            "token": _attr(entity, "entityToken"),
+            "message": safe(obj, "errorOrWarningMessage") or "",
+            "token": safe(entity, "entityToken"),
             "produces": sorted(produces),
             "consumes": sorted(consumes),
             "inputs_unreadable": unreadable,
@@ -619,7 +600,7 @@ def _same_entity(design, token, entity):
     """Confirm *entity* is the one *token* named at planning time."""
     if token is None:
         return True
-    if _attr(entity, "entityToken") == token:
+    if safe(entity, "entityToken") == token:
         return True
     try:
         return any(found == entity for found in design.findEntityByToken(token) or [])
@@ -631,7 +612,7 @@ def _gone(design, token):
     if token is None:
         return None
     try:
-        return not any(_attr(found, "isValid") for found in design.findEntityByToken(token) or [])
+        return not any(safe(found, "isValid") for found in design.findEntityByToken(token) or [])
     except Exception:
         return None
 
@@ -703,7 +684,7 @@ def delete_features(arguments):
             if not _same_entity(design, token, entity):
                 failure = f"{planned['name']!r} no longer refers to the planned entity (entityToken changed)"
                 break
-            if _attr(obj, "isDeletable") is False:
+            if safe(obj, "isDeletable") is False:
                 failure = f"Fusion refused to delete {planned['name']!r}: it still has dependents"
                 break
             # A raise here must still reach the timeline diff below.

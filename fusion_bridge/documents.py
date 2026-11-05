@@ -8,6 +8,7 @@ open (and which documents will not save); ``activate_document`` switches.
 import traceback
 
 from . import document_guard
+from .common.api import safe
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -28,39 +29,32 @@ LINKED_PARENT_NOTE = (
 )
 
 
-def _safe(obj, attr, default=None):
-    try:
-        return getattr(obj, attr)
-    except Exception:
-        return default
-
-
 def folder_path(data_file):
     """Build "/Folder/Sub" from ``parentFolder`` links; "/" for the project root.
 
     The root folder's own name is left out (the project name is reported
     separately). Returns None when the parent folder cannot be read.
     """
-    folder = _safe(data_file, "parentFolder")
+    folder = safe(data_file, "parentFolder")
     if folder is None:
         return None
     names = []
     for _ in range(_MAX_FOLDER_DEPTH):
-        if folder is None or _safe(folder, "isRoot") is True:
+        if folder is None or safe(folder, "isRoot") is True:
             break
-        names.append(_safe(folder, "name") or "?")
-        folder = _safe(folder, "parentFolder")
+        names.append(safe(folder, "name") or "?")
+        folder = safe(folder, "parentFolder")
     return "/" + "/".join(reversed(names))
 
 
 def _product_types(document):
-    products = _safe(document, "products")
+    products = safe(document, "products")
     if products is None:
         return []
     types = []
     try:
         for i in range(products.count):
-            product_type = _safe(products.item(i), "productType")
+            product_type = safe(products.item(i), "productType")
             if product_type:
                 types.append(product_type)
     except Exception:
@@ -71,13 +65,13 @@ def _product_types(document):
 def _referenced_ids(document):
     """DataFile ids this document directly references (empty if unreadable)."""
     ids = set()
-    refs = _safe(document, "documentReferences")
+    refs = safe(document, "documentReferences")
     if refs is None:
         return ids
     try:
         for i in range(refs.count):
-            ref_file = _safe(refs.item(i), "dataFile")
-            ref_id = _safe(ref_file, "id") if ref_file is not None else None
+            ref_file = safe(refs.item(i), "dataFile")
+            ref_id = safe(ref_file, "id") if ref_file is not None else None
             if ref_id:
                 ids.add(ref_id)
     except Exception:
@@ -88,24 +82,24 @@ def _referenced_ids(document):
 def describe_document(document):
     """Summarise one open document as a JSON-safe dict."""
     info = {
-        "name": _safe(document, "name"),
-        "is_active": _safe(document, "isActive") is True,
-        "document_type": _safe(document, "objectType"),
+        "name": safe(document, "name"),
+        "is_active": safe(document, "isActive") is True,
+        "document_type": safe(document, "objectType"),
         "product_types": _product_types(document),
-        "is_modified": _safe(document, "isModified"),
-        "is_saved": _safe(document, "isSaved"),
+        "is_modified": safe(document, "isModified"),
+        "is_saved": safe(document, "isSaved"),
         "data_file": None,
     }
-    data_file = _safe(document, "dataFile")
+    data_file = safe(document, "dataFile")
     if data_file is not None:
-        project = _safe(data_file, "parentProject")
+        project = safe(data_file, "parentProject")
         read_only = document_guard.read_only_state(document)
         info["data_file"] = {
-            "id": _safe(data_file, "id"),
-            "name": _safe(data_file, "name"),
-            "version_number": _safe(data_file, "versionNumber"),
+            "id": safe(data_file, "id"),
+            "name": safe(data_file, "name"),
+            "version_number": safe(data_file, "versionNumber"),
             "is_read_only": "unknown" if read_only is None else read_only,
-            "project": _safe(project, "name") if project is not None else None,
+            "project": safe(project, "name") if project is not None else None,
             "folder_path": folder_path(data_file),
         }
     return info

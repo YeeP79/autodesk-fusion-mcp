@@ -23,6 +23,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
+from .common.api import safe, strict_items
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -667,45 +668,29 @@ def sample(opts, targets, probe, budget):
 # -- Fusion layer --------------------------------------------------------------
 
 
-def _safe(obj, name, default=None):
-    try:
-        return getattr(obj, name)
-    except Exception:
-        return default
-
-
-def _items(collection):
-    if collection is None:
-        return []
-    count = _safe(collection, "count")
-    if count is not None:
-        return [collection.item(i) for i in range(count)]
-    return list(collection)
-
-
 def _xyz(p):
     return (p.x, p.y, p.z)
 
 
 def _bbox(body):
-    box = _safe(body, "boundingBox")
+    box = safe(body, "boundingBox")
     return None if box is None else (_xyz(box.minPoint), _xyz(box.maxPoint))
 
 
 def body_entries(root):
     """Every body in the design, read through occurrence proxies (world coordinates)."""
     containers = [(None, root)]
-    containers.extend((occ, occ) for occ in _items(_safe(root, "allOccurrences")))
+    containers.extend((occ, occ) for occ in strict_items(safe(root, "allOccurrences")))
     for occ, owner in containers:
-        path = _safe(occ, "fullPathName") if occ is not None else ROOT_PATH
-        occurrence_visible = _safe(occ, "isVisible", True) if occ is not None else True
-        for index, body in enumerate(_items(_safe(owner, "bRepBodies"))):
+        path = safe(occ, "fullPathName") if occ is not None else ROOT_PATH
+        occurrence_visible = safe(occ, "isVisible", True) if occ is not None else True
+        for index, body in enumerate(strict_items(safe(owner, "bRepBodies"))):
             yield {
                 "occurrence_path": path,
-                "body": _safe(body, "name"),
+                "body": safe(body, "name"),
                 "index": index,
-                "visible": bool(_safe(body, "isVisible", True)) and bool(occurrence_visible),
-                "solid": bool(_safe(body, "isSolid", False)),
+                "visible": bool(safe(body, "isVisible", True)) and bool(occurrence_visible),
+                "solid": bool(safe(body, "isSolid", False)),
                 "bbox": _bbox(body),
                 "_body": body,
             }
@@ -743,9 +728,9 @@ class FusionProbe:
         hits = []
         for i in range(count):
             body, p = found.item(i), _xyz(hit_points.item(i))
-            context = _safe(body, "assemblyContext")
-            path = _safe(context, "fullPathName") if context is not None else ROOT_PATH
-            name = _safe(body, "name")
+            context = safe(body, "assemblyContext")
+            path = safe(context, "fullPathName") if context is not None else ROOT_PATH
+            name = safe(body, "name")
             index = match_hit(self._targets, path, name, lambda t: self.contains(t, p))
             if index is None:
                 self.other_bodies.add(f"{path}/{name}")

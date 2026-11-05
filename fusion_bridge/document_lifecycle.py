@@ -23,6 +23,7 @@ from collections import Counter
 
 import adsk.core
 
+from .common.api import safe, strict_items
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -85,13 +86,6 @@ LOOKUP_BUDGET_NOTE = (
     "The cloud lookup budget ran out after {seconds:g} s: {count} file(s) use the possibly stale "
     "latest version from the open document, with no path."
 )
-
-
-def _safe(obj, attr, default=None):
-    try:
-        return getattr(obj, attr)
-    except Exception:
-        return default
 
 
 def _version(value):
@@ -433,43 +427,37 @@ def _pump():
     adsk.doEvents()
 
 
-def _items(collection):
-    if collection is None:
-        return []
-    return [item for item in (collection.item(i) for i in range(collection.count)) if item is not None]
-
-
 def _reference_ids(document):
     """DataFile ids this document links, directly or through sub-assemblies."""
     ids = set()
     for attr in ("documentReferences", "allDocumentReferences"):
         try:
-            refs = _items(_safe(document, attr))
+            refs = strict_items(safe(document, attr))
         except Exception:
             continue
         for ref in refs:
-            file_id = _safe(_safe(ref, "dataFile"), "id")
+            file_id = safe(safe(ref, "dataFile"), "id")
             if file_id:
                 ids.add(file_id)
     return ids
 
 
 def _describe(document):
-    data_file = _safe(document, "dataFile")
+    data_file = safe(document, "dataFile")
     return {
-        "name": _safe(document, "name"),
-        "data_file_id": _safe(data_file, "id"),
-        "file_name": _safe(data_file, "name"),
-        "version": _safe(data_file, "versionNumber"),
-        "is_active": _safe(document, "isActive") is True,
-        "is_modified": _safe(document, "isModified"),
-        "is_saved": _safe(document, "isSaved"),
+        "name": safe(document, "name"),
+        "data_file_id": safe(data_file, "id"),
+        "file_name": safe(data_file, "name"),
+        "version": safe(data_file, "versionNumber"),
+        "is_active": safe(document, "isActive") is True,
+        "is_modified": safe(document, "isModified"),
+        "is_saved": safe(document, "isSaved"),
     }
 
 
 def _read_documents(app):
     """Return (documents, infos) from a fresh read of ``app.documents``."""
-    documents = _items(app.documents)
+    documents = strict_items(app.documents)
     return documents, [_describe(document) for document in documents]
 
 
@@ -483,7 +471,7 @@ def _read_with_references(app):
 def _attempt_close(document, info):
     """The one close attempt for this instance. Always False: True prompts the user."""
     attempt = {"name": info.get("name")}
-    if _safe(document, "isValid") is False:
+    if safe(document, "isValid") is False:
         attempt["skipped"] = "already_gone"
         return attempt
     try:
@@ -530,7 +518,7 @@ def close_document(arguments):
         _wait_for_close(app, before, targets)
 
         _, after = _read_with_references(app)
-        active_name = _safe(_safe(app, "activeDocument"), "name")
+        active_name = safe(safe(app, "activeDocument"), "name")
         result = close_result(before, after, targets, attempts, active_name)
         return tool_result(result, bool(result["still_open"]))
     except Exception as exc:
@@ -540,15 +528,15 @@ def close_document(arguments):
 
 def _folder_path(data_file):
     """Folder path from ``parentFolder`` links: "/" for the project root, None if unreadable."""
-    folder = _safe(data_file, "parentFolder")
+    folder = safe(data_file, "parentFolder")
     if folder is None:
         return None
     names = []
     for _ in range(_MAX_FOLDER_DEPTH):
-        if folder is None or _safe(folder, "isRoot") is True:
+        if folder is None or safe(folder, "isRoot") is True:
             break
-        names.append(_safe(folder, "name") or "?")
-        folder = _safe(folder, "parentFolder")
+        names.append(safe(folder, "name") or "?")
+        folder = safe(folder, "parentFolder")
     return "/" + "/".join(reversed(names))
 
 
@@ -577,23 +565,23 @@ class CloudLookups:
         except Exception:
             data_file = None
         folder = _folder_path(data_file) if data_file is not None else None
-        path = None if folder is None else f"{folder.rstrip('/')}/{_safe(data_file, 'name')}"
-        self.cache[file_id] = (_version(_safe(data_file, "latestVersionNumber")), path)
+        path = None if folder is None else f"{folder.rstrip('/')}/{safe(data_file, 'name')}"
+        self.cache[file_id] = (_version(safe(data_file, "latestVersionNumber")), path)
         return self.cache[file_id]
 
 
 def _read_reference(ref, cloud):
-    data_file = _safe(ref, "dataFile")
-    file_id = _safe(data_file, "id")
-    file_version = _version(_safe(data_file, "versionNumber"))
-    ref_version = _version(_safe(ref, "version"))
+    data_file = safe(ref, "dataFile")
+    file_id = safe(data_file, "id")
+    file_version = _version(safe(data_file, "versionNumber"))
+    ref_version = _version(safe(ref, "version"))
     loaded = file_version if ref_version is None else ref_version
     cloud_latest, path = cloud.lookup(file_id) if file_id else (None, None)
-    known = [value for value in (cloud_latest, _version(_safe(data_file, "latestVersionNumber"))) if value is not None]
+    known = [value for value in (cloud_latest, _version(safe(data_file, "latestVersionNumber"))) if value is not None]
     latest = max(known) if known else None
-    is_out_of_date = _safe(ref, "isOutOfDate")
+    is_out_of_date = safe(ref, "isOutOfDate")
     entry = {
-        "name": _safe(data_file, "name"),
+        "name": safe(data_file, "name"),
         "data_file_id": file_id,
         "path": path,
         "loaded_version": loaded,
@@ -607,13 +595,13 @@ def _read_reference(ref, cloud):
 
 
 def _direct_references(document):
-    return _items(_safe(document, "documentReferences"))
+    return strict_items(safe(document, "documentReferences"))
 
 
 def _pick_document(app, selector):
     """Return (document, None), or (None, error payload) for a bad selection."""
     if selector is None:
-        document = _safe(app, "activeDocument")
+        document = safe(app, "activeDocument")
         return (document, None) if document is not None else (None, {"error": "No document is active"})
     documents, infos = _read_documents(app)
     matches = [index for index, info in enumerate(infos) if _same_selector(info, *selector)]
@@ -632,10 +620,10 @@ def _loaded_versions(document):
     """Loaded versions per DataFile id, from a fresh read of the references."""
     versions = {}
     for ref in _direct_references(document):
-        file_id = _safe(_safe(ref, "dataFile"), "id")
-        version = _version(_safe(ref, "version"))
+        file_id = safe(safe(ref, "dataFile"), "id")
+        version = _version(safe(ref, "version"))
         if version is None:
-            version = _version(_safe(_safe(ref, "dataFile"), "versionNumber"))
+            version = _version(safe(safe(ref, "dataFile"), "versionNumber"))
         if file_id and version is not None:
             versions.setdefault(file_id, []).append(version)
     return versions
@@ -644,10 +632,10 @@ def _loaded_versions(document):
 def _fresh_reference(document, entry):
     """Re-find a reference: an earlier update may have invalidated what was held."""
     for ref in _direct_references(document):
-        data_file = _safe(ref, "dataFile")
-        if _safe(data_file, "id") != entry.get("data_file_id"):
+        data_file = safe(ref, "dataFile")
+        if safe(data_file, "id") != entry.get("data_file_id"):
             continue
-        version = _version(_safe(ref, "version"))
+        version = _version(safe(ref, "version"))
         if version is None or version == entry.get("loaded_version"):
             return ref
     return None
@@ -712,16 +700,16 @@ def _apply_updates(document, entries, held):
 
 def _indirect_count(document, direct_count):
     try:
-        return max(0, len(_items(_safe(document, "allDocumentReferences"))) - direct_count)
+        return max(0, len(strict_items(safe(document, "allDocumentReferences"))) - direct_count)
     except Exception:
         return 0
 
 
 def _reference_warnings(document, name, direct_count, cloud):
     warnings = []
-    if _safe(document, "isActive") is False:
+    if safe(document, "isActive") is False:
         warnings.append(NON_ACTIVE_NOTE.format(document=repr(name)))
-    if _safe(_safe(document, "dataFile"), "isReadOnly") is True:
+    if safe(safe(document, "dataFile"), "isReadOnly") is True:
         warnings.append(READ_ONLY_NOTE.format(document=repr(name)))
     indirect = _indirect_count(document, direct_count)
     if indirect:
@@ -744,7 +732,7 @@ def update_references(arguments):
         if error:
             return tool_result(error, True)
 
-        name = _safe(document, "name")
+        name = safe(document, "name")
         cloud = CloudLookups(app)
         held = _direct_references(document)
         references = [_read_reference(ref, cloud) for ref in held]
@@ -758,12 +746,12 @@ def update_references(arguments):
             updates = _apply_updates(document, [references[i] for i in to_update], [held[i] for i in to_update])
             references = [_read_reference(ref, cloud) for ref in _direct_references(document)]
 
-        document_modified = _safe(document, "isModified")
+        document_modified = safe(document, "isModified")
         result = {
             "document": name,
-            "data_file_id": _safe(_safe(document, "dataFile"), "id"),
+            "data_file_id": safe(safe(document, "dataFile"), "id"),
             "document_modified": document_modified,
-            "is_up_to_date": _safe(document, "isUpToDate"),
+            "is_up_to_date": safe(document, "isUpToDate"),
             "applied": apply_updates,
             "references": references,
             "out_of_date": names_with_status(references, OUT_OF_DATE),

@@ -7,6 +7,7 @@ from unittest import mock
 import _fusion_test_bootstrap  # noqa: F401
 
 from fusion_bridge import editable_state as es
+from fusion_bridge.common import api
 from fusion_bridge import tool_surface
 
 
@@ -764,10 +765,10 @@ class BatchTests(FusionCase):
 
 class ItemsTests(unittest.TestCase):
     def test_vector_without_count_or_item(self):
-        self.assertEqual(es._items(iter([1, 2])), [1, 2])
+        self.assertEqual(api.strict_items(iter([1, 2])), [1, 2])
 
     def test_collection_and_none(self):
-        self.assertEqual(es._items(None), [])
+        self.assertEqual(api.strict_items(None), [])
 
         class Collection:
             count = 2
@@ -775,7 +776,7 @@ class ItemsTests(unittest.TestCase):
             def item(self, i):
                 return i * 10
 
-        self.assertEqual(es._items(Collection()), [0, 10])
+        self.assertEqual(api.strict_items(Collection()), [0, 10])
 
 
 if __name__ == "__main__":

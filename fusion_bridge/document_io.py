@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 
 import adsk.core
 
+from .common.api import safe
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -55,13 +56,6 @@ STUCK_INSTANCE_FIX = (
 # -- Small helpers -----------------------------------------------------------
 
 
-def _safe(obj, attr, default=None):
-    try:
-        return getattr(obj, attr)
-    except Exception:
-        return default
-
-
 def _non_empty_str(arguments, key):
     value = arguments.get(key)
     if value is None:
@@ -82,25 +76,25 @@ def instance_suffix(name):
 
 def describe_document(document):
     """JSON-safe snapshot of an open document."""
-    data_file = _safe(document, "dataFile")
+    data_file = safe(document, "dataFile")
     info = {
-        "name": _safe(document, "name"),
-        "is_active": _safe(document, "isActive") is True,
-        "is_visible": _safe(document, "isVisible"),
-        "is_modified": _safe(document, "isModified"),
+        "name": safe(document, "name"),
+        "is_active": safe(document, "isActive") is True,
+        "is_visible": safe(document, "isVisible"),
+        "is_modified": safe(document, "isModified"),
         "data_file": None,
     }
     if data_file is not None:
-        read_only = _safe(data_file, "isReadOnly")
-        project = _safe(data_file, "parentProject")
-        folder = _safe(data_file, "parentFolder")
+        read_only = safe(data_file, "isReadOnly")
+        project = safe(data_file, "parentProject")
+        folder = safe(data_file, "parentFolder")
         info["data_file"] = {
-            "id": _safe(data_file, "id"),
-            "name": _safe(data_file, "name"),
-            "version_number": _safe(data_file, "versionNumber"),
+            "id": safe(data_file, "id"),
+            "name": safe(data_file, "name"),
+            "version_number": safe(data_file, "versionNumber"),
             "is_read_only": read_only if isinstance(read_only, bool) else "unknown",
-            "project": _safe(project, "name") if project is not None else None,
-            "folder": _safe(folder, "name") if folder is not None else None,
+            "project": safe(project, "name") if project is not None else None,
+            "folder": safe(folder, "name") if folder is not None else None,
         }
     return info
 
@@ -443,14 +437,14 @@ def _cloud_latest_version(app, file_id):
         data_file = app.data.findFileById(file_id)
     except Exception:
         return None
-    value = _safe(data_file, "latestVersionNumber") if data_file is not None else None
+    value = safe(data_file, "latestVersionNumber") if data_file is not None else None
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _current_file_id(document, fallback):
     """The document's DataFile id now: it is a local file path until the first upload lands."""
-    data_file = _safe(document, "dataFile")
-    value = _safe(data_file, "id") if data_file is not None else None
+    data_file = safe(document, "dataFile")
+    value = safe(data_file, "id") if data_file is not None else None
     return value if isinstance(value, str) and value else fallback
 
 
@@ -539,7 +533,7 @@ def save_document(arguments):
             if last_cloud is None or now - last_cloud >= _CLOUD_POLL_INTERVAL_S:
                 latest = _cloud_latest_version(app, _current_file_id(document, file_id))
                 last_cloud = now
-            if verifier.observe(now - started, _safe(document, "isModified"), latest):
+            if verifier.observe(now - started, safe(document, "isModified"), latest):
                 break
             time.sleep(_POLL_SLEEP_S)
         elapsed = round(time.monotonic() - started, 2)
@@ -564,7 +558,7 @@ def save_document(arguments):
         # Failure: explain it from fresh readings.
         infos_after = [describe_document(doc) for doc in _open_documents(app)]
         same = instances_of(infos_after, file_id)
-        read_only = _safe(_safe(document, "dataFile"), "isReadOnly")
+        read_only = safe(safe(document, "dataFile"), "isReadOnly")
         result["stage"] = verifier.stage
         result["diagnosis"] = {
             "instances_open": len(same),
@@ -587,10 +581,10 @@ def save_document(arguments):
 def _find_project(app, project):
     projects = app.data.dataProjects
     items = [projects.item(i) for i in range(projects.count)]
-    by_id = [p for p in items if _safe(p, "id") == project]
+    by_id = [p for p in items if safe(p, "id") == project]
     if by_id:
         return by_id[0]
-    rows = [{"name": _safe(p, "name"), "id": _safe(p, "id"), "obj": p} for p in items]
+    rows = [{"name": safe(p, "name"), "id": safe(p, "id"), "obj": p} for p in items]
     return match_named(rows, project, "project")["obj"]
 
 
@@ -598,11 +592,11 @@ def _resolve_path(app, project, segments):
     folder = _find_project(app, project).rootFolder
     for segment in segments[:-1]:
         subfolders = folder.dataFolders
-        rows = [{"name": _safe(f, "name"), "id": _safe(f, "id"), "obj": f}
+        rows = [{"name": safe(f, "name"), "id": safe(f, "id"), "obj": f}
                 for f in (subfolders.item(i) for i in range(subfolders.count))]
         folder = match_named(rows, segment, "folder")["obj"]
     files = folder.dataFiles
-    rows = [{"name": _safe(f, "name"), "ext": _safe(f, "fileExtension"), "id": _safe(f, "id"), "obj": f}
+    rows = [{"name": safe(f, "name"), "ext": safe(f, "fileExtension"), "id": safe(f, "id"), "obj": f}
             for f in (files.item(i) for i in range(files.count))]
     return match_named(rows, segments[-1], "file")["obj"]
 
@@ -612,7 +606,7 @@ def _version_file(data_file, version):
     versions = data_file.versions
     for i in range(versions.count):
         candidate = versions.item(i)
-        if _safe(candidate, "versionNumber") == version:
+        if safe(candidate, "versionNumber") == version:
             return candidate
     return None
 
@@ -635,9 +629,9 @@ def open_document(arguments):
                 data_file = _resolve_path(app, project, segments)
             except ValueError as exc:
                 return tool_result(f"Error: {exc}", True)
-            file_id = _safe(data_file, "id")
+            file_id = safe(data_file, "id")
 
-        latest = _safe(data_file, "latestVersionNumber")
+        latest = safe(data_file, "latestVersionNumber")
         target_version = version if version is not None else latest
         if not isinstance(target_version, int):
             return tool_result("Error: could not read the file's latest version number; pass 'version'", True)
@@ -667,7 +661,7 @@ def open_document(arguments):
             document = app.documents.open(to_open, True)
             if document is None:
                 return tool_result("Error: Fusion did not open the document", True)
-            if not _safe(document, "isActive"):
+            if not safe(document, "isActive"):
                 document.activate()
 
         infos_after = [describe_document(doc) for doc in _open_documents(app)]

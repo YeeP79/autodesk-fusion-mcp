@@ -11,10 +11,11 @@ import math
 from uuid import uuid4
 
 from .annotation_store import AnnotationStore
+from .common.api import safe
 from .common.results import error_result, ok_result
 from .dispatch import get_app
 from . import value_builders
-from .selection import _safe_attr, _get_parent_component
+from .selection import _get_parent_component
 
 STORE = AnnotationStore()
 MARKER_GROUP = "autodesk-fusion-mcp"
@@ -64,15 +65,15 @@ def _document():
 
 
 def _valid(entities):
-    return all(_safe_attr(entity, "isValid") is True for entity in entities)
+    return all(safe(entity, "isValid") is True for entity in entities)
 
 
 def _entity_info(entity):
-    return dict(objectType=_safe_attr(entity, "objectType"),
-                name=_safe_attr(entity, "name"),
+    return dict(objectType=safe(entity, "objectType"),
+                name=safe(entity, "name"),
                 parentComponent=_get_parent_component(entity),
-                entityToken=_safe_attr(entity, "entityToken"),
-                valid=_safe_attr(entity, "isValid") is True)
+                entityToken=safe(entity, "entityToken"),
+                valid=safe(entity, "isValid") is True)
 
 
 def _design(document):
@@ -101,10 +102,10 @@ def _rolled_back(design):
 def _fingerprint(entity):
     values = {}
     for name in ("area", "length", "volume"):
-        value = _safe_attr(entity, name)
+        value = safe(entity, name)
         if isinstance(value, (int, float)):
             values[name] = [value]
-    box = _safe_attr(entity, "boundingBox")
+    box = safe(entity, "boundingBox")
     try:
         values["box"] = [getattr(point, axis) for point in (box.minPoint, box.maxPoint)
                          for axis in "xyz"]
@@ -154,8 +155,8 @@ def _resolve(item):
         if mark["name"] and design is not None and not rolled_back:
             markers = _find_markers(design, mark["name"])
             if markers:  # Undoing the capture can remove the marker; then use memory.
-                parents = [_safe_attr(markers[0], "parent")]
-                parents += list(_safe_attr(markers[0], "otherParents") or [])
+                parents = [safe(markers[0], "parent")]
+                parents += list(safe(markers[0], "otherParents") or [])
                 found = [p for p in parents if p is not None and _valid([p])]
         if found is None:
             found = [entity] if _valid([entity]) else []
@@ -188,7 +189,7 @@ def state():
     document = _document()
     design = _design(document) if document else None
     return {"document_id": document,
-            "document_name": _safe_attr(_documents.get(document), "name"),
+            "document_name": safe(_documents.get(document), "name"),
             "marker_count": len(_find_markers(design)) if design is not None else 0,
             "annotations": [_public(item) for item in STORE.items.values()
                             if item["document"] == document and not item["dismissed"]]}

@@ -17,6 +17,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
+from .common.api import attempt
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -129,13 +130,6 @@ def _health_states():
     }
 
 
-def _safe(getter, default=None):
-    try:
-        return getter()
-    except Exception:
-        return default
-
-
 def _active_design():
     return adsk.fusion.Design.cast(get_app().activeProduct)
 
@@ -145,17 +139,17 @@ def _read_items(timeline, states):
     rows = []
     for i in range(timeline.count):
         obj = timeline.item(i)
-        if _safe(lambda: obj.isGroup, False):
+        if attempt(lambda: obj.isGroup, False):
             continue
-        entity = _safe(lambda: obj.entity)
+        entity = attempt(lambda: obj.entity)
         rows.append((
             {
-                "index": _safe(lambda: obj.index, i),
-                "name": _safe(lambda: obj.name, ""),
+                "index": attempt(lambda: obj.index, i),
+                "name": attempt(lambda: obj.name, ""),
                 "entity_type": getattr(entity, "objectType", None) if entity is not None else None,
-                "health": state_name(_safe(lambda: obj.healthState), states),
-                "message": _safe(lambda: obj.errorOrWarningMessage, "") or "",
-                "suppressed": bool(_safe(lambda: obj.isSuppressed, False)),
+                "health": state_name(attempt(lambda: obj.healthState), states),
+                "message": attempt(lambda: obj.errorOrWarningMessage, "") or "",
+                "suppressed": bool(attempt(lambda: obj.isSuppressed, False)),
             },
             obj,
         ))
@@ -179,11 +173,11 @@ def _suppress_broken(rows, states):
         if row["health"] != "error":
             continue
         label = {"index": row["index"], "name": row["name"]}
-        if row["suppressed"] or _safe(lambda: obj.isSuppressed, False):
+        if row["suppressed"] or attempt(lambda: obj.isSuppressed, False):
             skipped.append({**label, "reason": "already suppressed"})
             continue
         # Suppressing an earlier item can heal or break later ones; re-check.
-        if state_name(_safe(lambda: obj.healthState), states) != "error":
+        if state_name(attempt(lambda: obj.healthState), states) != "error":
             skipped.append({**label, "reason": "no longer in error"})
             continue
         try:

@@ -21,6 +21,7 @@ from collections import OrderedDict
 import adsk.core
 import adsk.fusion
 
+from .common.api import safe, strict_items
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -494,19 +495,6 @@ def summarize(problems, max_details):
 # -- Fusion layer ---------------------------------------------------------------
 
 
-def _safe(obj, name, default=None):
-    try:
-        return getattr(obj, name)
-    except Exception:
-        return default
-
-
-def _items(collection):
-    count = _safe(collection, "count", 0) or 0
-    for i in range(count):
-        yield collection.item(i)
-
-
 def _xyz(p):
     return (p.x, p.y, p.z)
 
@@ -514,23 +502,23 @@ def _xyz(p):
 def iter_body_entries(root):
     """One entry per B-Rep body: root bodies, then every occurrence's proxies."""
     containers = [(None, root)]
-    containers.extend((occ, occ) for occ in _items(_safe(root, "allOccurrences")))
+    containers.extend((occ, occ) for occ in strict_items(safe(root, "allOccurrences")))
     for occ, owner in containers:
-        component = _safe(occ, "component") if occ is not None else root
-        for index, body in enumerate(_items(_safe(owner, "bRepBodies"))):
+        component = safe(occ, "component") if occ is not None else root
+        for index, body in enumerate(strict_items(safe(owner, "bRepBodies"))):
             yield {
-                "occurrence_path": _safe(occ, "fullPathName") if occ is not None else ROOT_PATH,
-                "component": _safe(component, "name"),
-                "body": _safe(body, "name"),
+                "occurrence_path": safe(occ, "fullPathName") if occ is not None else ROOT_PATH,
+                "component": safe(component, "name"),
+                "body": safe(body, "name"),
                 "index": index,
-                "visible": _safe(body, "isVisible"),
-                "occurrence_visible": _safe(occ, "isVisible") if occ is not None else None,
+                "visible": safe(body, "isVisible"),
+                "occurrence_visible": safe(occ, "isVisible") if occ is not None else None,
                 "_body": body,
             }
 
 
 def _bbox(body):
-    bb = _safe(body, "boundingBox")
+    bb = safe(body, "boundingBox")
     if bb is None:
         return None
     return (_xyz(bb.minPoint), _xyz(bb.maxPoint))
@@ -541,12 +529,12 @@ def measure_summary(entry):
     body = entry["_body"]
     return {
         "key": entry["key"], "occurrence_path": entry["occurrence_path"], "component": entry["component"],
-        "is_solid": _safe(body, "isSolid"),
-        "volume_cm3": _safe(body, "volume"),
-        "lumps": _safe(_safe(body, "lumps"), "count"),
-        "shells": _safe(_safe(body, "shells"), "count"),
-        "face_count": _safe(_safe(body, "faces"), "count"),
-        "edge_count": _safe(_safe(body, "edges"), "count"),
+        "is_solid": safe(body, "isSolid"),
+        "volume_cm3": safe(body, "volume"),
+        "lumps": safe(safe(body, "lumps"), "count"),
+        "shells": safe(safe(body, "shells"), "count"),
+        "face_count": safe(safe(body, "faces"), "count"),
+        "edge_count": safe(safe(body, "edges"), "count"),
         "bbox": _bbox(body),
     }
 
@@ -558,20 +546,20 @@ def measure_details(entry, metrics):
         metrics["face_scan_skipped"] = True
         return metrics
     faces = []
-    for index, face in enumerate(_items(_safe(body, "faces"))):
-        area_cm2 = _safe(face, "area")
+    for index, face in enumerate(strict_items(safe(body, "faces"))):
+        area_cm2 = safe(face, "area")
         if area_cm2 is None:
             continue
-        perimeter = sum((_safe(e, "length", 0.0) or 0.0) for e in _items(_safe(face, "edges")))
+        perimeter = sum((safe(e, "length", 0.0) or 0.0) for e in strict_items(safe(face, "edges")))
         faces.append({"index": index, "area": area_cm2, "perimeter": perimeter})
     metrics["faces"] = faces
-    metrics["edge_lengths"] = [x for x in (_safe(e, "length") for e in _items(_safe(body, "edges"))) if x is not None]
+    metrics["edge_lengths"] = [x for x in (safe(e, "length") for e in strict_items(safe(body, "edges"))) if x is not None]
     return metrics
 
 
 def _entity_path(entity):
-    occ = _safe(entity, "assemblyContext")
-    return _safe(occ, "fullPathName") if occ is not None else ROOT_PATH
+    occ = safe(entity, "assemblyContext")
+    return safe(occ, "fullPathName") if occ is not None else ROOT_PATH
 
 
 def _match_entity(entity, candidates):
@@ -582,7 +570,7 @@ def _match_entity(entity, candidates):
                 return e
         except Exception:
             pass
-    path, name = _entity_path(entity), _safe(entity, "name")
+    path, name = _entity_path(entity), safe(entity, "name")
     for e in candidates:
         if e["occurrence_path"] == path and e["body"] == name:
             return e
@@ -600,11 +588,11 @@ def _analyze_interference(design, entry_pairs, pairs_mode):
             raise RuntimeError("Design.createInterferenceInput returned null")
         interference_input.areCoincidentFacesIncluded = False
         found = []
-        for result in _items(design.analyzeInterference(interference_input)):
+        for result in strict_items(design.analyzeInterference(interference_input)):
             ea, eb = _match_entity(result.entityOne, entries), _match_entity(result.entityTwo, entries)
-            found.append((ea["key"] if ea else _safe(result.entityOne, "name"),
-                          eb["key"] if eb else _safe(result.entityTwo, "name"),
-                          _safe(_safe(result, "interferenceBody"), "volume")))
+            found.append((ea["key"] if ea else safe(result.entityOne, "name"),
+                          eb["key"] if eb else safe(result.entityTwo, "name"),
+                          safe(safe(result, "interferenceBody"), "volume")))
         return found
 
     if pairs_mode == "all":
@@ -632,7 +620,7 @@ def _boolean_interference(entry_pairs):
         if target is None or tool is None:
             continue
         if manager.booleanOperation(target, tool, adsk.fusion.BooleanTypes.IntersectionBooleanType):
-            vol = _safe(target, "volume")
+            vol = safe(target, "volume")
             if vol:
                 overlaps.append((a["key"], b["key"], vol))
     return overlaps
@@ -642,7 +630,7 @@ def run_interference(design, entry_pairs, pairs_mode):
     """Returns (overlaps, method, note)."""
     if not entry_pairs:
         return [], None, None
-    if callable(_safe(design, "createInterferenceInput")):
+    if callable(safe(design, "createInterferenceInput")):
         try:
             return _analyze_interference(design, entry_pairs, pairs_mode), "analyzeInterference", None
         except Exception as exc:
@@ -653,8 +641,8 @@ def run_interference(design, entry_pairs, pairs_mode):
 
 
 def _document_name(app):
-    doc = _safe(app, "activeDocument")
-    return _safe(doc, "name") if doc is not None else None
+    doc = safe(app, "activeDocument")
+    return safe(doc, "name") if doc is not None else None
 
 
 def run_checks(design, document, opts):

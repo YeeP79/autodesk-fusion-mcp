@@ -7,6 +7,7 @@ from unittest import mock
 import _fusion_test_bootstrap  # noqa: F401  (installs adsk mock + parent pkg shim)
 
 from fusion_bridge import editable_files as ef
+from fusion_bridge.common import api
 from fusion_bridge import tool_surface
 
 DAY = 86400.0
@@ -538,10 +539,10 @@ class VectorItemsTests(unittest.TestCase):
             def __len__(self):
                 return len(self._items)
 
-        self.assertEqual(list(ef._items(FakeVector(["a", None, "b"]))), ["a", "b"])
+        self.assertEqual(list(api.items(FakeVector(["a", None, "b"]))), ["a", "b"])
 
     def test_non_iterable_without_item_yields_nothing(self):
-        self.assertEqual(list(ef._items(object())), [])
+        self.assertEqual(list(api.items(object())), [])
 
 
 if __name__ == "__main__":

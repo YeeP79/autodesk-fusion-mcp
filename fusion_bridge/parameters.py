@@ -16,6 +16,7 @@ import adsk.core
 import adsk.fusion
 
 from . import parameter_graph as graph
+from .common.api import attempt
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
@@ -115,15 +116,8 @@ def validate_arguments(arguments):
 # -- Reading parameters ------------------------------------------------------
 
 
-def _safe(fn, default=None):
-    try:
-        return fn()
-    except Exception:
-        return default
-
-
 def _short_type(obj):
-    object_type = _safe(lambda: obj.objectType) or type(obj).__name__
+    object_type = attempt(lambda: obj.objectType) or type(obj).__name__
     return object_type.rsplit(":", 1)[-1]
 
 
@@ -131,10 +125,10 @@ def describe_owner(created_by):
     """``{"type", "name", "sketch"}`` for a model parameter's ``createdBy`` object."""
     if created_by is None:
         return None
-    owner = {"type": _short_type(created_by), "name": _safe(lambda: created_by.name)}
-    sketch = _safe(lambda: created_by.parentSketch)
+    owner = {"type": _short_type(created_by), "name": attempt(lambda: created_by.name)}
+    sketch = attempt(lambda: created_by.parentSketch)
     if sketch is not None:
-        owner["sketch"] = _safe(lambda: sketch.name)
+        owner["sketch"] = attempt(lambda: sketch.name)
     return owner
 
 
@@ -149,21 +143,21 @@ def owner_label(owner):
 
 def format_value(units_manager, param):
     """The parameter's value as Fusion would display it, in its own unit."""
-    is_text = _safe(lambda: param.valueType) == getattr(
+    is_text = attempt(lambda: param.valueType) == getattr(
         getattr(adsk.fusion, "ParameterValueTypes", None), "TextParameterValueType", 1
     )
     if is_text:
-        return _safe(lambda: param.textValue)
-    value = _safe(lambda: param.value)
+        return attempt(lambda: param.textValue)
+    value = attempt(lambda: param.value)
     if value is None:
         return None
-    unit = _safe(lambda: param.unit) or ""
+    unit = attempt(lambda: param.unit) or ""
     if not unit:
         return f"{value:.6g}"
-    text = _safe(lambda: units_manager.formatValue(value, unit))
+    text = attempt(lambda: units_manager.formatValue(value, unit))
     if text:
         return text
-    converted = _safe(lambda: units_manager.convert(value, units_manager.internalUnits, unit))
+    converted = attempt(lambda: units_manager.convert(value, units_manager.internalUnits, unit))
     if isinstance(converted, (int, float)):
         return f"{converted:.6g} {unit}"
     return None
@@ -171,19 +165,19 @@ def format_value(units_manager, param):
 
 def _read_param(param, kind, units_manager):
     info = {
-        "name": _safe(lambda: param.name),
+        "name": attempt(lambda: param.name),
         "kind": kind,
-        "expression": _safe(lambda: param.expression),
+        "expression": attempt(lambda: param.expression),
         "value": format_value(units_manager, param),
-        "unit": _safe(lambda: param.unit) or "",
-        "comment": _safe(lambda: param.comment) or "",
-        "favorite": bool(_safe(lambda: param.isFavorite, False)),
+        "unit": attempt(lambda: param.unit) or "",
+        "comment": attempt(lambda: param.comment) or "",
+        "favorite": bool(attempt(lambda: param.isFavorite, False)),
     }
     if kind == "model":
-        info["owner"] = describe_owner(_safe(lambda: param.createdBy))
-        info["role"] = _safe(lambda: param.role)
-        component = _safe(lambda: param.component)
-        info["component"] = _safe(lambda: component.name) if component is not None else None
+        info["owner"] = describe_owner(attempt(lambda: param.createdBy))
+        info["role"] = attempt(lambda: param.role)
+        component = attempt(lambda: param.component)
+        info["component"] = attempt(lambda: component.name) if component is not None else None
     return info
 
 
@@ -193,7 +187,7 @@ def snapshot(design):
     ``infos`` and ``objects`` are keyed by parameter name. ``design.allParameters``
     includes user parameters, which are classified by ``design.userParameters``.
     """
-    units_manager = _safe(lambda: design.unitsManager)
+    units_manager = attempt(lambda: design.unitsManager)
     infos, objects, user_order, model_order = {}, {}, [], []
     for param in design.userParameters:
         info = _read_param(param, "user", units_manager)
@@ -203,7 +197,7 @@ def snapshot(design):
         objects[info["name"]] = param
         user_order.append(info["name"])
     for param in design.allParameters:
-        name = _safe(lambda: param.name)
+        name = attempt(lambda: param.name)
         if name is None or name in infos:
             continue
         info = _read_param(param, "model", units_manager)
@@ -239,7 +233,7 @@ class DependencyIndex:
         param = self._objects.get(name)
         if param is None:
             return None
-        names = _safe(lambda: [p.name for p in param.dependentParameters])
+        names = attempt(lambda: [p.name for p in param.dependentParameters])
         if names is None:
             return None
         return [n for n in names if n != name]
@@ -259,7 +253,7 @@ class DependencyIndex:
     def dependencies_of(self, name):
         """Parameters ``name`` references: API ``dependencyParameters`` or parsed."""
         param = self._objects.get(name)
-        names = _safe(lambda: [p.name for p in param.dependencyParameters]) if param is not None else None
+        names = attempt(lambda: [p.name for p in param.dependencyParameters]) if param is not None else None
         if names is not None:
             return names, "api"
         expression = self._infos.get(name, {}).get("expression") or ""
@@ -422,7 +416,7 @@ def plan_update(infos, index, update, depth, units_manager=None):
     if mismatch:
         plan["dependency_check_mismatch"] = mismatch
     if units_manager is not None:
-        valid = _safe(lambda: units_manager.isValidExpression(expression, info["unit"]))
+        valid = attempt(lambda: units_manager.isValidExpression(expression, info["unit"]))
         if valid is not None:
             plan["expression_valid"] = bool(valid)
     return plan
@@ -454,7 +448,7 @@ def apply_updates(objects, infos, updates, units_manager):
             failed = True
             results.append(entry)
             continue
-        after = _safe(lambda: param.expression)
+        after = attempt(lambda: param.expression)
         entry["expression_after"] = after
         entry["value_after"] = format_value(units_manager, param)
         normalized_after = graph.normalize_expression(after)
@@ -501,12 +495,12 @@ def parameters(arguments):
         design = adsk.fusion.Design.cast(app.activeProduct)
         if design is None:
             return error_result("Error: the active product is not a Fusion design")
-        units_manager = _safe(lambda: design.unitsManager)
+        units_manager = attempt(lambda: design.unitsManager)
         infos, objects, user_order, model_order = snapshot(design)
         index = DependencyIndex(infos, objects)
         meta = {
             "document": app.activeDocument.name if app.activeDocument else None,
-            "default_length_units": _safe(lambda: units_manager.defaultLengthUnits),
+            "default_length_units": attempt(lambda: units_manager.defaultLengthUnits),
         }
 
         if args["action"] == "list":

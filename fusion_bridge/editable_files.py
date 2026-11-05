@@ -14,6 +14,7 @@ The walk, summary and hints are plain functions over duck-typed objects
 import time
 import traceback
 
+from .common.api import items, present
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -83,41 +84,8 @@ def validate_arguments(arguments):
 # -- Safe reads -------------------------------------------------------------
 
 
-def _safe(obj, name, default=None):
-    """Read an attribute; cloud-backed properties can raise or be missing."""
-    try:
-        value = getattr(obj, name)
-    except Exception:
-        return default
-    return default if value is None else value
-
-
-def _items(collection):
-    """Yield items of a Fusion collection (count/item), a vector or a plain list.
-
-    Fusion vectors such as the DataFileVector from personalUseLimits.editableFiles
-    have len() and iteration but no count/item.
-    """
-    if collection is None:
-        return
-    if isinstance(collection, (list, tuple)) or not hasattr(collection, "item"):
-        try:
-            yield from (item for item in collection if item is not None)
-        except TypeError:
-            pass
-        return
-    count = _safe(collection, "count", 0)
-    for i in range(count):
-        try:
-            item = collection.item(i)
-        except Exception:
-            continue
-        if item is not None:
-            yield item
-
-
 def is_design(data_file):
-    return str(_safe(data_file, "fileExtension", "")).lower() in DESIGN_EXTENSIONS
+    return str(present(data_file, "fileExtension", "")).lower() in DESIGN_EXTENSIONS
 
 
 def project_matches(project_name, project_filter):
@@ -132,10 +100,10 @@ def select_projects(projects, project_filter):
     projects = list(projects)
     if project_filter is None:
         return projects
-    exact = [p for p in projects if (_safe(p, "name", "") or "").lower() == project_filter.lower()]
+    exact = [p for p in projects if (present(p, "name", "") or "").lower() == project_filter.lower()]
     if exact:
         return exact
-    return [p for p in projects if project_matches(_safe(p, "name", ""), project_filter)]
+    return [p for p in projects if project_matches(present(p, "name", ""), project_filter)]
 
 
 # -- Ids --------------------------------------------------------------------
@@ -174,12 +142,12 @@ def file_entry(data_file, path_parts, details=True):
     property is a cloud read, so the walk defers version and dates until
     ``ensure_details`` (only editable files need them).
     """
-    name = _safe(data_file, "name", "")
+    name = present(data_file, "name", "")
     entry = {
         "path": "/".join([*path_parts, name]),
         "name": name,
-        "id": _safe(data_file, "id"),
-        "is_read_only": bool(_safe(data_file, "isReadOnly", True)),
+        "id": present(data_file, "id"),
+        "is_read_only": bool(present(data_file, "isReadOnly", True)),
         "_project": path_parts[0] if path_parts else "",
         "_file": data_file,
     }
@@ -192,9 +160,9 @@ def ensure_details(entry):
     """Read version and dates for *entry* once."""
     if "version" not in entry:
         data_file = entry.get("_file")
-        entry["version"] = _safe(data_file, "versionNumber")
-        entry["date_created"] = _safe(data_file, "dateCreated")
-        entry["date_modified"] = _safe(data_file, "dateModified")
+        entry["version"] = present(data_file, "versionNumber")
+        entry["date_created"] = present(data_file, "dateCreated")
+        entry["date_modified"] = present(data_file, "dateModified")
     return entry
 
 
@@ -226,10 +194,10 @@ def walk_projects(projects, max_depth, max_files, deadline=None, clock=time.mono
         if info["truncated"] or out_of_time():
             return
         info["folders_visited"] += 1
-        files = _safe(folder, "dataFiles")
+        files = present(folder, "dataFiles")
         if files is None:
             info["errors"].append(f"{'/'.join(parts)}: could not read files")
-        for data_file in _items(files):
+        for data_file in items(files):
             if out_of_time():
                 return
             if not is_design(data_file):
@@ -240,20 +208,20 @@ def walk_projects(projects, max_depth, max_files, deadline=None, clock=time.mono
                 info["truncated_reason"] = "max_files"
                 return
             entries.append(file_entry(data_file, parts, details=False))
-        for sub in _items(_safe(folder, "dataFolders")):
+        for sub in items(present(folder, "dataFolders")):
             if info["truncated"]:
                 return
             if depth >= max_depth:
                 info["folders_skipped_depth"] += 1
                 continue
-            visit(sub, [*parts, _safe(sub, "name", "?")], depth + 1)
+            visit(sub, [*parts, present(sub, "name", "?")], depth + 1)
 
     for project in projects:
         if info["truncated"]:
             break
-        name = _safe(project, "name", "?")
+        name = present(project, "name", "?")
         info["projects_walked"].append(name)
-        root = _safe(project, "rootFolder")
+        root = present(project, "rootFolder")
         if root is None:
             info["errors"].append(f"{name}: no root folder")
             continue
@@ -272,7 +240,7 @@ def last_changed(entry):
 
 
 def reference_names(data_file, attribute):
-    return [_safe(f, "name", "?") for f in _items(_safe(data_file, attribute))]
+    return [present(f, "name", "?") for f in items(present(data_file, attribute))]
 
 
 def release_hints(entry, open_files, now, stale_days):
@@ -302,8 +270,8 @@ def release_hints(entry, open_files, now, stale_days):
         blockers.append(f"changed {age_days} days ago (within {stale_days} days)")
 
     data_file = entry.get("_file")
-    parents = reference_names(data_file, "parentReferences") if _safe(data_file, "hasParentReferences", False) else []
-    children = reference_names(data_file, "childReferences") if _safe(data_file, "hasChildReferences", False) else []
+    parents = reference_names(data_file, "parentReferences") if present(data_file, "hasParentReferences", False) else []
+    children = reference_names(data_file, "childReferences") if present(data_file, "hasChildReferences", False) else []
     if parents:
         hints.append(
             f"linked into {len(parents)} other design(s): they still load it read-only, "
@@ -332,10 +300,10 @@ def personal_use_summary(limits):
     """Read PersonalUseLimits (None for paid licences) into a plain dict."""
     if limits is None:
         return None
-    files = list(_items(_safe(limits, "editableFiles", [])))
+    files = list(items(present(limits, "editableFiles", [])))
     return {
-        "max_editable": _safe(limits, "maxEditableFileCount"),
-        "editable_count": _safe(limits, "editableFileCount"),
+        "max_editable": present(limits, "maxEditableFileCount"),
+        "editable_count": present(limits, "editableFileCount"),
         "files": files,
     }
 
@@ -363,14 +331,14 @@ def match_personal_use_files(entries, api_files):
     unmatched = []
     sample = []
     for data_file in api_files:
-        raw_ids = [_safe(data_file, "id"), _safe(data_file, "versionId")]
+        raw_ids = [present(data_file, "id"), present(data_file, "versionId")]
         if len(sample) < IDS_SAMPLE_SIZE:
             sample.append(raw_ids[0] if raw_ids[0] is not None else raw_ids[1])
         entry = next((by_key[k] for k in map(lineage_key, raw_ids) if k in by_key), None)
         matched_by = "id"
         if entry is None:
-            project = _safe(_safe(data_file, "parentProject"), "name", "")
-            candidates = by_name.get(_name_key(project, _safe(data_file, "name", "")), [])
+            project = present(present(data_file, "parentProject"), "name", "")
+            candidates = by_name.get(_name_key(project, present(data_file, "name", "")), [])
             entry = candidates[0] if len(candidates) == 1 else None
             matched_by = "project_and_name"
         if entry is None:
@@ -391,7 +359,7 @@ def summarize(entries, walk_info, personal_use, open_files, options, now):
         for data_file in unmatched:
             # Editable but outside the walk (other hub, filter, or cap):
             # still report it; Fusion gives no folder path from here.
-            project = _safe(_safe(data_file, "parentProject"), "name", "?")
+            project = present(present(data_file, "parentProject"), "name", "?")
             entry = file_entry(data_file, [project, "..."])
             entry["is_read_only"] = False
             entry["outside_walk"] = True
@@ -465,12 +433,12 @@ def summarize(entries, walk_info, personal_use, open_files, options, now):
 def open_file_states(documents):
     """Map lineage key -> state for open documents that are saved to the cloud."""
     states = {}
-    for doc in _items(documents):
-        data_file = _safe(doc, "dataFile")
-        file_id = lineage_key(_safe(data_file, "id"))
+    for doc in items(documents):
+        data_file = present(doc, "dataFile")
+        file_id = lineage_key(present(data_file, "id"))
         if file_id:
-            states[file_id] = {"modified": bool(_safe(doc, "isModified", False)),
-                               "active": bool(_safe(doc, "isActive", False))}
+            states[file_id] = {"modified": bool(present(doc, "isModified", False)),
+                               "active": bool(present(doc, "isActive", False))}
     return states
 
 
@@ -483,17 +451,17 @@ def editable_files(arguments):
         app = get_app()
         data = app.data
         started = time.monotonic()
-        all_projects = list(_items(_safe(data, "dataProjects")))
+        all_projects = list(items(present(data, "dataProjects")))
         projects = select_projects(all_projects, options["project"])
         if options["project"] and not projects:
-            names = sorted(_safe(p, "name", "?") for p in all_projects)
+            names = sorted(present(p, "name", "?") for p in all_projects)
             return error_result(f"Error: no project matches {options['project']!r}. Projects: {names}")
 
         entries, walk_info = walk_projects(projects, options["max_depth"], options["max_files"],
                                            deadline=started + options["time_budget_s"])
-        personal_use = personal_use_summary(_safe(data, "personalUseLimits"))
+        personal_use = personal_use_summary(present(data, "personalUseLimits"))
         report = summarize(entries, walk_info, personal_use, open_file_states(app.documents), options, time.time())
-        report["hub"] = _safe(_safe(data, "activeHub"), "name")
+        report["hub"] = present(present(data, "activeHub"), "name")
         report["elapsed_seconds"] = round(time.monotonic() - started, 2)
         log(f"[MCP] editable_files: {report['editable_count']}/{report['editable_limit']} editable, "
             f"{len(entries)} designs scanned in {report['elapsed_seconds']}s")

@@ -16,6 +16,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
+from .common.api import safe, strict_items
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
@@ -281,41 +282,28 @@ def sort_and_cap(groups, max_faces):
 # -- Fusion access (duck-typed so fakes can drive it) ---------------------------
 
 
-def _safe(obj, name, default=None):
-    try:
-        return getattr(obj, name)
-    except Exception:
-        return default
-
-
-def _items(collection):
-    count = _safe(collection, "count", 0) or 0
-    for i in range(count):
-        yield collection.item(i)
-
-
 def iter_body_entries(root):
     """Yield one entry per B-Rep body: root bodies, then every occurrence's proxies."""
     containers = [(None, root)]
-    containers.extend((occ, occ) for occ in _items(_safe(root, "allOccurrences")))
+    containers.extend((occ, occ) for occ in strict_items(safe(root, "allOccurrences")))
     for occ, owner in containers:
-        bodies = _safe(owner, "bRepBodies")
-        component = _safe(occ, "component") if occ is not None else root
-        for index, body in enumerate(_items(bodies)):
+        bodies = safe(owner, "bRepBodies")
+        component = safe(occ, "component") if occ is not None else root
+        for index, body in enumerate(strict_items(bodies)):
             yield {
-                "occurrence_path": _safe(occ, "fullPathName") if occ is not None else ROOT_PATH,
-                "component": _safe(component, "name"),
-                "linked": bool(_safe(occ, "isReferencedComponent", False)) if occ is not None else False,
-                "body": _safe(body, "name"),
+                "occurrence_path": safe(occ, "fullPathName") if occ is not None else ROOT_PATH,
+                "component": safe(component, "name"),
+                "linked": bool(safe(occ, "isReferencedComponent", False)) if occ is not None else False,
+                "body": safe(body, "name"),
                 "index": index,
-                "visible": _safe(body, "isVisible"),
-                "occurrence_visible": _safe(occ, "isVisible") if occ is not None else None,
+                "visible": safe(body, "isVisible"),
+                "occurrence_visible": safe(occ, "isVisible") if occ is not None else None,
                 "_body": body,
             }
 
 
 def _bbox(entity, units):
-    bb = _safe(entity, "boundingBox")
+    bb = safe(entity, "boundingBox")
     if bb is None:
         return None, None
     return point(_xyz(bb.minPoint), units), point(_xyz(bb.maxPoint), units)
@@ -323,14 +311,14 @@ def _bbox(entity, units):
 
 def body_row(entry, units):
     body = entry["_body"]
-    vol_cm3 = _safe(body, "volume")
+    vol_cm3 = safe(body, "volume")
     bb_min, bb_max = _bbox(body, units)
     row = {k: v for k, v in entry.items() if not k.startswith("_")}
     row["body_index"] = row.pop("index")
-    row["solid"] = _safe(body, "isSolid")
+    row["solid"] = safe(body, "isSolid")
     row["volume_in3"] = round(vol_cm3 / CM3_PER_IN3, _DIGITS) if vol_cm3 is not None else None
     row["volume_cm3"] = round(vol_cm3, _DIGITS) if vol_cm3 is not None else None
-    a = _safe(body, "area")
+    a = safe(body, "area")
     row["area"] = area(a, units) if a is not None else None
     row["bbox_min"] = bb_min
     row["bbox_max"] = bb_max
@@ -360,7 +348,7 @@ def list_body_rows(root, opts):
 
 
 def _native(entity):
-    return _safe(entity, "nativeObject") or entity
+    return safe(entity, "nativeObject") or entity
 
 
 def _outward_normal(face):
@@ -377,8 +365,8 @@ def _outward_normal(face):
 
 def _vertex_points(face):
     pts = []
-    for v in _items(_safe(face, "vertices")):
-        g = _safe(v, "geometry")
+    for v in strict_items(safe(face, "vertices")):
+        g = safe(v, "geometry")
         if g is not None:
             pts.append(_xyz(g))
     return pts
@@ -393,10 +381,10 @@ def feature_map(component, temp_ids, native_body):
     found = {}
     if not temp_ids:
         return found, None
-    features = _safe(component, "features")
+    features = safe(component, "features")
     if features is None:
         return found, "component.features unavailable"
-    count = _safe(features, "count", 0) or 0
+    count = safe(features, "count", 0) or 0
     note = None
     if count > FEATURE_SCAN_LIMIT:
         note = f"only the first {FEATURE_SCAN_LIMIT} of {count} features scanned"
@@ -406,22 +394,22 @@ def feature_map(component, temp_ids, native_body):
             faces = feature.faces
         except Exception:
             continue
-        for f in _items(faces):
-            tid = _safe(f, "tempId")
+        for f in strict_items(faces):
+            tid = safe(f, "tempId")
             if tid in temp_ids and tid not in found:
                 try:
                     if native_body is not None and f.body != native_body:
                         continue
                 except Exception:
                     continue
-                found[tid] = (_safe(feature, "name"), _object_type(feature))
+                found[tid] = (safe(feature, "name"), _object_type(feature))
         if len(found) == len(temp_ids):
             break
     return found, note
 
 
 def _object_type(obj):
-    t = _safe(obj, "objectType") or type(obj).__name__
+    t = safe(obj, "objectType") or type(obj).__name__
     return t.split("::")[-1]
 
 
@@ -429,16 +417,16 @@ def _face_record(face, kind, units):
     """World-frame record for one analytic face (geometry from the proxy)."""
     g = face.geometry
     native = _native(face)
-    face_area = _safe(face, "area", 0.0) or 0.0
-    reversed_ = _safe(face, "isParamReversed")
-    rec = {"area": area(face_area, units), "is_param_reversed": reversed_, "_temp_id": _safe(native, "tempId")}
+    face_area = safe(face, "area", 0.0) or 0.0
+    reversed_ = safe(face, "isParamReversed")
+    rec = {"area": area(face_area, units), "is_param_reversed": reversed_, "_temp_id": safe(native, "tempId")}
     if kind == "plane":
         p, n = _outward_normal(face)
         if n is None:
             n = _xyz(g.normal)
             if reversed_:
                 n = tuple(-c for c in n)
-            p = _xyz(_safe(face, "pointOnFace") or g.origin)
+            p = _xyz(safe(face, "pointOnFace") or g.origin)
         rec.update({"point": point(p, units), "normal": direction(n)})
     elif kind == "cylinder":
         r = g.radius
@@ -460,7 +448,7 @@ def _face_record(face, kind, units):
         rec["concavity_basis"] = basis if concavity else None
         axial = axial_extent(_vertex_points(native), n_origin, n_axis)
         rec["length_along_axis"] = length(axial, units) if axial > 0 else None
-        rec["sweep_deg"] = sweep_degrees(_safe(native, "area", face_area) or face_area, ng.radius, axial)
+        rec["sweep_deg"] = sweep_degrees(safe(native, "area", face_area) or face_area, ng.radius, axial)
     elif kind == "cone":
         rec.update({"radius": length(g.radius, units), "half_angle_deg": round(math.degrees(g.halfAngle), 4),
                     "axis_origin": point(_xyz(g.origin), units), "axis_direction": direction(_xyz(g.axis))})
@@ -473,11 +461,11 @@ def _face_record(face, kind, units):
 
 
 def _physical(body, units):
-    props = _safe(body, "physicalProperties")
+    props = safe(body, "physicalProperties")
     if props is None:
         return None
     out = {}
-    com = _safe(props, "centerOfMass")
+    com = safe(props, "centerOfMass")
     if com is not None:
         out["center_of_mass"] = point(_xyz(com), units)
     try:
@@ -494,9 +482,9 @@ def describe(entry, units, max_faces):
     body = entry["_body"]
     by_type = {}
     groups = {g: [] for g in ANALYTIC_GROUPS.values()}
-    for face in _items(_safe(body, "faces")):
-        geometry = _safe(face, "geometry")
-        kind = SURFACE_TYPES.get(_safe(geometry, "surfaceType"), "unknown")
+    for face in strict_items(safe(body, "faces")):
+        geometry = safe(face, "geometry")
+        kind = SURFACE_TYPES.get(safe(geometry, "surfaceType"), "unknown")
         by_type[kind] = by_type.get(kind, 0) + 1
         if kind in ANALYTIC_GROUPS:
             try:
@@ -508,7 +496,7 @@ def describe(entry, units, max_faces):
     # Creating feature, looked up only for the reported cylinders and tori.
     wanted = {r["_temp_id"] for g in ("cylinders", "tori") for r in groups[g] if r["_temp_id"] is not None}
     native_body = _native(body)
-    creators, feature_note = feature_map(_safe(native_body, "parentComponent"), wanted, native_body)
+    creators, feature_note = feature_map(safe(native_body, "parentComponent"), wanted, native_body)
     for group, records in groups.items():
         for r in records:
             tid = r.pop("_temp_id")
@@ -520,23 +508,23 @@ def describe(entry, units, max_faces):
                     r["hint"] = hint
 
     bb_min, bb_max = _bbox(body, units)
-    vol = _safe(body, "volume")
-    body_area = _safe(body, "area")
+    vol = safe(body, "volume")
+    body_area = safe(body, "area")
     payload = {
         "body": {"occurrence_path": entry["occurrence_path"], "component": entry["component"],
                  "linked": entry["linked"], "body": entry["body"], "body_index": entry["index"],
                  "visible": entry["visible"], "occurrence_visible": entry["occurrence_visible"]},
         "units": unit_labels(units),
-        "is_solid": _safe(body, "isSolid"),
+        "is_solid": safe(body, "isSolid"),
         "volume": volume(vol, units) if vol is not None else None,
         "area": area(body_area, units) if body_area is not None else None,
         "bbox_min": bb_min,
         "bbox_max": bb_max,
         "counts": {
             "faces": sum(by_type.values()),
-            "edges": _safe(_safe(body, "edges"), "count"),
-            "shells": _safe(_safe(body, "shells"), "count"),
-            "lumps": _safe(_safe(body, "lumps"), "count"),
+            "edges": safe(safe(body, "edges"), "count"),
+            "shells": safe(safe(body, "shells"), "count"),
+            "lumps": safe(safe(body, "lumps"), "count"),
             "faces_by_type": by_type,
         },
         "physical": _physical(body, units),

@@ -32,6 +32,7 @@ from collections import Counter
 
 import adsk.core
 
+from .common.api import safe, strict_items
 from .common.results import tool_result
 from .dispatch import get_app, log
 
@@ -60,23 +61,6 @@ MAX_QUIET_PUMP_S = 0.25
 _POLL_S = 0.1
 _STATE_POLL_S = 0.5
 _IDLE_COMMANDS = ("SelectCommand", None, "")
-
-
-def _safe(obj, attr, default=None):
-    """Read an attribute; cloud-backed properties can raise or be missing."""
-    try:
-        return getattr(obj, attr)
-    except Exception:
-        return default
-
-
-def _items(collection):
-    """Members of a Fusion collection (count/item) or a vector (iteration only)."""
-    if collection is None:
-        return []
-    if hasattr(collection, "item") and hasattr(collection, "count"):
-        return [collection.item(i) for i in range(collection.count)]
-    return list(collection)
 
 
 def _is_int(value):
@@ -128,16 +112,16 @@ def match_named(objects, name, label):
     """
     rows = []
     for obj in objects:
-        own = _safe(obj, "name") or ""
-        ext = _safe(obj, "fileExtension")
+        own = safe(obj, "name") or ""
+        ext = safe(obj, "fileExtension")
         rows.append((obj, {own, f"{own}.{ext}"} if ext else {own}))
     hits = ([obj for obj, names in rows if name in names]
             or [obj for obj, names in rows if name.casefold() in {n.casefold() for n in names}])
     if not hits:
-        found = sorted(_safe(obj, "name") or "?" for obj, _ in rows)[:50]
+        found = sorted(safe(obj, "name") or "?" for obj, _ in rows)[:50]
         raise LookupError(f"No {label} named {name!r}; found: {found}")
     if len(hits) > 1:
-        listed = "; ".join(f"{_safe(o, 'name')} (id {_safe(o, 'id')})" for o in hits)
+        listed = "; ".join(f"{safe(o, 'name')} (id {safe(o, 'id')})" for o in hits)
         raise LookupError(f"{len(hits)} {label}s named {name!r}: {listed}; use the id")
     return hits[0]
 
@@ -317,46 +301,46 @@ def _read_state(app, file_id):
         data_file = app.data.findFileById(file_id)
     except Exception:
         return None
-    return state_name(_safe(data_file, "isReadOnly")) if data_file is not None else None
+    return state_name(safe(data_file, "isReadOnly")) if data_file is not None else None
 
 
 def _editable_limits(app):
     """Personal Use counters; None on paid licences (personalUseLimits is null)."""
-    limits = _safe(app.data, "personalUseLimits")
+    limits = safe(app.data, "personalUseLimits")
     if limits is None:
         return None
-    return {"count": _safe(limits, "editableFileCount"), "max": _safe(limits, "maxEditableFileCount")}
+    return {"count": safe(limits, "editableFileCount"), "max": safe(limits, "maxEditableFileCount")}
 
 
 def _describe(document):
-    data_file = _safe(document, "dataFile")
+    data_file = safe(document, "dataFile")
     return {
-        "name": _safe(document, "name"),
-        "is_active": _safe(document, "isActive"),
-        "is_visible": _safe(document, "isVisible"),
-        "is_modified": _safe(document, "isModified"),
-        "file_id": _safe(data_file, "id"),
-        "version": _safe(data_file, "versionNumber"),
+        "name": safe(document, "name"),
+        "is_active": safe(document, "isActive"),
+        "is_visible": safe(document, "isVisible"),
+        "is_modified": safe(document, "isModified"),
+        "file_id": safe(data_file, "id"),
+        "version": safe(data_file, "versionNumber"),
     }
 
 
 def _snapshot(app):
     """(documents, infos) for everything open, hidden instances included."""
-    documents = _items(app.documents)
+    documents = strict_items(app.documents)
     return documents, [_describe(document) for document in documents]
 
 
 def _linked_file_ids(document):
     """File ids *document* links, or None when they could not be read."""
     try:
-        return {_safe(_safe(ref, "dataFile"), "id") for ref in _items(document.documentReferences)}
+        return {safe(safe(ref, "dataFile"), "id") for ref in strict_items(document.documentReferences)}
     except Exception:
         return None
 
 
 def _resolve_project(app, project):
-    projects = _items(app.data.dataProjects)
-    by_id = [p for p in projects if _safe(p, "id") == project]
+    projects = strict_items(app.data.dataProjects)
+    by_id = [p for p in projects if safe(p, "id") == project]
     return by_id[0] if by_id else match_named(projects, project, "project")
 
 
@@ -366,8 +350,8 @@ def _resolve_path(project_obj, path):
         raise LookupError(f"{path!r} does not name a file")
     folder = project_obj.rootFolder
     for segment in segments[:-1]:
-        folder = match_named(_items(folder.dataFolders), segment, "folder")
-    return match_named(_items(folder.dataFiles), segments[-1], "file")
+        folder = match_named(strict_items(folder.dataFolders), segment, "folder")
+    return match_named(strict_items(folder.dataFiles), segments[-1], "file")
 
 
 def _resolve_one(app, spec, project_obj):
@@ -401,10 +385,10 @@ def _resolve_rows(app, specs, project):
             continue
         rows.append({
             "file": spec,
-            "id": _safe(data_file, "id"),
-            "name": _safe(data_file, "name"),
-            "before": state_name(_safe(data_file, "isReadOnly")),
-            "latest_version": _safe(data_file, "latestVersionNumber"),
+            "id": safe(data_file, "id"),
+            "name": safe(data_file, "name"),
+            "before": state_name(safe(data_file, "isReadOnly")),
+            "latest_version": safe(data_file, "latestVersionNumber"),
             "data_file": data_file,
         })
     repeated = sorted(file_id for file_id, n in Counter(row["id"] for row in rows).items() if n > 1)
@@ -417,10 +401,10 @@ def _resolve_rows(app, specs, project):
 
 
 def _target_is_active(app, file_id):
-    active = _safe(app, "activeDocument")
-    if active is None or _safe(_safe(active, "dataFile"), "id") != file_id:
+    active = safe(app, "activeDocument")
+    if active is None or safe(safe(active, "dataFile"), "id") != file_id:
         return False
-    return _safe(app, "activeProduct") is not None
+    return safe(app, "activeProduct") is not None
 
 
 def _wait_settled(app, file_id, deadline, quiet_s=SETTLE_QUIET_S):
@@ -431,9 +415,9 @@ def _wait_settled(app, file_id, deadline, quiet_s=SETTLE_QUIET_S):
     while True:
         pump_s = _pump()
         now = time.monotonic()
-        command = _safe(ui, "activeCommand")
+        command = safe(ui, "activeCommand")
         target_active = file_id is None or _target_is_active(app, file_id)
-        settled = tracker.observe(now, target_active, command, _safe(app.documents, "count"), pump_s)
+        settled = tracker.observe(now, target_active, command, safe(app.documents, "count"), pump_s)
         if settled or now >= deadline:
             return {"settled": settled, "waited_seconds": round(now - started, 2),
                     "active_command": command, "target_active": target_active}
@@ -486,7 +470,7 @@ def _close_opened(app, document, entry, file_id, edited_ids):
     if not settle["settled"]:
         entry["close_skipped"] = "not_settled"
         return
-    block = close_block(_safe(document, "isModified"), _linked_file_ids(document), edited_ids)
+    block = close_block(safe(document, "isModified"), _linked_file_ids(document), edited_ids)
     if block:
         entry["close_skipped"] = block
         return
@@ -510,14 +494,14 @@ def _bring_to_front(app, row, plan, documents, entry):
             _fail(entry, "open_failed", "Fusion did not open the document.")
             return None
         entry["opened"] = entry["still_open"] = True
-        if _safe(document, "isActive") is not True:
+        if safe(document, "isActive") is not True:
             document.activate()
         return document
 
     document = documents[plan["index"]]
     if plan["open_action"] == "activate" and not document.activate():
         _fail(entry, "activate_failed", (
-            f"Fusion refused to activate {_safe(document, 'name')!r}. A hidden instance held by a parent "
+            f"Fusion refused to activate {safe(document, 'name')!r}. A hidden instance held by a parent "
             "cannot always be brought forward; close the parent, or open the file in its own tab."))
         return None
     return document
@@ -654,13 +638,13 @@ def _restore_active(app, document, name, pending):
                           "land on this one.")
         return result
     try:
-        if _safe(document, "isActive") is not True:
+        if safe(document, "isActive") is not True:
             document.activate()
         deadline = time.monotonic() + RESTORE_TIMEOUT_S
-        while _safe(document, "isActive") is not True and time.monotonic() < deadline:
+        while safe(document, "isActive") is not True and time.monotonic() < deadline:
             _pump()
             time.sleep(_POLL_S)
-        result["restored"] = _safe(document, "isActive") is True
+        result["restored"] = safe(document, "isActive") is True
     except Exception as exc:
         result["note"] = f"Could not re-activate it: {type(exc).__name__}: {exc}"
     if not result["restored"] and "note" not in result:
@@ -716,8 +700,8 @@ def set_editable_state(arguments):
             result.update(files=entries, summary=summarize(entries), editable_count=_limits_report(limits))
             return tool_result(result)
 
-        active = _safe(app, "activeDocument")
-        active_name = _safe(active, "name")
+        active = safe(app, "activeDocument")
+        active_name = safe(active, "name")
         entries = _run_batch(app, cmd_def, rows, plans, target, started + TOTAL_BUDGET_S)
         pending = any(entry["command_pending"] for entry in entries)
         if needs_command:
