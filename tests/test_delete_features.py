@@ -136,6 +136,27 @@ def text(result):
     return json.loads(result["content"][0]["text"])
 
 
+class RaisingEdgeSet(Fake):
+    """Edge set inputs only read with the marker right before the feature."""
+
+    def __init__(self):
+        super().__init__("ConstantRadiusFilletEdgeSet")
+
+    @property
+    def edges(self):
+        raise RuntimeError("3 : position the timeline marker before this feature")
+
+
+class RaisingCut(Fake):
+    def __init__(self, name, comp, bodies=(), **inputs):
+        super().__init__("ExtrudeFeature", name=name, parentComponent=comp, bodies=Coll(bodies),
+                         entityToken=f"tok-{name}", isValid=True, **inputs)
+
+    @property
+    def participantBodies(self):
+        raise RuntimeError("3 : position the timeline marker before this feature")
+
+
 # -- Schema and argument validation -------------------------------------------------
 
 
@@ -247,15 +268,17 @@ class DependentTests(unittest.TestCase):
 
     def test_transitive_strong_dependents(self):
         strong, weak = df.find_dependents(self.entries, [0])
-        self.assertEqual(sorted(strong), [1, 3, 4])
+        self.assertEqual(sorted(strong), [1, 2, 3, 4])
         self.assertEqual(strong[1], [{"on": 0, "via": "sketch:1"}])
+        # Fillet1 has no readable inputs: its output body alone ties it to Extrude1.
+        self.assertEqual(strong[2], [{"on": 1, "via": "body:B"}])
         self.assertNotIn(5, strong)
         self.assertEqual(weak, {})
 
     def test_modifier_only_has_weak_dependents(self):
         strong, weak = df.find_dependents(self.entries, [2])
         self.assertEqual(strong, {})
-        self.assertEqual(sorted(weak), [3])
+        self.assertEqual(sorted(weak), [3, 4])
 
     def test_earlier_items_are_never_dependents(self):
         strong, weak = df.find_dependents(self.entries, [4])
@@ -267,14 +290,14 @@ class DependentTests(unittest.TestCase):
                                       labels={"sketch:1": "Sketch 'Sketch1'"})
         self.assertIsNotNone(refusal)
         self.assertIn("include_dependents", refusal["error"])
-        self.assertEqual([d["name"] for d in refusal["dependents"]], ["Extrude1", "Sketch2", "Extrude2"])
+        self.assertEqual([d["name"] for d in refusal["dependents"]], ["Extrude1", "Fillet1", "Sketch2", "Extrude2"])
         self.assertEqual(refusal["dependents"][0]["consumes"], [{"on": "Sketch1", "via": "Sketch 'Sketch1'"}])
 
     def test_include_dependents_orders_latest_first(self):
         plan, refusal = df.build_plan(self.entries, [self.entries[0]], include_dependents=True)
         self.assertIsNone(refusal)
         self.assertEqual([(i["name"], i["role"]) for i in plan["delete_order"]],
-                         [("Extrude2", "dependent"), ("Sketch2", "dependent"),
+                         [("Extrude2", "dependent"), ("Sketch2", "dependent"), ("Fillet1", "dependent"),
                           ("Extrude1", "dependent"), ("Sketch1", "requested")])
 
     def test_multiple_targets_latest_first(self):
@@ -286,14 +309,14 @@ class DependentTests(unittest.TestCase):
         plan, refusal = df.build_plan(self.entries, [self.entries[0], self.entries[1]], include_dependents=True)
         self.assertIsNone(refusal)
         names = [i["name"] for i in plan["delete_order"]]
-        self.assertEqual(names, ["Extrude2", "Sketch2", "Extrude1", "Sketch1"])
-        self.assertEqual(plan["delete_order"][2]["role"], "requested")
+        self.assertEqual(names, ["Extrude2", "Sketch2", "Fillet1", "Extrude1", "Sketch1"])
+        self.assertEqual(plan["delete_order"][3]["role"], "requested")
 
     def test_weak_dependents_reported_not_deleted(self):
         plan, refusal = df.build_plan(self.entries, [self.entries[2]], include_dependents=True)
         self.assertIsNone(refusal)
         self.assertEqual([i["name"] for i in plan["delete_order"]], ["Fillet1"])
-        self.assertEqual([i["name"] for i in plan["possibly_affected"]], ["Sketch2"])
+        self.assertEqual([i["name"] for i in plan["possibly_affected"]], ["Sketch2", "Extrude2"])
 
     def test_undetected_dependents_refused_via_is_deletable(self):
         entries = [entry(0, "Sketch9", produces=["sketch:9"], deletable=False, entity_type="Sketch")]
@@ -311,6 +334,80 @@ class DependentTests(unittest.TestCase):
         entries = [entry(0, "Sketch1", collapsed=True, entity_type="Sketch")]
         _, refusal = df.build_plan(entries, entries, include_dependents=False)
         self.assertIn("collapsed", refusal["error"])
+
+
+class UnresolvedTests(unittest.TestCase):
+    """Later features the plan cannot rule out are listed, never silently dropped."""
+
+    def _plan(self, entries, target=0, include_dependents=True):
+        plan, refusal = df.build_plan(entries, [entries[target]], include_dependents)
+        self.assertIsNone(refusal)
+        return plan
+
+    def test_unreadable_inputs_listed_with_a_reason_and_kept(self):
+        entries = [entry(0, "Sketch1", produces=["sketch:1"], entity_type="Sketch"),
+                   dict(entry(1, "Cut1", produces=["body:Z"]), inputs_unreadable=True)]
+        plan = self._plan(entries)
+        self.assertEqual([i["name"] for i in plan["delete_order"]], ["Sketch1"])
+        self.assertEqual(plan["possibly_affected"][0]["name"], "Cut1")
+        self.assertIn("could not be read", plan["possibly_affected"][0]["reason"])
+
+    def test_unreadable_before_the_target_is_irrelevant(self):
+        entries = [dict(entry(0, "Cut1"), inputs_unreadable=True),
+                   entry(1, "Sketch1", produces=["sketch:1"], entity_type="Sketch")]
+        self.assertEqual(self._plan(entries, target=1)["possibly_affected"], [])
+
+    def test_unreadable_dependent_is_a_dependent_not_possibly_affected(self):
+        entries = [entry(0, "Box1", produces=["body:B"]),
+                   dict(entry(1, "Cut1", produces=["body:B"]), inputs_unreadable=True)]
+        plan = self._plan(entries)
+        self.assertEqual([d["name"] for d in plan["dependents"]], ["Cut1"])
+        self.assertEqual(plan["possibly_affected"], [])
+
+    def test_body_with_no_traceable_creator(self):
+        # Box1's bodies do not compare equal to the fillet's: the fillet looks like a creator.
+        entries = [entry(0, "Box1", produces=["body:old"]),
+                   dict(entry(1, "Fillet1", produces=["body:new"]), modifies_only=True),
+                   dict(entry(2, "Cut1", produces=["body:new"]), modifies_only=True),
+                   entry(3, "Other", produces=["body:other"], consumes=["sketch:x"])]
+        plan = self._plan(entries)
+        self.assertEqual([i["name"] for i in plan["possibly_affected"]], ["Fillet1", "Cut1"])
+        self.assertIn("could not be traced", plan["possibly_affected"][1]["reason"])
+
+    def test_orphan_older_than_the_target_is_not_its_problem(self):
+        entries = [dict(entry(0, "Fillet1", produces=["body:new"]), modifies_only=True),
+                   entry(1, "Sketch1", produces=["sketch:1"], entity_type="Sketch"),
+                   dict(entry(2, "Cut1", produces=["body:new"]), modifies_only=True)]
+        self.assertEqual(self._plan(entries, target=1)["possibly_affected"], [])
+
+    def test_target_reporting_no_bodies_flags_later_features(self):
+        entries = [dict(entry(0, "Box1"), is_feature=True, bodies_unknown=True),
+                   dict(entry(1, "Fillet1", produces=["body:C"]), is_feature=True),
+                   entry(2, "Sketch9", produces=["sketch:9"], entity_type="Sketch")]
+        plan = self._plan(entries)
+        self.assertEqual([i["name"] for i in plan["possibly_affected"]], ["Fillet1"])
+        self.assertIn("Box1 reports no bodies", plan["possibly_affected"][0]["reason"])
+
+
+class RemovedItemsTests(unittest.TestCase):
+    def test_token_or_name_keeps_an_item(self):
+        before = [entry(0, "A"), entry(1, "B"), entry(2, "C")]
+        renamed = dict(entry(0, "A2"), token="tok-A")
+        new_token = dict(entry(1, "B"), token="tok-other")
+        self.assertEqual([e["name"] for e in df.removed_items(before, [renamed, new_token])], ["C"])
+
+    def test_equal_names_are_counted(self):
+        first, second = dict(entry(0, "Sk"), token=None), dict(entry(1, "Sk"), token=None)
+        self.assertEqual(len(df.removed_items([first, second], [dict(entry(0, "Sk"), token=None)])), 1)
+
+    def test_same_name_in_another_component_does_not_keep_it(self):
+        gone = entry(0, "A")
+        other = dict(entry(0, "A", component="Other"), token="tok-other")
+        self.assertEqual(df.removed_items([gone], [other]), [gone])
+
+    def test_empty_timelines(self):
+        self.assertEqual(df.removed_items([], []), [])
+        self.assertEqual(len(df.removed_items([entry(0, "A")], [])), 1)
 
 
 class MatchForDeleteTests(unittest.TestCase):
@@ -385,6 +482,47 @@ class ReferenceTests(unittest.TestCase):
         loop.entity = loop
         self.assertEqual(self._refs(loop), set())
         self.assertEqual(self._refs([None, 3, "x", True]), set())
+
+
+class ReadInputsTests(unittest.TestCase):
+    def setUp(self):
+        self.root = component("Root")
+        self.b = body("Body1", self.root)
+
+    def test_top_level_and_nested_raises_are_recorded(self):
+        edge_set = RaisingEdgeSet()
+        fillet = feature("FilletFeature", "Fillet1", self.root, edgeSets=Coll([edge_set]))
+        cut = RaisingCut("Cut1", self.root)
+        self.assertEqual(df.read_inputs(fillet, df.EntityKeys()), (set(), {"edgeSets"}))
+        self.assertEqual(df.read_inputs(cut, df.EntityKeys()), (set(), {"participantBodies"}))
+
+    def test_outputs_come_from_bodies_and_faces(self):
+        other = body("Body2", self.root)
+        faces = Coll([Fake("BRepFace", body=other), Fake("BRepFace", body=other)])
+        keys = df.EntityKeys()
+        out = df.read_outputs(feature("CutFeature", "Cut1", self.root, bodies=[self.b], faces=faces), keys)
+        self.assertEqual(sorted(keys.labels[k] for k in out), ["BRepBody 'Body1'", "BRepBody 'Body2'"])
+
+    def test_face_reads_are_capped(self):
+        reads = []
+        faces = types.SimpleNamespace(count=10_000,
+                                      item=lambda i: reads.append(i) or Fake("BRepFace", body=self.b))
+        df.read_outputs(feature("CutFeature", "Cut1", self.root, faces=faces), df.EntityKeys())
+        self.assertEqual(len(reads), df._MAX_FACES_READ)
+
+    def test_inputs_unresolved(self):
+        unresolved = df.inputs_unresolved
+        self.assertFalse(unresolved("FilletFeature", {"edgeSets"}, set(), {"body"}), "lineage covers a fillet")
+        self.assertTrue(unresolved("FilletFeature", {"edgeSets"}, set(), set()))
+        self.assertFalse(unresolved("ExtrudeFeature", {"participantBodies"}, {"sketch"}, {"body"}))
+        self.assertTrue(unresolved("ExtrudeFeature", {"profile"}, set(), {"body"}), "a profile has no stand-in")
+        self.assertTrue(unresolved("ExtrudeFeature", {"participantBodies"}, {"sketch"}, set()), "no stand-in output")
+        self.assertTrue(unresolved("ExtrudeFeature", set(), {"sketch"}, set(), modifies_only=True))
+        self.assertFalse(unresolved("ExtrudeFeature", set(), {"sketch"}, set()))
+        self.assertTrue(unresolved("ExtrudeFeature", set(), set(), {"body"}), "read nothing at all")
+        self.assertFalse(unresolved("Sketch", set(), set(), {"sketch"}))
+        self.assertTrue(unresolved("Sketch", {"referencePlane"}, set(), {"sketch"}))
+        self.assertFalse(unresolved("Joint", set(), set(), set()))
 
 
 # -- Snapshot and the full handler over a fake design ---------------------------------
@@ -527,6 +665,133 @@ class HandlerTests(FakeDesignMixin, unittest.TestCase):
             type(design.timeline).markerPosition = property(lambda self: len(self._items))
         self.assertTrue(result["isError"])
         self.assertIn("marker", result["content"][0]["text"])
+
+
+class LiveCaseTests(FakeDesignMixin, unittest.TestCase):
+    """Issue 16: sq -> Box1 (new body), sketches, Fillet1 and Cut1 on Box1's body.
+
+    delete_features names=['sq'] include_dependents=true planned [Box1, sq]; the real
+    delete took the timeline from 8 to 4, removing Fillet1 and Cut1 unreported.
+    """
+
+    def build_live(self, lineage=True):
+        root = component("Root")
+        tl = FakeTimeline()
+        sq, cut_sketch = sketch("sq", root), sketch("CutProfile", root)
+        b = body("Body1", root)
+        box = feature("ExtrudeFeature", "Box1", root, bodies=[b], profile=Fake("Profile", parentSketch=sq))
+        fillet = feature("FilletFeature", "Fillet1", root, bodies=[b] if lineage else [],
+                         edgeSets=Coll([RaisingEdgeSet()]))
+        cut = RaisingCut("Cut1", root, bodies=[b] if lineage else [], profile=Fake("Profile", parentSketch=cut_sketch))
+        tl.add("sq", sq)
+        box_item = tl.add("Box1", box)
+        tl.add("Sketch2", sketch("Sketch2", root))
+        tl.add("Sketch3", sketch("Sketch3", root))
+        tl.add("Fillet1", fillet)
+        tl.add("CutProfile", cut_sketch)
+        tl.add("Cut1", cut)
+        tl.add("Sketch4", sketch("Sketch4", root))
+        self.assertEqual(tl.count, 8)
+        self.box_item = box_item
+        return FakeDesign(tl, root)
+
+    def cascade(self, design):
+        """Make Box1's delete take Fillet1 and Cut1 with it, as Fusion does."""
+        original = FakeTimelineObject.deleteObject
+
+        def delete(obj):
+            if obj is self.box_item:
+                for item in list(design.timeline._items):
+                    if item.name in ("Fillet1", "Cut1"):
+                        design.timeline._items.remove(item)
+            return original(obj)
+
+        return mock.patch.object(FakeTimelineObject, "deleteObject", delete)
+
+    def test_dry_run_plans_everything_fusion_will_remove(self):
+        design = self.build_live()
+        result = self.call(design, {"names": ["sq"], "include_dependents": True})
+        body = text(result)
+        self.assertFalse(result["isError"], body)
+        self.assertEqual([(i["name"], i["role"]) for i in body["delete_order"]],
+                         [("Cut1", "dependent"), ("Fillet1", "dependent"), ("Box1", "dependent"), ("sq", "requested")])
+        self.assertEqual([d["name"] for d in body["dependents"]], ["Box1", "Fillet1", "Cut1"])
+        self.assertEqual(body["possibly_affected"], [])
+        self.assertEqual(design.timeline.count, 8)
+
+    def test_refused_without_include_dependents(self):
+        design = self.build_live()
+        result = self.call(design, {"names": ["Box1"], "dry_run": False})
+        self.assertTrue(result["isError"])
+        self.assertEqual([d["name"] for d in text(result)["dependents"]], ["Fillet1", "Cut1"])
+        self.assertEqual(design.timeline.count, 8)
+
+    def test_real_delete_matches_the_plan(self):
+        design = self.build_live()
+        with self.cascade(design):
+            result = self.call(design, {"names": ["sq"], "include_dependents": True, "dry_run": False})
+        body = text(result)
+        self.assertFalse(result["isError"], body)
+        self.assertEqual(design.timeline.deleted, ["Cut1", "Fillet1", "Box1", "sq"])
+        self.assertEqual(body["also_removed"], [])
+        self.assertEqual(body["timeline_items"], {"before": 8, "after": 4})
+
+    def test_body_lineage_through_faces_alone(self):
+        design = self.build_live(lineage=False)
+        b = design.timeline._items[1].entity.bodies.item(0)
+        for item in design.timeline._items:
+            if item.name in ("Fillet1", "Cut1"):
+                item.entity.faces = Coll([Fake("BRepFace", body=b)])
+        body = text(self.call(design, {"names": ["sq"], "include_dependents": True}))
+        self.assertEqual([i["name"] for i in body["delete_order"]], ["Cut1", "Fillet1", "Box1", "sq"])
+
+    def test_no_lineage_lists_them_as_possibly_affected(self):
+        design = self.build_live(lineage=False)
+        body = text(self.call(design, {"names": ["sq"], "include_dependents": True}))
+        self.assertEqual([i["name"] for i in body["delete_order"]], ["Box1", "sq"])
+        self.assertEqual([i["name"] for i in body["possibly_affected"]], ["Fillet1", "Cut1"])
+        self.assertIn("could not be read", body["possibly_affected"][0]["reason"])
+
+    def test_unplanned_removals_are_reported_first(self):
+        # The original failure: the plan does not see them, Fusion removes them anyway.
+        design = self.build_live(lineage=False)
+        with self.cascade(design):
+            result = self.call(design, {"names": ["sq"], "include_dependents": True, "dry_run": False})
+        body = text(result)
+        self.assertTrue(result["isError"])
+        self.assertEqual(list(body)[:2], ["warning", "also_removed"])
+        self.assertIn("NOT IN THE PLAN", body["warning"])
+        self.assertIn("'Fillet1'", body["warning"])
+        self.assertIn("'Cut1'", body["warning"])
+        self.assertEqual([i["name"] for i in body["also_removed"]], ["Fillet1", "Cut1"])
+        self.assertEqual([i["name"] for i in body["deleted"]], ["Box1", "sq"])
+        self.assertEqual(body["timeline_items"], {"before": 8, "after": 4})
+
+    def test_a_raising_delete_still_diffs_the_timeline(self):
+        design = self.build_live(lineage=False)
+        original = FakeTimelineObject.deleteObject
+
+        def delete(obj):
+            if obj is self.box_item:
+                design.timeline._items.remove(next(i for i in design.timeline._items if i.name == "Fillet1"))
+                raise RuntimeError("compute failed")
+            return original(obj)
+
+        with mock.patch.object(FakeTimelineObject, "deleteObject", delete):
+            result = self.call(design, {"names": ["sq"], "include_dependents": True, "dry_run": False})
+        body = text(result)
+        self.assertTrue(result["isError"])
+        self.assertIn("compute failed", body["stopped"])
+        self.assertEqual([i["name"] for i in body["also_removed"]], ["Fillet1"])
+        self.assertEqual([i["name"] for i in body["not_deleted"]], ["Box1", "sq"])
+
+    def test_cut_operation_marks_a_feature_modify_only(self):
+        operations = types.SimpleNamespace(JoinFeatureOperation=0, CutFeatureOperation=1,
+                                           IntersectFeatureOperation=2, NewBodyFeatureOperation=3)
+        root = component("Root")
+        with mock.patch.object(adsk.fusion, "FeatureOperations", operations, create=True):
+            self.assertTrue(df._modifies_only(feature("ExtrudeFeature", "Cut1", root, operation=1), "ExtrudeFeature"))
+            self.assertFalse(df._modifies_only(feature("ExtrudeFeature", "Box1", root, operation=3), "ExtrudeFeature"))
 
 
 if __name__ == "__main__":

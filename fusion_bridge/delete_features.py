@@ -15,19 +15,33 @@ Dependency detection (best effort; Fusion has no public "dependents" API):
     sketch reference planes/faces, construction geometry definitions and joint
     geometry. Profiles and sketch curves map to their sketch; faces, edges and
     vertices map to their body.
+  * body lineage: edge sets, participant bodies and combine target/tool bodies
+    only read with the marker right before the feature, so with the marker at
+    the end they raise or come back empty. A feature's output (bodies, and the
+    bodies of its faces) still reads, so any later item that outputs a body
+    counts as using it. Fusion removes such items along with the body's creator.
   * strong: the consumed thing is a sketch or construction geometry the target
     is, or a body the target is the first timeline item to produce (it creates
     the body). Strong dependents block the call unless include_dependents.
   * weak: the consumed body was created earlier and only modified by the
     target (a fillet, a join). Reported as possibly_affected, never deleted:
     the body survives, only references to the target's own faces/edges break.
+  * unresolved: a later feature nothing settles, also possibly_affected with a
+    reason: its inputs could not be read and lineage does not cover them, it
+    works on a body with no traceable creator, or an item being deleted reports
+    no bodies, so what it created cannot be followed.
   * not detected: face/edge-level references to faces a modifying feature
-    created, sketch geometry projected from bodies or other sketches,
-    parameters/expressions, and anything whose inputs cannot be read with the
-    marker at the end. Fusion's TimelineObject.isDeletable is used as a net:
-    an item Fusion will not delete but for which nothing was detected is refused.
+    created, sketch geometry projected from bodies or other sketches, and
+    parameters/expressions. Fusion's TimelineObject.isDeletable is used as a
+    net: an item Fusion will not delete but for which nothing was detected is
+    refused. It does not catch cascades: Fusion deletes a body's creator and
+    its dependents without complaint.
+
+The plan is still an estimate, so a real delete diffs the timeline before and
+after and reports anything that went unplanned as also_removed.
 """
 
+import collections
 import difflib
 import json
 import traceback
@@ -55,6 +69,19 @@ _NESTED_ATTRS = (
 )
 _TOPOLOGY_TYPES = {"BRepFace", "BRepEdge", "BRepVertex", "BRepLoop", "BRepCoEdge", "BRepShell", "BRepLump"}
 _CONSTRUCTION_TYPES = {"ConstructionPlane", "ConstructionAxis", "ConstructionPoint"}
+# Inputs that only name bodies, faces or edges: body lineage stands in for them
+# when they cannot be read. A sketch profile that cannot be read has no stand-in.
+_BODY_INPUT_ATTRS = {
+    "edgeSets", "edges", "inputFaces", "inputBodies", "toolBodies", "targetBody",
+    "participantBodies", "splitBodies", "facesToSplit",
+}
+# Features that change bodies something earlier created.
+_MODIFY_ONLY_TYPES = {"FilletFeature", "ChamferFeature", "ShellFeature", "DraftFeature", "CombineFeature"}
+# Features with no inputs beyond bodies, so a known output body settles them.
+_BODY_ONLY_TYPES = _MODIFY_ONLY_TYPES | {"BaseFeature"}
+_MODIFY_OPERATIONS = ("JoinFeatureOperation", "CutFeatureOperation", "IntersectFeatureOperation")
+# A feature's faces usually sit on one or two bodies; a sample finds them.
+_MAX_FACES_READ = 64
 _MAX_DEPTH = 5
 HEALTH_STATES = ("healthy", "warning", "error")
 
@@ -91,12 +118,21 @@ def _native(obj):
     return native if native is not None else obj
 
 
-def _items(collection):
+def _read(obj, name, errors):
+    """Like _attr, but record a read that raised: Fusion raises for inputs it cannot serve."""
+    try:
+        return getattr(obj, name, None)
+    except Exception:
+        errors.append(name)
+        return None
+
+
+def _items(collection, limit=None):
     count = _attr(collection, "count")
     if not isinstance(count, int) or isinstance(count, bool):
         return []
     out = []
-    for i in range(count):
+    for i in range(count if limit is None else min(count, limit)):
         try:
             out.append(collection.item(i))
         except Exception:
@@ -136,7 +172,10 @@ def validate_arguments(arguments):
 # An entry: position (walk order), index (Timeline index, -1 inside a collapsed
 # group), name, entity_type, component, referenced (inside/inserting a linked
 # component), in_collapsed_group, deletable (TimelineObject.isDeletable or None),
-# health, token, produces (keys), consumes (keys), inputs_unreadable (bool).
+# health, token, produces (keys: what it outputs, including bodies it only
+# modifies), consumes (keys), inputs_unreadable (bool: nothing settles what it
+# operates on), and optionally is_feature, modifies_only (it never creates a
+# body) and bodies_unknown (it should create a body but reports none).
 
 
 def describe(entry):
@@ -194,7 +233,9 @@ def find_dependents(entries, target_positions):
 
     Returns (strong, weak): strong maps dependent position -> list of
     {"on": position, "via": key}; weak maps position -> list of the same, for
-    items that consume a body a target modified but did not create.
+    items that use a body a target modified but did not create. An item uses
+    what it consumes and also what it outputs: a fillet's edges may be
+    unreadable, but its bodies say which body it works on.
     """
     by_position = {e["position"]: e for e in entries}
     created_by = creators(entries)
@@ -210,14 +251,15 @@ def find_dependents(entries, target_positions):
             for entry in entries:
                 if entry["position"] <= source_pos:
                     continue
-                hit = sorted(strong_keys & set(entry["consumes"]))
+                uses = set(entry["consumes"]) | set(entry["produces"])
+                hit = sorted(strong_keys & uses)
                 if hit:
                     strong.setdefault(entry["position"], []).extend({"on": source_pos, "via": k} for k in hit)
                     if entry["position"] not in seen:
                         seen.add(entry["position"])
                         next_frontier.append(entry["position"])
                     continue
-                soft = sorted(weak_keys & set(entry["consumes"]))
+                soft = sorted(weak_keys & uses)
                 if soft:
                     weak.setdefault(entry["position"], []).extend({"on": source_pos, "via": k} for k in soft)
         frontier = next_frontier
@@ -227,6 +269,35 @@ def find_dependents(entries, target_positions):
         strong.pop(position, None)
         weak.pop(position, None)
     return strong, weak
+
+
+def unresolved_items(entries, removed_positions, classified):
+    """Later features the plan cannot rule out. Returns position -> reason.
+
+    *removed_positions* are the targets and their dependents; *classified* is
+    every position already reported, which is skipped.
+    """
+    if not removed_positions:
+        return {}
+    first = min(removed_positions)
+    by_position = {e["position"]: e for e in entries}
+    # A body first seen on a feature that cannot create one lost its creator.
+    # Only a creator at or after the first target could be one being deleted.
+    orphans = {key for key, position in creators(entries).items()
+               if position > first and by_position[position].get("modifies_only")}
+    blind = [by_position[p]["name"] for p in sorted(removed_positions) if by_position[p].get("bodies_unknown")]
+    found = {}
+    for entry in entries:
+        position = entry["position"]
+        if position <= first or position in classified or position in removed_positions:
+            continue
+        if entry["inputs_unreadable"]:
+            found[position] = "its inputs could not be read with the marker at the end"
+        elif orphans & (set(entry["consumes"]) | set(entry["produces"])):
+            found[position] = "it works on a body whose creating feature could not be traced"
+        elif blind and entry.get("is_feature"):
+            found[position] = f"{', '.join(blind)} reports no bodies, so what it created could not be followed"
+    return found
 
 
 def build_plan(entries, targets, include_dependents, labels=None):
@@ -241,19 +312,19 @@ def build_plan(entries, targets, include_dependents, labels=None):
                 for link in links]
 
     dependents = [dict(describe(by_position[p]), consumes=reasons(strong[p])) for p in sorted(strong)]
-    possibly_affected = [dict(describe(by_position[p]), consumes=reasons(weak[p])) for p in sorted(weak)]
+    unresolved = unresolved_items(entries, set(target_positions) | set(strong), set(weak))
+    possibly_affected = [dict(describe(by_position[p]), consumes=reasons(weak[p])) for p in weak]
+    possibly_affected += [dict(describe(by_position[p]), consumes=[], reason=why) for p, why in unresolved.items()]
+    possibly_affected.sort(key=lambda item: (item["index"], item["name"]))
     delete_positions = set(target_positions) | (set(strong) if include_dependents else set())
     order = sorted(delete_positions, reverse=True)
 
-    unreadable = [describe(e) for e in entries
-                  if e["inputs_unreadable"] and e["position"] > min(target_positions, default=-1)]
     plan = {
         "positions": order,
         "delete_order": [dict(describe(by_position[p]), role="requested" if p in target_positions else "dependent")
                          for p in order],
         "dependents": dependents,
         "possibly_affected": possibly_affected,
-        "uninspected_later_items": unreadable,
     }
 
     blockers = []
@@ -302,12 +373,38 @@ def health_summary(entries):
     return counts, errors
 
 
+def _ident(item):
+    return item["name"], item["component"], item["entity_type"]
+
+
 def new_errors(before, after):
     """Error items in *after* that were not in error in *before* (by name/component/type)."""
-    def ident(item):
-        return item["name"], item["component"], item["entity_type"]
-    previous = {ident(e) for e in before}
-    return [e for e in after if ident(e) not in previous]
+    previous = {_ident(e) for e in before}
+    return [e for e in after if _ident(e) not in previous]
+
+
+def removed_items(before, after):
+    """Entries of *before* no longer in *after*.
+
+    An item survives if its entityToken is still there, or failing that its
+    name/component/type: tokens for one entity can differ between reads, so a
+    token miss alone is not a removal. Equal names are counted, not collapsed.
+    """
+    tokens = {e["token"] for e in after if e["token"]}
+    unclaimed = collections.Counter(_ident(e) for e in after)
+    unmatched = []
+    for entry in before:
+        if entry["token"] and entry["token"] in tokens:
+            unclaimed[_ident(entry)] -= 1
+        else:
+            unmatched.append(entry)
+    removed = []
+    for entry in unmatched:
+        if unclaimed[_ident(entry)] > 0:
+            unclaimed[_ident(entry)] -= 1
+        else:
+            removed.append(entry)
+    return removed
 
 
 # -- Reading the timeline from Fusion ------------------------------------------
@@ -322,30 +419,42 @@ class EntityKeys:
 
     def __init__(self):
         self._known = []
+        self._by_token = {}
         self.labels = {}
 
     def key(self, obj, kind):
         obj = _native(obj)
+        token = _attr(obj, "entityToken")
+        if token in self._by_token:
+            return self._by_token[token]
         for other, existing in self._known:
             try:
                 if other == obj:
+                    if token is not None:
+                        self._by_token[token] = existing
                     return existing
             except Exception:
                 continue
         key = f"{kind}#{len(self._known)}"
         self._known.append((obj, key))
+        if token is not None:
+            self._by_token[token] = key
         name = _attr(obj, "name")
         self.labels[key] = f"{short_type(obj)} {name!r}" if name else short_type(obj)
         return key
 
 
-def collect_references(obj, keys, out, depth=0):
-    """Add keys for the sketches, bodies and construction geometry *obj* refers to."""
+def collect_references(obj, keys, out, depth=0, errors=None):
+    """Add keys for the sketches, bodies and construction geometry *obj* refers to.
+
+    Nested reads that raise are appended to *errors*.
+    """
+    errors = [] if errors is None else errors
     if obj is None or depth > _MAX_DEPTH or isinstance(obj, (str, int, float, bool)):
         return
     if isinstance(obj, (list, tuple)):
         for item in obj:
-            collect_references(item, keys, out, depth + 1)
+            collect_references(item, keys, out, depth + 1, errors)
         return
     kind = short_type(obj)
     if kind.startswith("BRepBody"):
@@ -354,7 +463,7 @@ def collect_references(obj, keys, out, depth=0):
         body = _attr(obj, "body")
         if body is None:
             body = _attr(_attr(obj, "face"), "body")
-        collect_references(body, keys, out, depth + 1)
+        collect_references(body, keys, out, depth + 1, errors)
     elif kind == "Sketch":
         out.add(keys.key(obj, "sketch"))
     elif kind.replace("Proxy", "") in _CONSTRUCTION_TYPES:
@@ -363,10 +472,57 @@ def collect_references(obj, keys, out, depth=0):
         out.add(keys.key(obj.parentSketch, "sketch"))
     elif _items(obj):
         for item in _items(obj):
-            collect_references(item, keys, out, depth + 1)
+            collect_references(item, keys, out, depth + 1, errors)
     else:
         for name in _NESTED_ATTRS:
-            collect_references(_attr(obj, name), keys, out, depth + 1)
+            collect_references(_read(obj, name, errors), keys, out, depth + 1, errors)
+
+
+def read_outputs(entity, keys):
+    """Keys of the bodies *entity* outputs: its bodies and the bodies of its faces.
+
+    Unlike a feature's inputs these read with the marker at the end. Feature.bodies
+    is created or modified bodies; faces can miss some, so both are used.
+    """
+    out = set()
+    for body in _items(_attr(entity, "bodies")):
+        out.add(keys.key(body, "body"))
+    for face in _items(_attr(entity, "faces"), limit=_MAX_FACES_READ):
+        collect_references(face, keys, out)
+    return out
+
+
+def read_inputs(entity, keys):
+    """Return (consumed keys, names of the input properties that raised)."""
+    consumes, failed = set(), set()
+    for name in INPUT_ATTRS:
+        errors = []
+        collect_references(_read(entity, name, errors), keys, consumes, errors=errors)
+        if errors:
+            failed.add(name)
+    return consumes, failed
+
+
+def inputs_unresolved(kind, failed, consumes, produces, modifies_only=False):
+    """True when nothing read settles what this timeline item operates on."""
+    if not kind.endswith("Feature"):
+        return bool(failed)
+    if failed - _BODY_INPUT_ATTRS:
+        return True
+    if not produces and (failed or modifies_only or kind in _BODY_ONLY_TYPES):
+        return True
+    return not consumes and kind not in _BODY_ONLY_TYPES
+
+
+def _modifies_only(entity, kind):
+    """True for a feature that changes existing bodies and never creates one."""
+    if kind in _MODIFY_ONLY_TYPES:
+        return True
+    operations = getattr(adsk.fusion, "FeatureOperations", None)
+    operation = _attr(entity, "operation")
+    if operations is None or operation is None:
+        return False
+    return any(operation == getattr(operations, name, object()) for name in _MODIFY_OPERATIONS)
 
 
 def _health(timeline_object):
@@ -429,17 +585,19 @@ def snapshot(design, with_links=True):
         referenced = bool(_attr(component, "id") in referenced_ids or
                           (short_type(entity).startswith("Occurrence") and _attr(entity, "isReferencedComponent")))
         produces, consumes, unreadable = set(), set(), False
+        kind = short_type(entity) if entity is not None else ""
+        is_feature = kind.endswith("Feature")
+        modifies_only = False
         if with_links and entity is not None:
             try:
-                kind = short_type(entity)
                 if kind == "Sketch":
                     produces.add(keys.key(entity, "sketch"))
                 elif kind in _CONSTRUCTION_TYPES:
                     produces.add(keys.key(entity, "construction"))
-                for body in _items(_attr(entity, "bodies")):
-                    produces.add(keys.key(body, "body"))
-                for name in INPUT_ATTRS:
-                    collect_references(_attr(entity, name), keys, consumes)
+                produces |= read_outputs(entity, keys)
+                consumes, failed = read_inputs(entity, keys)
+                modifies_only = _modifies_only(entity, kind)
+                unreadable = inputs_unresolved(kind, failed, consumes, produces, modifies_only)
             except Exception:
                 unreadable = True
         deletable = _attr(obj, "isDeletable")
@@ -458,6 +616,9 @@ def snapshot(design, with_links=True):
             "produces": sorted(produces),
             "consumes": sorted(consumes),
             "inputs_unreadable": unreadable,
+            "is_feature": is_feature,
+            "modifies_only": modifies_only,
+            "bodies_unknown": with_links and is_feature and not modifies_only and not produces,
         })
         handles[position] = (obj, entity)
     return entries, handles, keys
@@ -488,6 +649,11 @@ def _delete(timeline_object, entity):
     if hasattr(timeline_object, "deleteObject"):
         return bool(timeline_object.deleteObject())
     return bool(entity.deleteMe())
+
+
+def _warn(result, text):
+    earlier = result.get("warning")
+    result["warning"] = f"{text} {earlier}" if earlier else text
 
 
 # -- Tool handler ----------------------------------------------------------------
@@ -549,15 +715,24 @@ def delete_features(arguments):
             if _attr(obj, "isDeletable") is False:
                 failure = f"Fusion refused to delete {planned['name']!r}: it still has dependents"
                 break
-            if not _delete(obj, entity):
-                failure = f"Fusion did not delete {planned['name']!r}"
+            # A raise here must still reach the timeline diff below.
+            try:
+                if not _delete(obj, entity):
+                    failure = f"Fusion did not delete {planned['name']!r}"
+            except Exception as exc:
+                failure = f"deleting {planned['name']!r} raised: {exc}"
+            if failure:
                 break
             deleted.append(dict(planned, verified_gone=_gone(design, token)))
             log(f"[MCP] delete_features: deleted {planned['name']!r}")
 
         after, _, _ = snapshot(design, with_links=False)
         counts_after, errors_after = health_summary(after)
+        planned_positions = set(order)
+        also_removed = [describe(e) for e in removed_items(entries, after) if e["position"] not in planned_positions]
         result.update({
+            "also_removed": also_removed,
+            "timeline_items": {"before": len(entries), "after": len(after)},
             "deleted": deleted,
             "timeline_health": counts_after,
             "timeline_errors": errors_after,
@@ -567,9 +742,17 @@ def delete_features(arguments):
             remaining = plan["delete_order"][len(deleted):]
             result["stopped"] = failure
             result["not_deleted"] = remaining
-        if any(item["verified_gone"] is False for item in deleted):
-            result["warning"] = "some deleted items still resolve by entityToken; check Fusion (Ctrl+Z undoes)"
-        return _ok(result, is_error=bool(failure) or any(i["verified_gone"] is False for i in deleted))
+        still_there = any(item["verified_gone"] is False for item in deleted)
+        if still_there:
+            _warn(result, "some deleted items still resolve by entityToken; check Fusion (Ctrl+Z undoes).")
+        if also_removed:
+            names = ", ".join(repr(item["name"]) for item in also_removed)
+            _warn(result, f"FUSION ALSO REMOVED {len(also_removed)} ITEM(S) THAT WERE NOT IN THE PLAN: {names}. "
+                          "Check them (Ctrl+Z undoes).")
+            log(f"[MCP] delete_features: Fusion also removed {names}")
+            # Lead the response with it: the plan said otherwise.
+            result = {"warning": result.pop("warning"), "also_removed": result.pop("also_removed"), **result}
+        return _ok(result, is_error=bool(failure) or still_there or bool(also_removed))
     except Exception as exc:
         tb = traceback.format_exc()
         log(f"[MCP] delete_features failed: {exc}")
