@@ -17,6 +17,9 @@ Rules:
 - ``moveToEnd()`` runs in a ``finally``, even for SystemExit. It can raise a
   compute-failure dump and still move the marker, so success is judged by
   re-reading the marker, not by the call.
+- Only the code runs inside ``rolled_back_window``, so a ``primitives`` write
+  there lands at the marker. The rule that the marker be at the end holds
+  everywhere else, restoring included.
 - A child of a collapsed group is not a timeline slot (``index`` is -1) and an
   expanded group cannot be rolled to, so both are refused with what to do.
 
@@ -37,7 +40,14 @@ import adsk.fusion
 
 from . import python_exec
 from .common.results import tool_result
-from .common.timeline import broken_refusal, find_row, marker_refusal, read_rows, timeline_of as _timeline_of
+from .common.timeline import (
+    broken_refusal,
+    find_row,
+    marker_refusal,
+    read_rows,
+    rolled_back_window,
+    timeline_of as _timeline_of,
+)
 from .dispatch import get_app, log
 
 MAX_LISTED = 200
@@ -297,7 +307,8 @@ def run_rolled_back(timeline, target, index, document, code, session_id):
         outcome["marker_during"] = marker
         if rolled_ok(returned, marker, index, _attr(target, "isRolledBack")):
             outcome["rolled"] = True
-            outcome["python"] = _run_code(code, session_id)
+            with rolled_back_window():
+                outcome["python"] = _run_code(code, session_id)
         else:
             outcome["exception"] = f"rollTo returned {returned!r} and left the marker at {marker}; the code did not run."
     except BaseException as exc:  # SystemExit from a script must not skip the report either

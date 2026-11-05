@@ -222,7 +222,11 @@ TOOL_DEFINITIONS = [
             "REPL: variables, imports, functions and classes carry over, including names "
             "bound before a call failed. session_variables lists plain values and "
             "session_definitions the modules, classes and functions. Injected names "
-            "(app, ui, adsk, os, json, time, ...) are reset on every call."
+            "(app, ui, adsk, os, json, time, ...) are reset on every call. primitives has one "
+            "method per feature tool (find_entities, sketch_profile, extrude_profile, edge_treatment, "
+            "pattern_features, combine_bodies, construction_plane, apply_thread, compare_bodies, "
+            "check_solids): keyword arguments as in the tool, from_ for from, and the payload back as a "
+            "dict. A refused tool does not raise: read status and ok."
         ),
         "inputSchema": {
             "type": "object",
@@ -1544,7 +1548,9 @@ TOOL_DEFINITIONS = [
             "anything added before the failure stays. Reports items added, health counts before and after, "
             "and which later items went to error. In the code, get objects fresh: those held from before "
             "may be rolled back. Avoid editing existing features here: that can drop participant bodies. "
-            "Rolling back and restoring recomputes everything after the item, which takes time on a big design."
+            "Rolling back and restoring recomputes everything after the item, which takes time on a big design. "
+            "Feature tools work here through execute_python's primitives; only this code may write with "
+            "the marker short of the end."
         ),
         "inputSchema": {
             "type": "object", "additionalProperties": False,

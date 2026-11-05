@@ -19,6 +19,7 @@ from .. import settings
 from ..lib import fusionAddInUtils as futil
 from ..lib import mcp_server as mcp_server_module
 from . import document_guard
+from . import primitives
 from . import timeline_health
 from .common.results import error_result, ok_result
 from .dispatch import get_app
@@ -41,6 +42,7 @@ _INJECTED_NAMES = frozenset({
     "mcp",
     "mcp_server_module",
     "os",
+    "primitives",
     "queue",
     "re",
     "settings",
@@ -129,6 +131,7 @@ def _build_runtime_globals():
         "mcp": create_mcp_bridge(),
         "mcp_server_module": mcp_server_module,
         "os": os,
+        "primitives": primitives.Primitives(),
         "queue": queue,
         "re": re,
         "settings": settings,
