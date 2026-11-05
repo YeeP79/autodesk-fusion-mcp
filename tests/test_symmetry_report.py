@@ -549,6 +549,18 @@ class CheckReflectedTests(unittest.TestCase):
         with self.assertRaises(sr.ReflectionFailed):
             sr.check_reflected(self.SOURCE["mirror_box"], -10.0, self.SOURCE)
 
+    def test_a_small_volume_drift_passes(self):
+        sr.check_reflected(self.SOURCE["mirror_box"], 10.0 * (1 - 0.00034), self.SOURCE)
+
+    def test_the_volume_limit_is_relative(self):
+        sr.check_reflected(self.SOURCE["mirror_box"], 10.0 * (1 - 0.0009), self.SOURCE)
+        with self.assertRaises(sr.ReflectionFailed):
+            sr.check_reflected(self.SOURCE["mirror_box"], 10.0 * (1 - 0.0011), self.SOURCE)
+
+    def test_a_scaled_copy_fails(self):
+        with self.assertRaises(sr.ReflectionFailed):
+            sr.check_reflected(self.SOURCE["mirror_box"], 10.0 * 1.01, self.SOURCE)
+
     def test_no_volume_fails(self):
         with self.assertRaises(sr.ReflectionFailed):
             sr.check_reflected(self.SOURCE["mirror_box"], None, self.SOURCE)
@@ -642,14 +654,56 @@ class ConfirmTests(unittest.TestCase):
         self.assertEqual((block["checked"], block["not_reached"]), (1, 1))
         self.assertEqual(pairs[1]["basis"], sr.BY_NUMBERS)
 
-    def test_a_refused_reflection_stops_everything_and_says_why(self):
+    def test_no_pair_reflecting_leaves_everything_on_numbers_and_says_why(self):
         def refuse(pair):
             raise sr.ReflectionFailed("no")
 
         pairs = self.pairs()
         block = sr.confirm_pairs(pairs, refuse, self.Budget(), TOL)
         self.assertEqual((block["available"], block["method"], block["reason"]), (False, sr.BY_NUMBERS, "no"))
-        self.assertEqual((block["checked"], block["not_reached"]), (0, 2))
+        self.assertEqual((block["checked"], block["reflection_failed"], block["not_reached"]), (0, 2, 0))
+
+    def test_a_failed_reflection_costs_only_that_pair(self):
+        calls = []
+
+        def copies(pair):
+            calls.append(pair)
+            if len(calls) == 2:
+                raise sr.ReflectionFailed("bad copy")
+            return self.copies()
+
+        pairs = self.pairs(3)
+        block = sr.confirm_pairs(pairs, copies, self.Budget(), TOL)
+        self.assertEqual((block["available"], block["method"], block["reason"]), (True, sr.BY_BOOLEANS, "bad copy"))
+        self.assertEqual((block["checked"], block["same"], block["reflection_failed"], block["not_reached"]),
+                         (2, 2, 1, 0))
+        self.assertEqual(calls[1]["geometry"], {"verdict": "unknown", "error": "bad copy"})
+        self.assertEqual(calls[1]["basis"], sr.BY_NUMBERS)
+        self.assertEqual([p["basis"] for p in (calls[0], calls[2])], [sr.BY_BOOLEANS] * 2)
+
+    def test_a_failed_reflection_first_does_not_end_the_run(self):
+        calls = []
+
+        def copies(pair):
+            calls.append(pair)
+            if len(calls) == 1:
+                raise sr.ReflectionFailed("bad copy")
+            return self.copies()
+
+        block = sr.confirm_pairs(self.pairs(), copies, self.Budget(), TOL)
+        self.assertTrue(block["available"])
+        self.assertEqual((block["checked"], block["reflection_failed"]), (1, 1))
+
+    def test_failed_reflections_count_toward_the_budget(self):
+        clock = [0.0]
+
+        def refuse(pair):
+            clock[0] += 8.0
+            raise sr.ReflectionFailed("no")
+
+        budget = rules.Budget(10.0, lambda: clock[0])
+        block = sr.confirm_pairs(self.pairs(), refuse, budget, TOL)
+        self.assertEqual((block["reflection_failed"], block["not_reached"]), (1, 1))
 
     def test_a_kernel_failure_costs_only_that_pair(self):
         calls = []
@@ -845,6 +899,22 @@ class FallbackTests(ToolCase):
         report = self.report(self.scene(), Manager(reflects="ignored"))
         self.assert_fell_back(report)
         self.assertIn("mirrored box", report["confirmation"]["reason"])
+
+    def test_one_body_that_will_not_reflect_leaves_the_others_confirmed(self):
+        class Drifted(Manager):
+            def transform(self, body, matrix):
+                moved = super().transform(body, matrix)
+                if body.name == "R":
+                    body.cells = set(sorted(body.cells)[:1])
+                return moved
+
+        scene = Scene([Voxels(bar(), "R"), Voxels(mirrored(bar()), "L"),
+                       Voxels(bar(x=12), "R2"), Voxels(mirrored(bar(x=12)), "L2")])
+        report = self.report(scene, Drifted())
+        block = report["confirmation"]
+        self.assertEqual((block["available"], block["checked"], block["reflection_failed"]), (True, 1, 1))
+        self.assertEqual(sorted(p["basis"] for p in report["pairs"]), ["numbers", "temporary_brep"])
+        self.assertIn("1 pair(s) could not be reflected", report["warnings"][-1])
 
     def test_a_failed_boolean_leaves_that_pair_on_numbers(self):
         report = self.report(Scene([Voxels(bar(), "R"), Voxels(mirrored(bar()), "L")]), Manager(fail_on="R"))

@@ -59,9 +59,10 @@ PAIRING_GRACE_S = 5.0
 NEAR_FACTOR = 10.0
 # Bodies further apart than this share of their volume are not two sides of one part.
 MAX_VOLUME_DIFFERENCE = 0.5
-# A reflected copy keeps its source's volume, up to the kernel's rounding. This
-# only has to catch a body turned inside out or scaled.
-REFLECTED_VOLUME_REL = 1e-4
+# A reflected copy keeps its source's volume, up to how the kernel measures it (a
+# chassis tube read 0.034% off). This only has to catch a body turned inside out
+# or scaled.
+REFLECTED_VOLUME_REL = 1e-3
 AXIS_ALIGNED_DOT = 1.0 - 1e-12
 
 TRUE_MIRROR, NEAR, DIFFERENT = "true_mirror", "near", "different"
@@ -304,7 +305,7 @@ def pair_bodies(bodies, plane, tolerance, stop=lambda: False):
 
 
 class ReflectionFailed(Exception):
-    """The kernel cannot reflect a temporary body, so no pair can be confirmed."""
+    """A temporary copy of one body did not reflect, so its pair cannot be confirmed."""
 
 
 def difference_limit(pair, tolerance):
@@ -345,15 +346,16 @@ def confirm_pairs(pairs, copies_for, budget, tolerance):
     """Check the closest pairs that the numbers do not already rule out.
 
     *copies_for* gives a pair's ``copies`` collaborator (see ``compare_bodies``);
-    side ``a`` comes back reflected. One failed reflection ends the run, since no
-    other pair would fare better. Returns the ``confirmation`` block.
+    side ``a`` comes back reflected. A failed reflection costs only its own pair;
+    confirmation is unavailable when no pair could be reflected at all. Returns the
+    ``confirmation`` block.
     """
     queue = sorted((pair for pair in pairs if pair["status"] != DIFFERENT), key=lambda p: p["deviation"]["score"])
     tally = Counter()
-    state = {"method": BY_BOOLEANS, "available": True, "reason": None}
+    failed = []
     started, done = budget.elapsed(), 0
     for pair in queue:
-        if budget.expired() or not fits_budget(done, budget.elapsed() - started, 1, budget.remaining()):
+        if budget.expired() or not fits_budget(done + len(failed), budget.elapsed() - started, 1, budget.remaining()):
             break
         limit = difference_limit(pair, tolerance)
         a = {"bbox": pair["a"]["mirror_box"], "volume": pair["a"]["volume"]}
@@ -361,8 +363,9 @@ def confirm_pairs(pairs, copies_for, budget, tolerance):
         try:
             parts = cb.boolean_parts(copies_for(pair), a, b, {"max_lumps": 0, "volume_tolerance": limit})
         except ReflectionFailed as exc:
-            state.update(method=BY_NUMBERS, available=False, reason=str(exc))
-            break
+            pair["geometry"] = {"verdict": "unknown", "error": str(exc)}
+            failed.append(str(exc))
+            continue
         except Exception as exc:  # a kernel failure on one pair says nothing about the next
             pair["geometry"] = {"verdict": "unknown", "error": str(exc)}
             tally["unknown"] += 1
@@ -370,8 +373,11 @@ def confirm_pairs(pairs, copies_for, budget, tolerance):
             continue
         tally[apply_booleans(pair, parts, limit)] += 1
         done += 1
-    return {**state, "checked": done, "same": tally["same"], "different": tally["different"],
-            "unknown": tally["unknown"], "not_reached": len(queue) - done}
+    available = done > 0 or not failed
+    return {"method": BY_BOOLEANS if available else BY_NUMBERS, "available": available,
+            "reason": failed[0] if failed else None, "checked": done, "same": tally["same"],
+            "different": tally["different"], "unknown": tally["unknown"], "reflection_failed": len(failed),
+            "not_reached": len(queue) - done - len(failed)}
 
 
 # -- Report ---------------------------------------------------------------------
@@ -440,9 +446,13 @@ def report_warnings(plane, bodies, confirmation, finished_reading, finished_pair
     if not confirmation["available"]:
         warnings.append("temporary bodies could not be reflected, so nothing was confirmed by booleans; results "
                         f"rest on numbers, which cannot see a small feature: {confirmation['reason']}")
-    elif confirmation["not_reached"]:
-        warnings.append(f"{confirmation['not_reached']} pair(s) were not confirmed in time; their status rests "
-                        "on numbers")
+    else:
+        if confirmation["reflection_failed"]:
+            warnings.append(f"{confirmation['reflection_failed']} pair(s) could not be reflected; their status "
+                            f"rests on numbers: {confirmation['reason']}")
+        if confirmation["not_reached"]:
+            warnings.append(f"{confirmation['not_reached']} pair(s) were not confirmed in time; their status rests "
+                            "on numbers")
     return warnings
 
 
