@@ -4,7 +4,7 @@ import json
 import unittest
 
 import _fusion_test_bootstrap  # noqa: F401
-from fusion_bridge.common import api, args, results
+from fusion_bridge.common import api, args, geometry, results
 
 
 class ResultsTests(unittest.TestCase):
@@ -230,6 +230,54 @@ class ArgumentCheckTests(unittest.TestCase):
 
         with self.assertRaises(KeyError):
             check()
+
+
+class VectorTests(unittest.TestCase):
+    def test_xyz(self):
+        point = type("P", (), {"x": 1.0, "y": 2.0, "z": 3.0})()
+        self.assertEqual(geometry.xyz(point), (1.0, 2.0, 3.0))
+
+    def test_arithmetic(self):
+        self.assertEqual(geometry.add((1, 2, 3), (1, 1, 1)), (2, 3, 4))
+        self.assertEqual(geometry.sub((1, 2, 3), (1, 1, 1)), (0, 1, 2))
+        self.assertEqual(geometry.dot((1, 2, 3), (4, 5, 6)), 32)
+        self.assertEqual(geometry.scaled((1, 2, 3), 2), (2, 4, 6))
+        self.assertEqual(geometry.along((1, 0, 0), (0, 1, 0), 2), (1, 2, 0))
+
+    def test_cross_is_right_handed(self):
+        self.assertEqual(geometry.cross((1, 0, 0), (0, 1, 0)), (0, 0, 1))
+
+    def test_unit(self):
+        self.assertEqual(geometry.unit((0.0, 3.0, 4.0)), (0.0, 0.6, 0.8))
+        self.assertIsNone(geometry.unit((0.0, 0.0, 0.0)))
+        self.assertIsNone(geometry.unit((1e-13, 0.0, 0.0)))
+
+
+class UnitTests(unittest.TestCase):
+    def test_labels(self):
+        self.assertEqual(geometry.unit_labels("mm"), {"length": "mm", "area": "mm^2", "volume": "mm^3"})
+
+    def test_to_units_powers(self):
+        self.assertEqual(geometry.to_units(2.54, "in"), 1.0)
+        self.assertEqual(geometry.to_units(1.0, "mm", 2), 100.0)
+        self.assertEqual(geometry.to_units(1.0, "mm", 3), 1000.0)
+
+    def test_to_units_rounds_and_passes_none(self):
+        self.assertEqual(geometry.to_units(1.0, "in"), 0.3937)
+        self.assertEqual(geometry.to_units(1.0, "in", digits=6), 0.393701)
+        self.assertIsNone(geometry.to_units(None, "in"))
+
+    def test_round_trip(self):
+        self.assertAlmostEqual(geometry.to_cm(geometry.to_units(5.0, "mm"), "mm"), 5.0)
+        self.assertAlmostEqual(geometry.to_cm(100.0, "mm", 2), 1.0)
+
+    def test_from_cm_has_no_negative_zero(self):
+        self.assertEqual(geometry.from_cm(2.54, "in"), 1.0)
+        self.assertEqual(str(geometry.from_cm(-0.0, "cm")), "0.0")
+
+    def test_factor_tables_agree(self):
+        for units, factor in geometry.UNIT_FACTORS.items():
+            self.assertAlmostEqual(factor * geometry.CM_PER_UNIT[units], 1.0)
 
 
 if __name__ == "__main__":

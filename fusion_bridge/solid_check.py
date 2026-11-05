@@ -23,11 +23,11 @@ import adsk.fusion
 
 from .common.api import safe, strict_items
 from .common.args import is_finite_number, is_int
+from .common import geometry
+from .common.geometry import UNIT_FACTORS, to_cm, unit_labels, xyz
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
-# Fusion lengths are cm; factor converts cm to the chosen unit.
-UNIT_FACTORS = {"in": 1.0 / 2.54, "cm": 1.0, "mm": 10.0}
 ROOT_PATH = "root"
 _DIGITS = 6
 
@@ -67,18 +67,8 @@ _BASELINES = OrderedDict()
 # -- Units ----------------------------------------------------------------------
 
 
-def unit_labels(units):
-    return {"length": units, "area": f"{units}^2", "volume": f"{units}^3"}
-
-
 def to_units(value_cm, units, power=1):
-    if value_cm is None:
-        return None
-    return round(value_cm * UNIT_FACTORS[units] ** power, _DIGITS)
-
-
-def to_cm(value, units, power=1):
-    return value / UNIT_FACTORS[units] ** power
+    return geometry.to_units(value_cm, units, power, _DIGITS)
 
 
 # -- Argument validation --------------------------------------------------------
@@ -496,10 +486,6 @@ def summarize(problems, max_details):
 # -- Fusion layer ---------------------------------------------------------------
 
 
-def _xyz(p):
-    return (p.x, p.y, p.z)
-
-
 def iter_body_entries(root):
     """One entry per B-Rep body: root bodies, then every occurrence's proxies."""
     containers = [(None, root)]
@@ -522,7 +508,7 @@ def _bbox(body):
     bb = safe(body, "boundingBox")
     if bb is None:
         return None
-    return (_xyz(bb.minPoint), _xyz(bb.maxPoint))
+    return (xyz(bb.minPoint), xyz(bb.maxPoint))
 
 
 def measure_summary(entry):

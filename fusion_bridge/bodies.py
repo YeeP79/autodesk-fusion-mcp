@@ -18,11 +18,10 @@ import adsk.fusion
 
 from .common.api import safe, strict_items
 from .common.args import bool_arg, error_pair, int_arg, require_object, text_arg
+from .common.geometry import DIGITS, UNIT_FACTORS, dot, sub, to_units, unit, unit_labels, xyz
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
-# Fusion lengths are cm; factor converts cm to the chosen unit.
-UNIT_FACTORS = {"in": 1.0 / 2.54, "cm": 1.0, "mm": 10.0}
 CM3_PER_IN3 = 2.54 ** 3
 DEFAULT_MAX_RESULTS = 200
 MAX_RESULTS_LIMIT = 1000
@@ -30,7 +29,6 @@ DEFAULT_MAX_FACES = 25
 MAX_FACES_LIMIT = 500
 FEATURE_SCAN_LIMIT = 5000
 ROOT_PATH = "root"
-_DIGITS = 5
 
 # adsk.core.SurfaceTypes values (Plane=0 ... NURBS=7).
 SURFACE_TYPES = {
@@ -54,49 +52,28 @@ TRAP_NOTE = (
 # -- Pure helpers (no Fusion) -------------------------------------------------
 
 
-def unit_labels(units):
-    return {"length": units, "area": f"{units}^2", "volume": f"{units}^3"}
-
-
 def length(value_cm, units):
-    return round(value_cm * UNIT_FACTORS[units], _DIGITS)
+    return to_units(value_cm, units)
 
 
 def area(value_cm2, units):
-    return round(value_cm2 * UNIT_FACTORS[units] ** 2, _DIGITS)
+    return to_units(value_cm2, units, 2)
 
 
 def volume(value_cm3, units):
-    return round(value_cm3 * UNIT_FACTORS[units] ** 3, _DIGITS)
+    return to_units(value_cm3, units, 3)
 
 
 def point(xyz_cm, units):
     return [length(c, units) for c in xyz_cm]
 
 
-def direction(xyz):
+def direction(vector):
     """Unit vector rounded for display; None for a zero vector."""
-    n = math.sqrt(sum(c * c for c in xyz))
+    n = math.sqrt(sum(c * c for c in vector))
     if n == 0:
         return None
-    return [round(c / n, 6) + 0.0 for c in xyz]
-
-
-def _sub(a, b):
-    return tuple(x - y for x, y in zip(a, b))
-
-
-def _dot(a, b):
-    return sum(x * y for x, y in zip(a, b))
-
-
-def _unit(v):
-    n = math.sqrt(_dot(v, v))
-    return tuple(c / n for c in v) if n else None
-
-
-def _xyz(p):
-    return (p.x, p.y, p.z)
+    return [round(c / n, 6) + 0.0 for c in vector]
 
 
 def _units_arg(arguments):
@@ -180,13 +157,13 @@ def resolve_body(entries, occurrence_path, body_name, body_index=None):
 def cylinder_concavity(sample_point, outward_normal, axis_origin, axis_dir):
     """'convex' when the outward face normal points away from the axis (OD/boss),
     'concave' when it points toward it (bore/inner fillet), else None."""
-    axis = _unit(axis_dir)
+    axis = unit(axis_dir)
     if axis is None or outward_normal is None:
         return None
-    rel = _sub(sample_point, axis_origin)
-    along = _dot(rel, axis)
-    radial = _sub(rel, tuple(along * c for c in axis))
-    d = _dot(radial, outward_normal)
+    rel = sub(sample_point, axis_origin)
+    along = dot(rel, axis)
+    radial = sub(rel, tuple(along * c for c in axis))
+    d = dot(radial, outward_normal)
     if abs(d) < 1e-9:
         return None
     return "convex" if d > 0 else "concave"
@@ -194,10 +171,10 @@ def cylinder_concavity(sample_point, outward_normal, axis_origin, axis_dir):
 
 def axial_extent(points, axis_origin, axis_dir):
     """Length of the projection of *points* onto the axis (0 for <2 points)."""
-    axis = _unit(axis_dir)
+    axis = unit(axis_dir)
     if axis is None or not points:
         return 0.0
-    ts = [_dot(_sub(p, axis_origin), axis) for p in points]
+    ts = [dot(sub(p, axis_origin), axis) for p in points]
     return max(ts) - min(ts)
 
 
@@ -264,7 +241,7 @@ def _bbox(entity, units):
     bb = safe(entity, "boundingBox")
     if bb is None:
         return None, None
-    return point(_xyz(bb.minPoint), units), point(_xyz(bb.maxPoint), units)
+    return point(xyz(bb.minPoint), units), point(xyz(bb.maxPoint), units)
 
 
 def body_row(entry, units):
@@ -274,8 +251,8 @@ def body_row(entry, units):
     row = {k: v for k, v in entry.items() if not k.startswith("_")}
     row["body_index"] = row.pop("index")
     row["solid"] = safe(body, "isSolid")
-    row["volume_in3"] = round(vol_cm3 / CM3_PER_IN3, _DIGITS) if vol_cm3 is not None else None
-    row["volume_cm3"] = round(vol_cm3, _DIGITS) if vol_cm3 is not None else None
+    row["volume_in3"] = round(vol_cm3 / CM3_PER_IN3, DIGITS) if vol_cm3 is not None else None
+    row["volume_cm3"] = round(vol_cm3, DIGITS) if vol_cm3 is not None else None
     a = safe(body, "area")
     row["area"] = area(a, units) if a is not None else None
     row["bbox_min"] = bb_min
@@ -315,7 +292,7 @@ def _outward_normal(face):
         p = face.pointOnFace
         ok, n = face.evaluator.getNormalAtPoint(p)
         if ok and n is not None:
-            return _xyz(p), _xyz(n)
+            return xyz(p), xyz(n)
     except Exception:
         pass
     return None, None
@@ -326,7 +303,7 @@ def _vertex_points(face):
     for v in strict_items(safe(face, "vertices")):
         g = safe(v, "geometry")
         if g is not None:
-            pts.append(_xyz(g))
+            pts.append(xyz(g))
     return pts
 
 
@@ -381,17 +358,17 @@ def _face_record(face, kind, units):
     if kind == "plane":
         p, n = _outward_normal(face)
         if n is None:
-            n = _xyz(g.normal)
+            n = xyz(g.normal)
             if reversed_:
                 n = tuple(-c for c in n)
-            p = _xyz(safe(face, "pointOnFace") or g.origin)
+            p = xyz(safe(face, "pointOnFace") or g.origin)
         rec.update({"point": point(p, units), "normal": direction(n)})
     elif kind == "cylinder":
         r = g.radius
         rec.update({"diameter": length(2 * r, units), "radius": length(r, units),
-                    "axis_origin": point(_xyz(g.origin), units), "axis_direction": direction(_xyz(g.axis))})
+                    "axis_origin": point(xyz(g.origin), units), "axis_direction": direction(xyz(g.axis))})
         ng = native.geometry
-        n_origin, n_axis = _xyz(ng.origin), _xyz(ng.axis)
+        n_origin, n_axis = xyz(ng.origin), xyz(ng.axis)
         p, n = _outward_normal(native)
         concavity = cylinder_concavity(p, n, n_origin, n_axis) if n is not None else None
         basis = "evaluator"
@@ -409,12 +386,12 @@ def _face_record(face, kind, units):
         rec["sweep_deg"] = sweep_degrees(safe(native, "area", face_area) or face_area, ng.radius, axial)
     elif kind == "cone":
         rec.update({"radius": length(g.radius, units), "half_angle_deg": round(math.degrees(g.halfAngle), 4),
-                    "axis_origin": point(_xyz(g.origin), units), "axis_direction": direction(_xyz(g.axis))})
+                    "axis_origin": point(xyz(g.origin), units), "axis_direction": direction(xyz(g.axis))})
     elif kind == "torus":
         rec.update({"major_radius": length(g.majorRadius, units), "minor_radius": length(g.minorRadius, units),
-                    "center": point(_xyz(g.origin), units), "axis_direction": direction(_xyz(g.axis))})
+                    "center": point(xyz(g.origin), units), "axis_direction": direction(xyz(g.axis))})
     elif kind == "sphere":
-        rec.update({"radius": length(g.radius, units), "center": point(_xyz(g.origin), units)})
+        rec.update({"radius": length(g.radius, units), "center": point(xyz(g.origin), units)})
     return rec
 
 
@@ -425,11 +402,11 @@ def _physical(body, units):
     out = {}
     com = safe(props, "centerOfMass")
     if com is not None:
-        out["center_of_mass"] = point(_xyz(com), units)
+        out["center_of_mass"] = point(xyz(com), units)
     try:
         ok, x, y, z = props.getPrincipalAxes()
         if ok:
-            out["principal_axes"] = {"x": direction(_xyz(x)), "y": direction(_xyz(y)), "z": direction(_xyz(z))}
+            out["principal_axes"] = {"x": direction(xyz(x)), "y": direction(xyz(y)), "z": direction(xyz(z))}
     except Exception:
         pass
     return out or None

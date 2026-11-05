@@ -12,6 +12,7 @@ import adsk.core
 from ..lib import png_image
 from . import clean_view as clean
 from .common.args import is_finite_number
+from .common.geometry import add, cross, scaled, sub
 from .common.results import error_result, ok_result
 
 VIEW_NAMES = {
@@ -64,34 +65,18 @@ def _xyz(value):
     return {"x": value.x, "y": value.y, "z": value.z}
 
 
-def _sub(a, b):
-    return tuple(x - y for x, y in zip(a, b))
-
-
-def _add(a, b):
-    return tuple(x + y for x, y in zip(a, b))
-
-
-def _scale(v, factor):
-    return tuple(x * factor for x in v)
-
-
-def _cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-
 def _unit(v):
     length = math.hypot(*v)
     if length < 1e-12:
         raise ValueError("Camera eye/target must differ and up vector must not be parallel to the viewing direction")
-    return _scale(v, 1 / length)
+    return scaled(v, 1 / length)
 
 
 def _rotate(v, axis, degrees):
     angle = math.radians(degrees)
     cosine, sine = math.cos(angle), math.sin(angle)
     dot = sum(a * b for a, b in zip(axis, v))
-    return _add(_add(_scale(v, cosine), _scale(_cross(axis, v), sine)), _scale(axis, dot * (1 - cosine)))
+    return add(add(scaled(v, cosine), scaled(cross(axis, v), sine)), scaled(axis, dot * (1 - cosine)))
 
 
 def _projection(camera):
@@ -147,8 +132,8 @@ def _validate_controls(arguments):
         if set(arguments) - {"camera", "description"}:
             raise ValueError("camera cannot be combined with relative controls, view, projection, or fit")
         pose = _object(arguments["camera"], "camera", ("eye", "target", "up_vector", "projection", "extents", "perspective_angle"), ("eye", "target", "up_vector", "projection"))
-        direction = _unit(_sub(_vector(pose["target"], "target"), _vector(pose["eye"], "eye")))
-        _unit(_cross(direction, _vector(pose["up_vector"], "up_vector")))
+        direction = _unit(sub(_vector(pose["target"], "target"), _vector(pose["eye"], "eye")))
+        _unit(cross(direction, _vector(pose["up_vector"], "up_vector")))
         if pose["projection"] not in PROJECTIONS:
             raise ValueError("Unknown camera projection")
         if pose["projection"] == "orthographic":
@@ -195,27 +180,27 @@ def _apply_controls(vp, arguments):
         camera.isSmoothTransition = False
         camera.isFitView = False
         eye, target, up = (_vector(_xyz(v), "camera vector") for v in (camera.eye, camera.target, camera.upVector))
-        back = _sub(eye, target)
+        back = sub(eye, target)
         up = _unit(up)
         orbit = arguments.get("orbit", {})
         back = _rotate(back, up, orbit.get("yaw", 0))
-        right = _unit(_cross(up, back))
+        right = _unit(cross(up, back))
         back = _rotate(back, right, orbit.get("pitch", 0))
         up = _rotate(up, right, orbit.get("pitch", 0))
-        up = _rotate(up, _unit(_scale(back, -1)), orbit.get("roll", 0))
-        right = _unit(_cross(up, back))
-        screen_up = _unit(_cross(back, right))
+        up = _rotate(up, _unit(scaled(back, -1)), orbit.get("roll", 0))
+        right = _unit(cross(up, back))
+        screen_up = _unit(cross(back, right))
         pan = arguments.get("pan", {})
-        offset = _add(_scale(right, pan.get("x", 0)), _scale(screen_up, pan.get("y", 0)))
-        target = _add(target, offset)
+        offset = add(scaled(right, pan.get("x", 0)), scaled(screen_up, pan.get("y", 0)))
+        target = add(target, offset)
         zoom = arguments.get("zoom", 1)
         if _projection(camera) == "orthographic":
             extents = _extents(camera)
             if not camera.setExtents(extents["width"] / zoom, extents["height"] / zoom):
                 raise ValueError("Fusion could not zoom the orthographic camera")
         else:
-            back = _scale(back, 1 / zoom)
-        camera.eye = adsk.core.Point3D.create(*_add(target, back))
+            back = scaled(back, 1 / zoom)
+        camera.eye = adsk.core.Point3D.create(*add(target, back))
         camera.target = adsk.core.Point3D.create(*target)
         camera.upVector = adsk.core.Vector3D.create(*up)
     vp.camera = camera

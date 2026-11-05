@@ -16,6 +16,7 @@ import adsk.fusion
 
 from . import sketch_geometry as geo
 from . import value_builders
+from .common.geometry import xyz
 from .common.results import error_result, tool_result
 from .dispatch import get_app, log
 
@@ -102,10 +103,6 @@ def _point3d(x, y, z=0.0):
     return adsk.core.Point3D.create(x, y, z)
 
 
-def _xyz(point):
-    return (point.x, point.y, point.z)
-
-
 def _design():
     design = adsk.fusion.Design.cast(get_app().activeProduct)
     if design is None:
@@ -148,7 +145,7 @@ def _sketch_coordinates(sketch, request):
     for i in mid_keys:
         labels.append(f"arc on segment {i} mid_point")
         model.append(request["arcs"][i]["mid"])
-    mapped = [_xyz(sketch.modelToSketchSpace(_point3d(*p))) for p in model]
+    mapped = [xyz(sketch.modelToSketchSpace(_point3d(*p))) for p in model]
     geo.check_on_plane([abs(p[2]) for p in mapped], labels, factor=request["factor"], units=request["units"])
     n = len(request["points"])
     points2d = [p[:2] for p in mapped[:n]]
@@ -183,7 +180,7 @@ def build_loop(sketch, points2d, mids, point3d=_point3d):
         if curve is None:
             raise RuntimeError(f"Fusion did not create segment {i}")
         ends = [curve.startSketchPoint, curve.endSketchPoint]
-        if geo.distance(_xyz(ends[0].geometry)[:2], points2d[i]) > geo.distance(_xyz(ends[1].geometry)[:2], points2d[i]):
+        if geo.distance(xyz(ends[0].geometry)[:2], points2d[i]) > geo.distance(xyz(ends[1].geometry)[:2], points2d[i]):
             ends.reverse()
         for k, end_point in ((i, ends[0]), (j, ends[1])):
             if vertices[k] is None:
@@ -206,7 +203,7 @@ def _stroke(curve_geometry):
     if not ok:
         return []
     ok, points = evaluator.getStrokes(start, end, STROKE_TOL_CM)
-    return [_xyz(p) for p in points] if ok else []
+    return [xyz(p) for p in points] if ok else []
 
 
 def _loop_polylines(profile, sketch):
@@ -219,7 +216,7 @@ def _loop_polylines(profile, sketch):
             pts.extend(_stroke(loop.profileCurves.item(ci).geometry))
         loops.append(pts)
     box = profile.boundingBox
-    lo, hi = _xyz(box.minPoint), _xyz(box.maxPoint)
+    lo, hi = xyz(box.minPoint), xyz(box.maxPoint)
     pad = 10 * STROKE_TOL_CM
 
     def inside_box(polys):
@@ -230,7 +227,7 @@ def _loop_polylines(profile, sketch):
     if inside_box(loops):
         return [[p[:2] for p in poly] for poly in loops]
     # ProfileCurve.geometry is not documented as sketch space; if it is model space, map it.
-    mapped = [[_xyz(sketch.modelToSketchSpace(_point3d(*p))) for p in poly] for poly in loops]
+    mapped = [[xyz(sketch.modelToSketchSpace(_point3d(*p))) for p in poly] for poly in loops]
     return [[p[:2] for p in poly] for poly in mapped] if inside_box(mapped) else None
 
 
@@ -245,7 +242,7 @@ def describe_profiles(sketch, factor, query=None):
             "index": i,
             "entity_token": getattr(profile, "entityToken", None),
             "area": props.area / factor ** 2,
-            "centroid": [c / factor for c in _xyz(props.centroid)[:2]],
+            "centroid": [c / factor for c in xyz(props.centroid)[:2]],
             "loop_count": len(loops),
             "inner_loop_count": sum(1 for loop in loops if not loop.isOuter),
             "curve_count": sum(loop.profileCurves.count for loop in loops),
@@ -343,7 +340,7 @@ def _profiles(request):
     if request["point"] is not None:
         p = request["point"]
         if request["space"] == "model":
-            p = _xyz(sketch.modelToSketchSpace(_point3d(*p)))
+            p = xyz(sketch.modelToSketchSpace(_point3d(*p)))
             if abs(p[2]) > geo.PLANE_TOL_CM:
                 warnings.append(f"point is {p[2] / request['factor']:.6g} {request['units']} off the sketch plane; "
                                 "containment uses its projection")

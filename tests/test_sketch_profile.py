@@ -216,7 +216,7 @@ class ModelSpaceTests(unittest.TestCase):
         normals = {"xy": (0, 0, 1), "xz": (0, 1, 0), "yz": (1, 0, 0)}
         for plane, (u, v) in geo.ROOT_PLANE_FRAMES.items():
             with self.subTest(plane=plane):
-                self.assertEqual(geo._cross3(u, v), normals[plane])
+                self.assertEqual(geo.cross(u, v), normals[plane])
 
     def test_xz_frame_maps_model_minus_z_to_sketch_y(self):
         flat, off = geo.project_to_frame([(3, 0, -5)], (0, 0, 0), *geo.ROOT_PLANE_FRAMES["xz"])
@@ -260,8 +260,8 @@ class ModelSpaceTests(unittest.TestCase):
         for normal in ((0, 0, 1), (1, 0, 0), (0, -1, 0), (s := math.sqrt(1 / 3), s, s)):
             u, v = geo.frame_from_normal(normal)
             with self.subTest(normal=normal):
-                self.assertAlmostEqual(geo._dot(u, v), 0, places=12)
-                for a, b in zip(geo._cross3(u, v), normal):
+                self.assertAlmostEqual(geo.dot(u, v), 0, places=12)
+                for a, b in zip(geo.cross(u, v), normal):
                     self.assertAlmostEqual(a, b, places=12)
 
 
@@ -430,7 +430,7 @@ class SchemaTests(unittest.TestCase):
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(schema["required"], ["action", "units"])
         self.assertEqual(schema["properties"]["action"]["enum"], list(sketch_profile.ACTIONS))
-        self.assertEqual(set(schema["properties"]["units"]["enum"]), set(geo.UNIT_TO_CM))
+        self.assertEqual(set(schema["properties"]["units"]["enum"]), set(geo.CM_PER_UNIT))
         self.assertEqual(schema["properties"]["sketch_plane"]["enum"], ["xy", "xz", "yz"])
         self.assertFalse(schema["properties"]["arcs"]["items"]["additionalProperties"])
         self.assertEqual(schema["properties"]["points"]["items"]["items"], {"type": "number"})

@@ -25,13 +25,12 @@ import adsk.fusion
 
 from .common.api import safe, strict_items
 from .common.args import is_finite_number, is_int
+from .common.geometry import CM_PER_UNIT, along, cross, dot, from_cm, scaled, unit, xyz
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
 
 ACTIONS = ("point", "ray", "grid", "radial", "axial")
-CM_PER_UNIT = {"in": 2.54, "cm": 1.0, "mm": 0.1}
 ROOT_PATH = "root"
-_DIGITS = 5
 
 MAX_SAMPLES = 2000
 MAX_HITS_PER_RAY = 200
@@ -67,29 +66,7 @@ class ProbeError(Exception):
     """A request that cannot be sampled, reported to the caller as plain text."""
 
 
-# -- Vector math (no Fusion) ---------------------------------------------------
-
-
-def dot(a, b):
-    return sum(x * y for x, y in zip(a, b))
-
-
-def cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-
-def scaled(v, k):
-    return tuple(c * k for c in v)
-
-
-def along(origin, direction, t):
-    return tuple(o + d * t for o, d in zip(origin, direction))
-
-
-def unit(v):
-    """Unit vector, or None for a vector with no usable length."""
-    n = math.sqrt(dot(v, v))
-    return tuple(c / n for c in v) if n > 1e-12 else None
+# -- Frames and spans (no Fusion) ----------------------------------------------
 
 
 def perpendicular_frame(axis, reference=None):
@@ -165,10 +142,6 @@ def merge_intervals(intervals, touch=TOUCH_CM):
 
 
 # -- Unit conversion and formatting (no Fusion) --------------------------------
-
-
-def from_cm(value, units):
-    return round(value / CM_PER_UNIT[units], _DIGITS) + 0.0
 
 
 def point_out(p, units):
@@ -660,13 +633,9 @@ def sample(opts, targets, probe, budget):
 # -- Fusion layer --------------------------------------------------------------
 
 
-def _xyz(p):
-    return (p.x, p.y, p.z)
-
-
 def _bbox(body):
     box = safe(body, "boundingBox")
-    return None if box is None else (_xyz(box.minPoint), _xyz(box.maxPoint))
+    return None if box is None else (xyz(box.minPoint), xyz(box.maxPoint))
 
 
 def body_entries(root):
@@ -719,7 +688,7 @@ class FusionProbe:
             raise RuntimeError(f"findBRepUsingRay returned {count} bodies but {hit_points.count} hit points")
         hits = []
         for i in range(count):
-            body, p = found.item(i), _xyz(hit_points.item(i))
+            body, p = found.item(i), xyz(hit_points.item(i))
             context = safe(body, "assemblyContext")
             path = safe(context, "fullPathName") if context is not None else ROOT_PATH
             name = safe(body, "name")

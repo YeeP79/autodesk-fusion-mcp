@@ -12,8 +12,8 @@ with a three-point arc through an interior point (``mid``).
 import math
 
 from .common.args import is_finite_number, is_int
+from .common.geometry import CM_PER_UNIT, cross, dot, sub
 
-UNIT_TO_CM = {"in": 2.54, "cm": 1.0, "mm": 0.1}
 # Shorter than this is a zero-length segment; closer than this is touching.
 LENGTH_TOL_CM = 1e-5
 # Model-space points further than this from the sketch plane are refused.
@@ -43,20 +43,8 @@ class GeometryError(ValueError):
 # -- Small vector helpers -----------------------------------------------------
 
 
-def _sub(a, b):
-    return tuple(x - y for x, y in zip(a, b))
-
-
-def _dot(a, b):
-    return sum(x * y for x, y in zip(a, b))
-
-
-def _cross3(a, b):
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-
 def _norm(a):
-    return math.sqrt(_dot(a, a))
+    return math.sqrt(dot(a, a))
 
 
 def _cross2(a, b):
@@ -64,7 +52,7 @@ def _cross2(a, b):
 
 
 def distance(a, b):
-    return _norm(_sub(a, b))
+    return _norm(sub(a, b))
 
 
 # -- Units and argument parsing -----------------------------------------------
@@ -72,9 +60,9 @@ def distance(a, b):
 
 def unit_factor(units):
     """Centimeters per one *units*; raises GeometryError for unknown units."""
-    if units not in UNIT_TO_CM:
-        raise GeometryError([f"'units' must be one of {sorted(UNIT_TO_CM)}, got {units!r}"])
-    return UNIT_TO_CM[units]
+    if units not in CM_PER_UNIT:
+        raise GeometryError([f"'units' must be one of {sorted(CM_PER_UNIT)}, got {units!r}"])
+    return CM_PER_UNIT[units]
 
 
 def parse_point(value, dims, label, factor):
@@ -174,7 +162,7 @@ def circle_through(a, b, c):
     d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]))
     if d == 0:
         return None
-    a2, b2, c2 = _dot(a, a), _dot(b, b), _dot(c, c)
+    a2, b2, c2 = dot(a, a), dot(b, b), dot(c, c)
     ux = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d
     uy = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d
     return (ux, uy), math.hypot(a[0] - ux, a[1] - uy)
@@ -221,20 +209,20 @@ def arc_mids(points2d, arcs):
 
 
 def point_segment_distance(p, a, b):
-    ab = _sub(b, a)
-    length2 = _dot(ab, ab)
+    ab = sub(b, a)
+    length2 = dot(ab, ab)
     if length2 == 0:
         return distance(p, a)
-    t = max(0.0, min(1.0, _dot(_sub(p, a), ab) / length2))
+    t = max(0.0, min(1.0, dot(sub(p, a), ab) / length2))
     return distance(p, (a[0] + ab[0] * t, a[1] + ab[1] * t))
 
 
 def segments_touch(p1, p2, q1, q2, tol=LENGTH_TOL_CM):
     """True if two 2D segments cross, touch or overlap (within *tol*)."""
-    d1 = _cross2(_sub(p2, p1), _sub(q1, p1))
-    d2 = _cross2(_sub(p2, p1), _sub(q2, p1))
-    d3 = _cross2(_sub(q2, q1), _sub(p1, q1))
-    d4 = _cross2(_sub(q2, q1), _sub(p2, q1))
+    d1 = _cross2(sub(p2, p1), sub(q1, p1))
+    d2 = _cross2(sub(p2, p1), sub(q2, p1))
+    d3 = _cross2(sub(q2, q1), sub(p1, q1))
+    d4 = _cross2(sub(q2, q1), sub(p2, q1))
     if ((d1 > 0 > d2) or (d1 < 0 < d2)) and ((d3 > 0 > d4) or (d3 < 0 < d4)):
         return True
     return min(point_segment_distance(q1, p1, p2), point_segment_distance(q2, p1, p2),
@@ -385,21 +373,21 @@ def newell_normal(points3d):
 def frame_from_normal(normal):
     """Any right-handed orthonormal (u, v) with u x v = normal."""
     helper = (1.0, 0.0, 0.0) if abs(normal[0]) < 0.9 else (0.0, 1.0, 0.0)
-    u = _cross3(helper, normal)
+    u = cross(helper, normal)
     length = _norm(u)
     u = tuple(c / length for c in u)
-    v = _cross3(normal, u)
+    v = cross(normal, u)
     return u, v
 
 
 def project_to_frame(points3d, origin, u, v):
     """2D coordinates of 3D points in the (origin, u, v) frame plus off-plane distances."""
-    normal = _cross3(u, v)
+    normal = cross(u, v)
     flat, off = [], []
     for p in points3d:
-        rel = _sub(p, origin)
-        flat.append((_dot(rel, u), _dot(rel, v)))
-        off.append(abs(_dot(rel, normal)))
+        rel = sub(p, origin)
+        flat.append((dot(rel, u), dot(rel, v)))
+        off.append(abs(dot(rel, normal)))
     return flat, off
 
 
