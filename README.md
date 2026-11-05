@@ -98,6 +98,7 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `tail_log` | Read Fusion's own app log (filter by substring, level, time; `save`/`errors` presets); runs off the main thread |
 | `save_document` | Save with a version comment and verify a new cloud version actually landed (diagnoses stalled saves) |
 | `open_document` | Open a cloud file by id or project path, reusing an already-open instance |
+| `set_editable_state` | Make cloud files read-only or editable, one at a time and verified (dry run by default) |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |

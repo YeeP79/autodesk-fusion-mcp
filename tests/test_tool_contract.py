@@ -53,6 +53,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "save_document",
         "open_document",
         "delete_files",
+        "set_editable_state",
     }
 
     def test_all_expected_tools_present(self):
