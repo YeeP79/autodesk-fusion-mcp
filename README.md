@@ -121,6 +121,24 @@ coordinates) or a `model_view` that frames the visible bodies with a chosen
 | `compare_files` | Compare two design files by occurrences, bodies, volume, component names and timeline length, closing only what it opened |
 | `compare_bodies` | Read-only: are two bodies the same solid, and where do they differ, by booleans on temporary copies with a sampled fallback; `unknown` rather than a false `same` |
 | `apply_thread` | Read Fusion's thread library: narrow by family, size and designation to per-class diameters, or get the nearest thread to a diameter (applying a thread is not available yet) |
+| `audit_design` | Read-only health report for the active design: file, timeline, links, bodies, joints, sketches and parameters, worst first; profiles, a time budget, baseline diffs, and findings merged from other tools |
+
+### audit_design findings
+
+Every finding has this shape, and `extra_findings` takes the same one, so another tool can add its own checks without this repo knowing about them:
+
+| Field | Meaning |
+| --- | --- |
+| `check` | Short rule name. Extra findings may not reuse a built-in one |
+| `group` | `file`, `timeline`, `links`, `bodies`, `joints`, `sketches`, `parameters`, or the caller's own |
+| `severity` | `error`, `warning` or `info` |
+| `where` | Where to look, as `<kind>: <name>`. With `check` it identifies the finding between runs, so keep it stable |
+| `message` | What was found |
+| `why` | Why it matters (may be null) |
+| `fix_tool` | The tool to go to next (may be null) |
+| `source` | Extra findings only: who supplied it |
+
+Checks say what they found, never how much it matters: `SEVERITY_TABLE` in `audit_rules.py` sets each check's severity per profile, and a check off there does not run. To add a check, write a function over the gathered facts, add it to `CHECKS`, and give it a row.
 
 ### Generic API example
 
