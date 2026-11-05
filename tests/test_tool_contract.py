@@ -66,6 +66,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "combine_bodies",
         "edge_treatment",
         "construction_plane",
+        "pattern_features",
         "apply_thread",
         "audit_design",
     }

@@ -59,6 +59,7 @@ AUDIT_DESIGN = "audit_design"
 COMBINE_BODIES = "combine_bodies"
 EDGE_TREATMENT = "edge_treatment"
 CONSTRUCTION_PLANE = "construction_plane"
+PATTERN_FEATURES = "pattern_features"
 APPLY_THREAD = "apply_thread"
 
 # Resource constants
@@ -147,6 +148,12 @@ ENTITY_REF_SCHEMA = {
                    "point": {**NUMBERS_SCHEMA, "description": "World [x, y, z] on the entity."},
                    "body": INDEXED_BODY_REF_SCHEMA},
     "additionalProperties": False,
+}
+PATTERN_DIRECTION_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "description": "Exactly one key.",
+    "properties": {"axis": {"type": "string", "enum": ["x", "y", "z"], "description": "The owning component's axis."},
+                   "edge": ENTITY_REF_SCHEMA, "sketch_line_token": {"type": "string"}},
 }
 _RANGE_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -1739,28 +1746,113 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": PATTERN_FEATURES,
+        "description": (
+            "Repeat features, bodies or faces of the active design and prove how many instances came out. The "
+            "pattern lands in the seeds' component. rectangular: direction_one, count_one, spacing_one (negative "
+            "reverses), and optionally direction_two, count_two, spacing_two; an unused direction two is still set, "
+            "on a placeholder with quantity 1, because left unset Fusion builds extra instances. A direction is a "
+            "component axis, a straight edge or a sketch line. circular: axis (a component axis, an edge, a circle, "
+            "or a face with an axis), count, total_angle_deg (default 360; a full turn divides by count, a partial "
+            "total by count - 1), symmetric. Direction and axis entities must be in the seeds' component.\n"
+            "Result pattern: asked_for, elements (what Fusion made), bodies_made, volume_change, instances_reached "
+            "(volume_change / seed_volume_delta + 1, null without a delta), direction_world, direction_two_set. A "
+            "cut makes no bodies, so pass seed_volume_delta to prove every instance reached material. positions "
+            "need seed_point; positions_basis says predicted or read from the built elements. Any count that "
+            "disagrees is 'suspect'. Only the seeds' bodies may change: anything else is undone by on_collateral. "
+            "dry_run (default false) adds nothing and returns plan, world directions and predicted positions, "
+            "warning of any position outside the target's box. isError is 'not ok': anything but built or planned."
+        ),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "type": {"type": "string", "enum": ["rectangular", "circular"]},
+                "entities": {
+                    "type": "array",
+                    "description": "Seeds, all one kind, each with exactly one key. A boss and its bore go together.",
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {"feature": {"type": "string", "description": "Timeline name."},
+                                       "feature_token": {"type": "string"},
+                                       "body": INDEXED_BODY_REF_SCHEMA, "face": ENTITY_REF_SCHEMA},
+                    },
+                },
+                "direction_one": PATTERN_DIRECTION_SCHEMA,
+                "count_one": {"type": "integer", "description": "Instances along direction one, the seed included."},
+                "spacing_one": {"type": "number", "description": "In 'units'. Negative reverses."},
+                "spacing_one_expression": {"type": "string", "description": "Instead of spacing_one, with a unit."},
+                "direction_two": PATTERN_DIRECTION_SCHEMA,
+                "count_two": {"type": "integer"},
+                "spacing_two": {"type": "number"},
+                "spacing_two_expression": {"type": "string"},
+                "axis": {
+                    "type": "object", "additionalProperties": False,
+                    "description": "Circular: exactly one key.",
+                    "properties": {"axis": {"type": "string", "enum": ["x", "y", "z"]},
+                                   "edge": ENTITY_REF_SCHEMA, "face": ENTITY_REF_SCHEMA},
+                },
+                "count": {"type": "integer", "description": "Circular: instances, the seed included."},
+                "total_angle_deg": {"type": "number", "description": "Default 360. Negative reverses."},
+                "total_angle_expression": {"type": "string", "description": "Instead of total_angle_deg, with a unit."},
+                "symmetric": {"type": "boolean", "description": "Default false."},
+                "compute": {"type": "string", "enum": ["adjust", "identical", "optimized"],
+                            "description": "Default adjust; always set explicitly."},
+                "seed_point": {**NUMBERS_SCHEMA, "description": "World [x, y, z] on the seed, for positions."},
+                "seed_volume_delta": {"type": "number",
+                                      "description": "The seed's own volume change in units^3, e.g. a cut's delta."},
+                "feature_name": {"type": "string", "description": "Timeline name."},
+                "on_collateral": {"type": "string", "enum": ["undo", "keep"],
+                                  "description": "A body outside the seeds' changed. Default undo."},
+                "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "dry_run": {"type": "boolean", "description": "Default false."},
+            },
+            "required": ["type", "entities"],
+        },
+    },
+    {
         "name": APPLY_THREAD,
         "description": (
-            "Read Fusion's thread library (read-only for now; applying a thread is not available yet). Actions:\n"
+            "Fusion's thread library, and putting a thread on one face. Actions:\n"
             "- catalog: narrows by what is given. Nothing: families. family: sizes. family + size: designations. "
             "family + designation: classes with major, minor and pitch in 'units', for the 'internal' side; "
             "diameters depend on the class, and default_class is the one applying would use. Sizes take the "
             "dialog's spellings too ('1/4', '#10', '6 mm'); the reply uses the API's ('0.25', '0.19(#10)', '6.0').\n"
             "- recommend: Fusion's nearest thread to 'diameter'. This is the nearest size, not what the part is. "
             "family defaults to the inch or metric default by 'units'.\n"
+            "- apply: a thread on 'face' from find_entities, in the face's component. family, designation, face and "
+            "modeled are required: modeled false is cosmetic and removes nothing. Refused: not a cylinder; a split "
+            "face, cosmetic or modeled (sweep_deg under 355 or split_siblings above 0: split shafts cut 2.57x too "
+            "much, or fail); 'internal' contradicting concavity; a face more than 5% from the class's major "
+            "(external) or minor (internal) diameter. thread_class defaults to 2A/2B or 6g/6H; class_defaulted says "
+            "so. A partial thread takes full_length false, length, and optionally offset and measured_from (low or "
+            "high along face.axis_world, default high). Volume is measured across the add: modeled with no change or "
+            "cosmetic with a change is 'suspect'. dry_run (default false) checks everything and adds nothing. Result "
+            "is the write envelope with thread, face and volume_delta; isError is 'not ok'.\n"
             "Unknown names are refused with near_matches; tapered families are refused by name."
         ),
         "inputSchema": {
             "type": "object", "additionalProperties": False,
             "properties": {
-                "action": {"type": "string", "enum": ["catalog", "recommend"]},
+                "action": {"type": "string", "enum": ["catalog", "recommend", "apply"]},
                 "family": {"type": "string", "description": "Thread type, e.g. 'ANSI Unified Screw Threads'."},
-                "size": {"type": "string", "description": "catalog: e.g. '0.25', '1/4', '#10', '6 mm'."},
-                "designation": {"type": "string", "description": "catalog: e.g. '1/4-20 UNC'."},
-                "thread_class": {"type": "string", "description": "catalog: report only this class, e.g. '2A'."},
+                "size": {"type": "string", "description": "catalog, apply: e.g. '0.25', '1/4', '#10', '6 mm'."},
+                "designation": {"type": "string", "description": "catalog, apply: e.g. '1/4-20 UNC'."},
+                "thread_class": {"type": "string",
+                                 "description": "catalog: report only this class, e.g. '2A'. apply: use it."},
                 "internal": {"type": "boolean", "description": "Internal thread. Default false."},
                 "diameter": {"type": "number", "description": "recommend: cylinder diameter in 'units'."},
+                "face": {**ENTITY_REF_SCHEMA, "description": "apply: the one cylindrical face to thread."},
+                "modeled": {"type": "boolean", "description": "apply: required. false is a cosmetic thread."},
+                "right_handed": {"type": "boolean", "description": "apply: default true."},
+                "full_length": {"type": "boolean", "description": "apply: default true."},
+                "length": {"type": "number", "description": "apply: with full_length false, in 'units'."},
+                "length_expression": {"type": "string", "description": "Instead of length, with a unit."},
+                "offset": {"type": "number", "description": "apply: from the measured end. Default 0."},
+                "offset_expression": {"type": "string", "description": "Instead of offset, with a unit."},
+                "measured_from": {"type": "string", "enum": ["low", "high"],
+                                  "description": "apply: which end along the face's axis. Default high."},
                 "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
+                "dry_run": {"type": "boolean", "description": "apply: default false."},
             },
             "required": ["action"],
         },
@@ -1882,6 +1974,7 @@ def build_tool_handlers(
     combine_bodies,
     edge_treatment,
     construction_plane,
+    pattern_features,
     apply_thread,
 ):
     """Build a dict mapping tool name to handler function.
@@ -1943,6 +2036,7 @@ def build_tool_handlers(
         COMBINE_BODIES: combine_bodies,
         EDGE_TREATMENT: edge_treatment,
         CONSTRUCTION_PLANE: construction_plane,
+        PATTERN_FEATURES: pattern_features,
         APPLY_THREAD: apply_thread,
     }
     if set(handlers) != _TOOL_NAMES:

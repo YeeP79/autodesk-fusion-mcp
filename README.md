@@ -125,7 +125,8 @@ coordinates) or a `model_view` that frames the visible bodies with a chosen
 | `combine_bodies` | Join, cut or intersect existing bodies with `keep_tools` stated every time, a temporary-copy preview compared with what was built, and fresh references to every resulting body |
 | `edge_treatment` | Chamfer or fillet edges named by reference or by any point on them: one feature per body, then narrower retries on refusal, then the inset or radius measured, with a swapped two-distance chamfer rebuilt flipped; what would not build is reported as `partial` with Fusion's words |
 | `construction_plane` | Make an offset, three-point, angled or point-and-normal plane and report where it really is, normal sign included; anchors are named, listed and hidden, never deleted |
-| `apply_thread` | Read Fusion's thread library: narrow by family, size and designation to per-class diameters, or get the nearest thread to a diameter (applying a thread is not available yet) |
+| `pattern_features` | Rectangular or circular pattern of features, bodies or faces, direction two always set; proves the count by `elements`, `bodies_made` and `instances_reached`, reads positions from the built elements, and undoes a pattern that changes a body outside the seeds |
+| `apply_thread` | Fusion's thread library: narrow by family, size and designation to per-class diameters, get the nearest thread to a diameter, or put a thread on one whole cylinder, refusing a split face and a diameter off the class, with `modeled` stated every time and the volume measured across the add |
 | `audit_design` | Read-only health report for the active design: file, timeline, links, bodies, joints, sketches and parameters, worst first; profiles, a time budget, baseline diffs, and findings merged from other tools |
 
 ### audit_design findings
@@ -342,7 +343,7 @@ New tools must use `fusion_bridge/common/` instead of private copies of its help
 | `geometry.py` | Vector math, `perpendicular_pair`, `rotate_about`, `collinear`, `same_plane`, unit conversion |
 | `bodies.py` | Body enumeration, `find_occurrence`, `occurrence_frame`, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy`, `volume_of`, face records, snapshots, diffs and the baseline store |
 | `timeline.py` | Timeline health, `read_rows`, `find_row`, marker and broken-feature refusals, the rolled-back window flag |
-| `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
+| `entity_refs.py` | EntityRefs: `parse_ref`, `resolve`, `owner_entry`, `make_ref`, `describe_face`, `describe_edge`, the pure `matches_*` filters, edge convexity |
 | `feature_ops.py` | Around every write: `preflight`, `read_value`, `value_input`, `anchor_points`, `add_feature`, `snapshot`, `baseline`, `undo`, `body_changes`, `envelope` |
 | `documents.py` | Open documents, instances of a file, the event pump |
 | `cloud.py` | Cloud paths, projects, folders, files, the project tree walk |

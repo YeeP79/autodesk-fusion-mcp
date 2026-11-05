@@ -9,6 +9,8 @@ import _fusion_test_bootstrap  # noqa: F401  (installs adsk mock + parent pkg sh
 
 from fusion_bridge import apply_thread as at
 from fusion_bridge import tool_surface
+from fusion_bridge.common import bodies
+from fusion_bridge.common import entity_refs as er
 
 UNIFIED = "ANSI Unified Screw Threads"
 ISO = "ISO Metric profile"
@@ -344,9 +346,6 @@ class ArgumentTests(unittest.TestCase):
         self.refused({}, "'action'")
         self.refused({"action": "cut"}, "'action'")
 
-    def test_apply_says_it_is_coming(self):
-        self.refused({"action": "apply", "modeled": False}, "not available yet")
-
     def test_fields_belong_to_their_action(self):
         self.refused({"action": "catalog", "diameter": 1}, "diameter")
         self.refused({"action": "recommend", "diameter": 1, "size": "1/4"}, "size")
@@ -429,6 +428,597 @@ class FusionLayerTests(unittest.TestCase):
                 mock.patch.object(at, "_design_threads", return_value=threads):
             at.make_info(True, UNIFIED, "1/4-20 UNC", "2B")
         threads.createThreadInfo.assert_called_once_with(True, UNIFIED, "1/4-20 UNC", "2B")
+
+
+# -- apply -----------------------------------------------------------------------
+
+CM = 2.54
+FACE_REF = {"token": "bore", "kind": "face", "point": [0.0, 0.0, 0.0]}
+
+
+def apply_args(**overrides):
+    return {"action": "apply", "family": UNIFIED, "designation": "1/4-20 UNC", "face": FACE_REF, "modeled": False,
+            **overrides}
+
+
+def apply_options(**overrides):
+    opts, err = at.validate_args(apply_args(**overrides))
+    assert err is None, err
+    return opts
+
+
+def cylinder_record(diameter=0.25, concavity="convex", sweep=360.0, siblings=0, kind="cylinder"):
+    rec = {"type": kind, "ref": {"token": "bore", "kind": "face"}, "diameter": diameter, "concavity": concavity,
+           "sweep_deg": sweep, "split_siblings": siblings, "axis_direction": [0.0, 0.0, 1.0],
+           "length_along_axis": 1.0}
+    return rec if kind == "cylinder" else {"type": kind, "ref": rec["ref"]}
+
+
+class Members(list):
+    count = property(len)
+
+
+class ThreadBody:
+    isSolid = True
+    isVisible = True
+    nativeObject = None
+    assemblyContext = None
+    boundingBox = None
+
+    def __init__(self, name, volume):
+        self.name, self.volume = name, volume
+        self.faces, self.lumps, self.shells, self.edges = Members(), Members(), Members(), Members()
+
+
+class ThreadFace:
+    objectType = "adsk::fusion::BRepFace"
+    nativeObject = None
+    assemblyContext = None
+
+    def __init__(self, body):
+        self.body = body
+
+
+class ThreadFeature:
+    objectType = "adsk::fusion::ThreadFeature"
+    healthState = 0
+    errorOrWarningMessage = ""
+    parentComponent = None
+    timelineObject = None
+    name = "Thread1"
+
+    def deleteMe(self):
+        return True
+
+
+class ThreadRoot:
+    allOccurrences = ()
+
+    def __init__(self, members):
+        self.bRepBodies = members
+
+
+class ThreadDesign:
+    designType = 1
+    activeEditObject = None
+    parentDocument = None
+    timeline = type("T", (), {"count": 0, "markerPosition": 0, "__iter__": lambda self: iter(())})()
+
+    def __init__(self, members):
+        self.rootComponent = ThreadRoot(members)
+
+
+class ThreadSession:
+    """The collaborator ``run_apply`` drives: one rod, one stranger, one face."""
+
+    def __init__(self, record=None, change=0.0):
+        self.rod, self.other = ThreadBody("Rod", 10.0), ThreadBody("Other", 5.0)
+        self.members = [self.rod, self.other]
+        self.design = ThreadDesign(self.members)
+        self.face = ThreadFace(self.rod)
+        self.record = record or cylinder_record()
+        self.change, self.stray = change, 0.0
+        self.refuse = None
+        self.health = 0
+        self.added = []
+        self.tokens = {"bore": [self.face]}
+        self.bad_values = set()
+
+    def entries(self):
+        return bodies.assign_keys(list(bodies.body_entries(self.design.rootComponent)))
+
+    def by_token(self, token):
+        return self.tokens.get(token, [])
+
+    def distance(self, entity, point):
+        return 0.0
+
+    def at_point(self, point, kind, tolerance_cm=None):
+        return []
+
+    def describe(self, face, units, entry):
+        return self.record
+
+    def value(self, value):
+        if value["text"] in self.bad_values:
+            raise ValueError(f"{value['text']!r} is not a valid expression")
+        return value["text"]
+
+    def add(self, face, info, opts):
+        if self.refuse:
+            raise RuntimeError(self.refuse)
+        self.added.append((face, info, opts))
+        self.rod.volume += self.change
+        self.other.volume += self.stray
+        feature = ThreadFeature()
+        feature.healthState = self.health
+        return feature
+
+
+class ThreadInfoFake:
+    def __init__(self, args):
+        self.args = args
+        self.majorDiameter, self.minorDiameter, self.threadPitch = 0.25 * CM, 0.2 * CM, 0.05 * CM
+
+
+def info_of(*args):
+    return ThreadInfoFake(args)
+
+
+def apply_run(session, **overrides):
+    library = at.ThreadLibrary(Query(), Tapered(), cache={})
+    return at.run_apply(session.design, None, library, info_of, apply_options(units="in", **overrides), session)
+
+
+class IsSplitTests(unittest.TestCase):
+    def test_whole(self):
+        self.assertFalse(at.is_split(360.0, 0))
+
+    def test_two_halves(self):
+        self.assertTrue(at.is_split(180.0, 1))
+
+    def test_two_separate_same_size_bores_are_each_whole(self):
+        self.assertFalse(at.is_split(360.0, 0))
+
+    def test_stacked_walls_each_sweep_all_the_way_round(self):
+        self.assertTrue(at.is_split(360.0, 1))
+
+    def test_a_half_with_no_neighbor_found(self):
+        self.assertTrue(at.is_split(180.0, 0))
+
+    def test_sweep_boundary(self):
+        self.assertFalse(at.is_split(355.0, 0))
+        self.assertTrue(at.is_split(354.9, 0))
+
+    def test_a_sweep_that_cannot_be_read_proves_nothing(self):
+        self.assertTrue(at.is_split(None, 0))
+
+
+class SplitOnFacesTests(unittest.TestCase):
+    """``split_siblings`` as find_entities reports it, feeding ``is_split``."""
+
+    class Surface:
+        surfaceType = 1
+
+        def __init__(self, x):
+            self.origin = type("O", (), {"x": x, "y": 0.0, "z": 0.0})()
+            self.axis = type("A", (), {"x": 0.0, "y": 0.0, "z": 1.0})()
+            self.radius = 0.5
+
+    class Wall:
+        def __init__(self, x=0.0):
+            self.geometry = SplitOnFacesTests.Surface(x)
+            self.edges = []
+
+    def link(self, face, *others):
+        face.edges = [type("E", (), {"faces": [face, other]})() for other in others]
+
+    def test_two_half_walls(self):
+        a, b = self.Wall(), self.Wall()
+        self.link(a, b, b)
+        self.assertTrue(at.is_split(180.0, er.split_siblings(a)))
+
+    def test_one_wall_with_its_seam(self):
+        a = self.Wall()
+        self.link(a, a)
+        self.assertFalse(at.is_split(360.0, er.split_siblings(a)))
+
+    def test_two_separate_bores_joined_by_a_plate(self):
+        a, b, plate = self.Wall(), self.Wall(3.0), mock.Mock(geometry=mock.Mock(surfaceType=0))
+        self.link(a, plate)
+        self.link(plate, a, b)
+        self.assertFalse(at.is_split(360.0, er.split_siblings(a)))
+
+
+class ApplyCheckTests(unittest.TestCase):
+    def test_concavity(self):
+        self.assertIsNone(at.concavity_problem(True, "concave"))
+        self.assertIsNone(at.concavity_problem(False, "convex"))
+        self.assertIn("a shaft", at.concavity_problem(True, "convex"))
+        self.assertIn("a bore", at.concavity_problem(False, "concave"))
+
+    def test_unknown_concavity_is_no_contradiction(self):
+        self.assertIsNone(at.concavity_problem(True, None))
+
+    def test_not_a_cylinder(self):
+        self.assertEqual(at.face_problems(cylinder_record(kind="plane"), False),
+                         ["the face is a plane, not a cylinder"])
+
+    def test_a_clean_face(self):
+        self.assertEqual(at.face_problems(cylinder_record(), False), [])
+
+    def test_face_problems_are_all_listed(self):
+        problems = at.face_problems(cylinder_record(sweep=180.0, siblings=1, concavity="concave"), False)
+        self.assertEqual(len(problems), 2)
+        self.assertIn("2.57x", problems[0])
+
+    def test_diameter_within_five_percent_either_way(self):
+        self.assertIsNone(at.diameter_problem(0.25, 0.25, False, "in"))
+        self.assertIsNone(at.diameter_problem(0.2625, 0.25, False, "in"))
+        self.assertIsNone(at.diameter_problem(0.2375, 0.25, False, "in"))
+
+    def test_diameter_just_outside(self):
+        self.assertIn("major", at.diameter_problem(0.2626, 0.25, False, "in"))
+        self.assertIn("major", at.diameter_problem(0.2374, 0.25, False, "in"))
+
+    def test_internal_reads_the_minor(self):
+        self.assertIsNone(at.diameter_problem(0.2, 0.2, True, "in"))
+        self.assertIn("minor", at.diameter_problem(0.5, 0.2, True, "in"))
+
+    def test_no_reference_is_no_pass(self):
+        self.assertIn("no major", at.diameter_problem(0.25, None, False, "in"))
+        self.assertIn("no minor", at.diameter_problem(0.25, 0.0, True, "in"))
+
+    def test_modeled_volume(self):
+        self.assertIsNone(at.volume_problem(True, 10.0, 9.0, True))
+        self.assertIn("changed nothing", at.volume_problem(True, 10.0, 10.0, False))
+
+    def test_cosmetic_volume(self):
+        self.assertIsNone(at.volume_problem(False, 10.0, 10.0, False))
+        self.assertIn("cosmetic", at.volume_problem(False, 10.0, 9.0, False))
+
+    def test_a_small_thread_on_a_big_body_still_counts(self):
+        self.assertIsNone(at.volume_problem(True, 1600.0, 1599.99, False))
+        self.assertIsNone(at.volume_problem(True, 1600.0, 1600.0, True))
+
+    def test_kernel_noise_on_a_big_body_is_not_a_cosmetic_cut(self):
+        self.assertIsNone(at.volume_problem(False, 1600.0, 1600.0 + 1e-4, False))
+
+    def test_unreadable_volume(self):
+        self.assertIn("could not be read", at.volume_problem(True, None, 1.0, True))
+
+
+class ApplyArgumentTests(unittest.TestCase):
+    def refused(self, needle, **overrides):
+        arguments = {k: v for k, v in apply_args(**overrides).items() if v is not None}
+        opts, err = at.validate_args(arguments)
+        self.assertIsNone(opts)
+        self.assertIn(needle, err)
+
+    def test_defaults(self):
+        opts = apply_options()
+        self.assertEqual((opts["right_handed"], opts["full_length"], opts["dry_run"]), (True, True, False))
+        self.assertEqual(opts["face"]["kind"], "face")
+
+    def test_modeled_is_required(self):
+        self.refused("'modeled'", modeled=None)
+        self.refused("'modeled'", modeled="no")
+
+    def test_required(self):
+        self.refused("'family'", family=None)
+        self.refused("'designation'", designation=None)
+        self.refused("'face'", face=None)
+
+    def test_face(self):
+        self.refused("'face'", face={"bogus": 1})
+        self.refused("must be a face", face={"token": "t", "kind": "edge"})
+
+    def test_a_face_ref_without_a_kind_is_a_face(self):
+        self.assertEqual(apply_options(face={"token": "t"})["face"]["kind"], "face")
+
+    def test_a_face_point_is_cm_inside(self):
+        self.assertEqual(apply_options(face={"token": "t", "point": [1, 0, 0]})["face"]["point"], (CM, 0.0, 0.0))
+
+    def test_length_needs_full_length_false(self):
+        self.refused("need 'full_length'", length=0.5)
+        self.refused("need 'full_length'", length=0.5, full_length=True)
+        self.refused("need 'full_length'", offset=0.1)
+        self.refused("need 'full_length'", measured_from="low")
+
+    def test_a_partial_thread_needs_a_length(self):
+        self.refused("'length'", full_length=False)
+        self.refused("'length'", full_length=False, length=0)
+        self.refused("'length'", full_length=False, length=-1)
+
+    def test_partial_defaults(self):
+        opts = apply_options(full_length=False, length=0.5)
+        self.assertEqual((opts["length"]["text"], opts["offset"]["text"], opts["measured_from"]),
+                         ("0.5 in", "0 in", "high"))
+
+    def test_partial_expressions(self):
+        opts = apply_options(full_length=False, length_expression="depth", offset_expression="lead")
+        self.assertEqual((opts["length"]["text"], opts["offset"]["text"]), ("depth", "lead"))
+
+    def test_partial_values(self):
+        self.refused("'offset'", full_length=False, length=0.5, offset=-0.1)
+        self.refused("'measured_from'", full_length=False, length=0.5, measured_from="middle")
+
+    def test_booleans(self):
+        self.refused("'right_handed'", right_handed="yes")
+        self.refused("'dry_run'", dry_run=1)
+
+    def test_fields_stay_with_apply(self):
+        self.refused("diameter", diameter=0.25)
+        opts, err = at.validate_args({"action": "catalog", "modeled": True})
+        self.assertIn("modeled", err)
+        self.assertIsNone(opts)
+
+
+class ApplyRunTests(unittest.TestCase):
+    def refused(self, session, needle, **overrides):
+        payload = apply_run(session, **overrides)
+        self.assertEqual(payload["status"], "refused", payload)
+        self.assertIn(needle, " ".join(payload["refusals"]))
+        self.assertEqual(session.added, [])
+        return payload
+
+    def test_cosmetic(self):
+        session = ThreadSession()
+        payload = apply_run(session)
+        self.assertEqual((payload["status"], payload["ok"], payload["action"]), ("built", True, "apply"))
+        self.assertEqual(payload["volume_delta"], 0.0)
+        self.assertEqual(payload["thread"]["designation"], "1/4-20 UNC")
+        self.assertEqual((payload["thread"]["thread_class"], payload["thread"]["class_defaulted"]), ("2A", True))
+        self.assertEqual((payload["thread"]["major"], payload["thread"]["minor"], payload["thread"]["pitch"]),
+                         (0.25, 0.2, 0.05))
+        self.assertEqual(payload["face"]["diameter_check"], "ok")
+        self.assertEqual((payload["face"]["sweep_deg"], payload["face"]["split_siblings"]), (360.0, 0))
+        self.assertEqual(payload["feature"]["type"], "ThreadFeature")
+        self.assertTrue(payload["baseline_token"])
+        self.assertEqual(session.added[0][0], session.face)
+
+    def test_modeled(self):
+        payload = apply_run(ThreadSession(change=-1.0), modeled=True)
+        self.assertEqual(payload["status"], "built")
+        self.assertAlmostEqual(payload["volume_delta"], -1.0 / CM ** 3, places=5)
+        self.assertEqual(payload["bodies"]["touched"][0]["role"], "target")
+        self.assertIn("gone", " ".join(payload["warnings"]))
+
+    def test_modeled_that_removed_nothing_is_suspect(self):
+        payload = apply_run(ThreadSession(), modeled=True)
+        self.assertEqual((payload["status"], payload["ok"]), ("suspect", False))
+        self.assertIn("changed nothing", payload["warnings"][0])
+
+    def test_cosmetic_that_cut_is_suspect(self):
+        payload = apply_run(ThreadSession(change=-1.0))
+        self.assertEqual(payload["status"], "suspect")
+
+    def test_a_split_face_is_refused_either_way(self):
+        for modeled in (False, True):
+            session = ThreadSession(cylinder_record(sweep=180.0, siblings=1))
+            self.refused(session, "2.57x", modeled=modeled)
+
+    def test_a_short_sweep_alone_is_refused(self):
+        self.refused(ThreadSession(cylinder_record(sweep=200.0)), "not a whole cylinder")
+
+    def test_a_sibling_alone_is_refused(self):
+        self.refused(ThreadSession(cylinder_record(siblings=1)), "not a whole cylinder")
+
+    def test_a_plane_is_refused(self):
+        payload = self.refused(ThreadSession(cylinder_record(kind="plane")), "not a cylinder")
+        self.assertEqual(payload["face"]["diameter_check"], "not_checked")
+
+    def test_contradicting_concavity(self):
+        self.refused(ThreadSession(cylinder_record(concavity="concave")), "a bore")
+        self.refused(ThreadSession(cylinder_record(diameter=0.2)), "a shaft", internal=True)
+
+    def test_internal_checks_against_the_minor(self):
+        session = ThreadSession(cylinder_record(diameter=0.2, concavity="concave"))
+        payload = apply_run(session, internal=True)
+        self.assertEqual(payload["status"], "built", payload)
+        self.assertEqual(payload["thread"]["thread_class"], "2B")
+        self.assertEqual(payload["face"]["diameter_check"], "ok")
+
+    def test_a_half_inch_hole_is_refused(self):
+        session = ThreadSession(cylinder_record(diameter=0.5, concavity="concave"))
+        payload = self.refused(session, "minor diameter", internal=True)
+        self.assertEqual(payload["face"]["diameter_check"], "out_of_range")
+
+    def test_diameter_check_uses_the_callers_units(self):
+        session = ThreadSession(cylinder_record(diameter=6.35))
+        library = at.ThreadLibrary(Query(), Tapered(), cache={})
+        opts = apply_options(units="mm", face={"token": "bore"})
+        payload = at.run_apply(session.design, None, library, info_of, opts, session)
+        self.assertEqual(payload["status"], "built", payload)
+
+    def test_a_named_class(self):
+        payload = apply_run(ThreadSession(), thread_class="3A")
+        self.assertEqual((payload["thread"]["thread_class"], payload["thread"]["class_defaulted"]), ("3A", False))
+
+    def test_handedness_reaches_the_info(self):
+        session = ThreadSession()
+        apply_run(session, right_handed=False)
+        self.assertEqual(session.added[0][1].args, (False, UNIFIED, "1/4-20 UNC", "2A", False))
+
+    def test_size_narrows_and_takes_the_dialog_spelling(self):
+        self.assertEqual(apply_run(ThreadSession(), size="1/4")["status"], "built")
+
+    def test_unknown_family_has_near_matches(self):
+        payload = self.refused(ThreadSession(), "unknown thread family", family="ANSI Unified")
+        self.assertEqual(payload["near_matches"][0], UNIFIED)
+
+    def test_unknown_designation_has_near_matches(self):
+        payload = self.refused(ThreadSession(), "unknown designation", designation="1/4-20 UNX")
+        self.assertIn("1/4-20 UNC", payload["near_matches"])
+
+    def test_tapered_family(self):
+        self.refused(ThreadSession(), "tapered", family=NPT)
+
+    def test_a_class_fusion_will_not_build(self):
+        library = at.ThreadLibrary(Query(), Tapered(), cache={})
+
+        def broken(*args):
+            raise RuntimeError("no data")
+
+        session = ThreadSession()
+        payload = at.run_apply(session.design, None, library, broken, apply_options(), session)
+        self.assertIn("could not build", payload["refusals"][0])
+
+    def test_every_refusal_is_listed_together(self):
+        session = ThreadSession(cylinder_record(sweep=180.0, siblings=1))
+        session.design.activeEditObject = type("B", (), {"objectType": "adsk::fusion::BaseFeature", "name": "B"})()
+        payload = self.refused(session, "2.57x", family="ANSI Unified")
+        self.assertEqual(len(payload["refusals"]), 3)
+
+    def test_dry_run_adds_nothing(self):
+        session = ThreadSession()
+        payload = apply_run(session, dry_run=True)
+        self.assertEqual((payload["status"], payload["ok"], payload["dry_run"]), ("planned", True, True))
+        self.assertEqual(session.added, [])
+        self.assertEqual(payload["thread"]["designation"], "1/4-20 UNC")
+        self.assertEqual(payload["face"]["diameter_check"], "ok")
+        self.assertEqual(payload["plan"]["target"], "root/Rod")
+
+    def test_dry_run_still_refuses(self):
+        payload = self.refused(ThreadSession(cylinder_record(sweep=180.0)), "2.57x", dry_run=True)
+        self.assertTrue(payload["dry_run"])
+
+    def test_partial_thread_reports_where_it_is_measured_from(self):
+        session = ThreadSession()
+        payload = apply_run(session, full_length=False, length=0.5, offset=0.1, measured_from="low")
+        self.assertEqual((payload["thread"]["length"], payload["thread"]["offset"], payload["thread"]["measured_from"]),
+                         ("0.5 in", "0.1 in", "low"))
+        self.assertEqual(payload["face"]["axis_world"], [0.0, 0.0, 1.0])
+
+    def test_a_bad_length_expression_is_refused_before_the_add(self):
+        session = ThreadSession()
+        session.bad_values.add("depth")
+        self.refused(session, "not a valid expression", full_length=False, length_expression="depth")
+
+    def test_fusion_refusing_keeps_its_words(self):
+        session = ThreadSession()
+        session.refuse = "The thread could not be created"
+        payload = apply_run(session)
+        self.assertEqual(payload["refusals"], ["The thread could not be created"])
+        self.assertTrue(payload["baseline_token"])
+
+    def test_a_feature_that_came_back_in_error(self):
+        session = ThreadSession()
+        session.health = 2
+        self.assertEqual(apply_run(session)["status"], "refused")
+
+    def test_another_body_losing_volume_is_suspect(self):
+        session = ThreadSession()
+        session.stray = -1.0
+        payload = apply_run(session)
+        self.assertEqual(payload["status"], "suspect")
+        self.assertIn("root/Other", payload["warnings"][0])
+
+    def test_a_face_that_will_not_resolve(self):
+        session = ThreadSession()
+        session.tokens = {}
+        self.assertIn("(not_found)", apply_run(session)["refusals"][0])
+
+    def test_a_face_on_no_body(self):
+        session = ThreadSession()
+        session.face.body = ThreadBody("Stranger", 1.0)
+        self.assertIn("not on a body", apply_run(session)["refusals"][0])
+
+    def test_a_surface_body(self):
+        session = ThreadSession()
+        session.rod.isSolid = False
+        self.assertIn("surface body", apply_run(session)["refusals"][0])
+
+    def test_a_hidden_body_is_mentioned(self):
+        session = ThreadSession()
+        session.rod.isVisible = False
+        self.assertIn("hidden", " ".join(apply_run(session)["warnings"]))
+
+    def test_preflight_runs(self):
+        session = ThreadSession()
+        session.design.activeEditObject = type("B", (), {"objectType": "adsk::fusion::BaseFeature", "name": "B"})()
+        self.refused(session, "being edited")
+
+    def test_a_failed_post_check_still_says_the_thread_exists(self):
+        with mock.patch.object(at.fo, "body_changes", side_effect=KeyError("boom")):
+            payload = apply_run(ThreadSession())
+        self.assertEqual(payload["status"], "suspect")
+        self.assertIn("was added", payload["warnings"][-1])
+
+
+class ApplyHandlerTests(unittest.TestCase):
+    def call(self, session, arguments):
+        library = at.ThreadLibrary(Query(), Tapered(), cache={})
+        with mock.patch.object(at, "get_app"), mock.patch.object(at.adsk.fusion, "Design", create=True) as design, \
+                mock.patch.object(at, "open_library", return_value=library), \
+                mock.patch.object(at, "make_info", info_of), \
+                mock.patch.object(at, "FusionThread", return_value=session):
+            design.cast.return_value = session.design if session else None
+            result = at.apply_thread(arguments)
+        return result, json.loads(result["content"][0]["text"])
+
+    def test_built(self):
+        result, payload = self.call(ThreadSession(), apply_args())
+        self.assertFalse(result["isError"])
+        self.assertEqual(payload["status"], "built")
+
+    def test_suspect_is_an_error(self):
+        result, payload = self.call(ThreadSession(change=-1.0), apply_args())
+        self.assertTrue(result["isError"])
+        self.assertEqual(payload["status"], "suspect")
+
+    def test_no_design(self):
+        result, payload = self.call(None, apply_args())
+        self.assertTrue(result["isError"])
+        self.assertEqual(payload["status"], "refused")
+
+
+class FusionThreadTests(unittest.TestCase):
+    def build(self, **overrides):
+        design = mock.Mock()
+        design.unitsManager.isValidExpression.return_value = True
+        with mock.patch.object(at.FusionScene, "__init__", return_value=None):
+            session = at.FusionThread(design)
+        member = mock.Mock()
+        face = mock.Mock(nativeObject=member)
+        threads = member.body.parentComponent.features.threadFeatures
+        collection = mock.Mock()
+        locations = mock.Mock()
+        with mock.patch.object(at.adsk.core.ObjectCollection, "create", return_value=collection), \
+                mock.patch.object(at.adsk.core, "ValueInput") as values, \
+                mock.patch.object(at.adsk.fusion, "ThreadLocations", locations, create=True):
+            values.createByString.side_effect = lambda text: f"value:{text}"
+            session.add(face, "info", apply_options(**overrides))
+        return threads, collection, member, locations
+
+    def test_one_native_face_in_the_faces_component(self):
+        threads, collection, member, _ = self.build()
+        collection.add.assert_called_once_with(member)
+        threads.createInput.assert_called_once_with(collection, "info")
+        threads.add.assert_called_once_with(threads.createInput.return_value)
+
+    def test_modeled_and_full_length_are_stated(self):
+        entity = self.build(modeled=True)[0].createInput.return_value
+        self.assertIs(entity.isModeled, True)
+        self.assertIs(entity.isFullLength, True)
+
+    def test_partial(self):
+        threads, _, _, locations = self.build(full_length=False, length=0.5, offset=0.1, measured_from="low")
+        entity = threads.createInput.return_value
+        self.assertIs(entity.isFullLength, False)
+        self.assertEqual((entity.threadLength, entity.threadOffset), ("value:0.5 in", "value:0.1 in"))
+        self.assertEqual(entity.threadLocation, locations.LowEndThreadLocation)
+
+    def test_high_is_the_default_end(self):
+        threads, _, _, locations = self.build(full_length=False, length=0.5)
+        self.assertEqual(threads.createInput.return_value.threadLocation, locations.HighEndThreadLocation)
+
+    def test_handedness_falls_back_on_the_old_route(self):
+        threads = mock.Mock()
+        with mock.patch.object(at.adsk.fusion, "ThreadInfo", None, create=True), \
+                mock.patch.object(at, "_design_threads", return_value=threads):
+            info = at.make_info(True, UNIFIED, "1/4-20 UNC", "2B", False)
+        self.assertIs(info.isRightHanded, False)
 
 
 class SchemaTests(unittest.TestCase):
