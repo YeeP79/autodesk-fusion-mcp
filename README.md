@@ -310,7 +310,7 @@ New tools must use `fusion_bridge/common/` instead of private copies of its help
 | `args.py` | Typed argument checks, unknown-key rejection, `error_pair` |
 | `api.py` | `safe`, `present`, `attempt` reads; `items` (skips what it cannot read) and `strict_items` (raises); both handle count/item collections and Fusion vectors |
 | `geometry.py` | Vector math, unit conversion |
-| `bodies.py` | Body enumeration, `bbox`, `native` |
+| `bodies.py` | Body enumeration, `bbox`, `native`, box overlap and shift, BodyRef parsing and resolving, `temp_copy` |
 | `timeline.py` | Timeline health |
 | `documents.py` | Open documents, instances of a file, the event pump |
 | `cloud.py` | Cloud paths, projects, folders, files, the project tree walk |

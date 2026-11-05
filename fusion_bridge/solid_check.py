@@ -24,7 +24,7 @@ import adsk.fusion
 from .common.api import safe, strict_items
 from .common.args import is_finite_number, is_int
 from .common import geometry
-from .common.bodies import ROOT_PATH, bbox, iter_body_entries
+from .common.bodies import ROOT_PATH, bbox, bbox_overlap, bbox_shift, iter_body_entries
 from .common.geometry import UNIT_FACTORS, to_cm, unit_labels
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
@@ -341,14 +341,6 @@ def lump_problems(metrics):
 # -- Interference (pure parts) -------------------------------------------------
 
 
-def bbox_overlap(a, b, tol=0.0):
-    """True when two (min, max) boxes overlap (or touch within tol)."""
-    if a is None or b is None:
-        return True
-    (amin, amax), (bmin, bmax) = a, b
-    return all(amin[i] <= bmax[i] + tol and bmin[i] <= amax[i] + tol for i in range(3))
-
-
 def resolve_pairs(selected, pairs, entries):
     """Turn 'all' or ref pairs into entry pairs. Returns (entry_pairs, error_text)."""
     solids = [e for e in selected if e.get("is_solid", True) is not False]
@@ -412,12 +404,6 @@ def _volume_changed(before, after):
     return abs(after - before) > max(VOLUME_ABS_TOLERANCE_CM3, VOLUME_REL_TOLERANCE * abs(before))
 
 
-def _bbox_shift(before, after):
-    if before is None or after is None:
-        return None
-    return max(abs(a - b) for pb, pa in zip(before, after) for b, a in zip(pb, pa))
-
-
 def diff_snapshots(before, after, edited_component, units):
     """Compare two snapshot record maps. Returns problem rows.
 
@@ -458,7 +444,7 @@ def diff_snapshots(before, after, edited_component, units):
                              delta=to_units(delta, units, 3), percent=pct))
         if b["faces"] != a["faces"]:
             rows.append(base("face_count_changed", key, a, severity(a, False), before=b["faces"], after=a["faces"]))
-        shift = _bbox_shift(b["bbox"], a["bbox"])
+        shift = bbox_shift(b["bbox"], a["bbox"])
         if shift is not None and shift > MOVE_TOLERANCE_CM and not _volume_changed(b["volume"], a["volume"]):
             rows.append(base("body_moved", key, a, "info", max_bbox_shift=to_units(shift, units)))
     return rows

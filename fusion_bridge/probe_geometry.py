@@ -25,7 +25,7 @@ import adsk.fusion
 
 from .common.api import safe
 from .common.args import is_finite_number, is_int
-from .common.bodies import ROOT_PATH, bbox, is_hidden, iter_body_entries
+from .common.bodies import ROOT_PATH, body_entries, label, parse_body_ref, resolve_targets
 from .common.geometry import CM_PER_UNIT, along, cross, dot, from_cm, scaled, unit, xyz
 from .common.results import error_result, ok_result
 from .dispatch import get_app, log
@@ -156,10 +156,6 @@ def direction_out(v):
     return [round(c, 6) + 0.0 for c in v]
 
 
-def label(target):
-    return f"{target['occurrence_path']}/{target['body']}"
-
-
 def frame_out(center, frame, units):
     axis, reference, binormal = frame
     return {"center": point_out(center, units), "axis": direction_out(axis),
@@ -211,15 +207,12 @@ def _bodies_arg(arguments):
         return None, "Error: 'bodies' must be a non-empty array; omit it for all visible solids"
     wanted = []
     for item in value:
-        if not isinstance(item, dict) or set(item) - {"occurrence_path", "body_name", "body_index"}:
-            return None, "Error: each 'bodies' entry takes occurrence_path, body_name and optional body_index"
-        path, name, index = item.get("occurrence_path"), item.get("body_name"), item.get("body_index")
-        if not isinstance(path, str) or not path.strip() or not isinstance(name, str) or not name.strip():
-            return None, "Error: each 'bodies' entry needs a non-empty occurrence_path and body_name"
-        if index is not None and (not is_int(index) or index < 0):
-            return None, "Error: 'body_index' must be a non-negative integer"
-        if (path, name, index) not in wanted:
-            wanted.append((path, name, index))
+        try:
+            ref = parse_body_ref(item, "each 'bodies' entry")
+        except ValueError as exc:
+            return None, f"Error: {exc}"
+        if ref not in wanted:
+            wanted.append(ref)
     return wanted, None
 
 
@@ -370,42 +363,6 @@ def validate_args(arguments):
 
 
 # -- Choosing targets (no Fusion) ----------------------------------------------
-
-
-def resolve_targets(entries, wanted):
-    """Pick the bodies to sample. Returns (targets, warnings, error_payload).
-
-    Without *wanted*, every visible solid. Otherwise each request must match
-    exactly one entry; a miss or an ambiguity is refused with candidates, since
-    sampling the wrong body answers the question wrongly without looking wrong.
-    """
-    def brief(e):
-        return {"occurrence_path": e["occurrence_path"], "body_name": e["body"], "body_index": e["index"],
-                "visible": e["visible"], "solid": e["solid"]}
-
-    if wanted is None:
-        targets = [e for e in entries if e["visible"] and e["solid"]]
-        if not targets:
-            return None, [], {"error": "the active design has no visible solid bodies"}
-        return targets, [], None
-
-    targets, warnings = [], []
-    for path, name, index in wanted:
-        matches = [e for e in entries if e["occurrence_path"] == path and e["body"] == name
-                   and (index is None or e["index"] == index)]
-        if len(matches) != 1:
-            near = [e for e in entries if e["body"] == name or e["occurrence_path"] == path]
-            return None, [], {
-                "error": (f"ambiguous: several bodies match {path}/{name}; pass body_index" if matches
-                          else f"no body matches {path}/{name}"),
-                "candidates": [brief(e) for e in (matches or near)[:50]],
-            }
-        target = matches[0]
-        if target not in targets:
-            targets.append(target)
-        if not target["solid"]:
-            warnings.append(f"{label(target)} is not solid: containment and intervals are not meaningful for it")
-    return targets, warnings, None
 
 
 def match_hit(targets, path, name, point_state):
@@ -631,21 +588,6 @@ def sample(opts, targets, probe, budget):
 
 
 # -- Fusion layer --------------------------------------------------------------
-
-
-def body_entries(root):
-    """Every body in the design, read through occurrence proxies (world coordinates)."""
-    for entry in iter_body_entries(root):
-        body = entry["_body"]
-        yield {
-            "occurrence_path": entry["occurrence_path"],
-            "body": entry["body"],
-            "index": entry["index"],
-            "visible": not is_hidden(entry),
-            "solid": bool(safe(body, "isSolid", False)),
-            "bbox": bbox(body),
-            "_body": body,
-        }
 
 
 class FusionProbe:
