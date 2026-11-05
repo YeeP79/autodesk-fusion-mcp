@@ -727,9 +727,15 @@ class Job:
             self.resolved.append(row)
 
     def _read_plane(self, profiles):
+        # Profile.plane is in sketch space: its normal reads +z on every sketch, and
+        # its origin ignores the sketch plane's offset.
         plane = profiles[0].plane
-        self.origin = self._world_point(xyz(plane.origin))
-        self.normal = unit(self._world_direction(xyz(plane.normal)))
+        origin, normal = xyz(plane.origin), xyz(plane.normal)
+        tip = tuple(o + n for o, n in zip(origin, normal))
+        model_origin = xyz(self.sketch.sketchToModelSpace(self.api.point(origin)))
+        model_tip = xyz(self.sketch.sketchToModelSpace(self.api.point(tip)))
+        self.origin = self._world_point(model_origin)
+        self.normal = unit(self._world_direction(tuple(t - o for t, o in zip(model_tip, model_origin))))
         direction, side = self.request["direction"], self.request["side"]
         self.sign = 1
         if side is not None:
