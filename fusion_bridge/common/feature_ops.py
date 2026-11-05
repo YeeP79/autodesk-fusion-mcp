@@ -1,9 +1,9 @@
 """What every feature-building tool does around one write.
 
 ``preflight`` before anything changes, ``read_value`` and ``value_input`` for
-dimensions, ``add_feature`` for the add itself, ``snapshot`` and ``baseline`` to
-measure, ``undo`` to take a feature back, and ``body_changes`` and ``envelope``
-for the result. The checks are written over duck-typed objects so fakes can
+dimensions, ``anchor_points`` for helper points, ``add_feature`` for the add
+itself, ``snapshot`` and ``baseline`` to measure, ``undo`` to take a feature back,
+and ``body_changes`` and ``envelope`` for the result. The checks are written over duck-typed objects so fakes can
 drive them. Off-timeline booleans use ``common.bodies.temp_copy``.
 
 ``add_feature`` keeps a refused feature from costing a macro its earlier work:
@@ -11,6 +11,7 @@ Fusion's refusal comes back as a value. A ``TypeError`` still raises, because it
 means our call is wrong and a retry would repeat it.
 """
 
+import math
 import re
 
 import adsk.core
@@ -26,7 +27,7 @@ from .bodies import (
     store_baseline,
     volume_changed,
 )
-from .geometry import to_units, unit_labels
+from .geometry import to_units, unit_labels, xyz
 from .results import tool_result
 from .timeline import (
     HEALTH_NAMES,
@@ -48,6 +49,9 @@ READ_ONLY_WARNING = "the document is read-only: edits apply in this session but 
 # "e" is a parameter name.
 _EXPONENT = re.compile(r"(?<=[\d.])[eE][+-]?\d+")
 _BARE_NUMBER = re.compile(r"[\d\s.+\-*/^()]+")
+
+# How far an anchor may land from where it was asked for.
+ANCHOR_TOLERANCE_CM = 1e-4
 
 
 # -- Preflight ------------------------------------------------------------------
@@ -149,6 +153,62 @@ def value_input(value, units_manager, kind="cm"):
     if not units_manager.isValidExpression(value["text"], kind):
         raise ValueError(f"{value['text']!r} is not a valid expression for a value in {kind}")
     return adsk.core.ValueInput.createByString(value["text"])
+
+
+# -- Anchors --------------------------------------------------------------------
+
+
+def _anchor_row(sketch, point, plane=None):
+    row = {"sketch": safe(sketch, "name"), "token": safe(point, "entityToken"),
+           "visible": safe(sketch, "isLightBulbOn")}
+    return {**row, "plane": safe(plane, "name")} if plane is not None else row
+
+
+def _held(sketch, point, wanted):
+    placed = safe(point, "geometry")
+    return placed is not None and math.dist(xyz(sketch.sketchToModelSpace(placed)), wanted) <= ANCHOR_TOLERANCE_CM
+
+
+def _anchor_alone(component, point, name, show, make):
+    """One point on a sketch of its own, on a plane at its height: the form known to work."""
+    entry = component.constructionPlanes.createInput()
+    entry.setByOffset(component.xYConstructionPlane, adsk.core.ValueInput.createByReal(point[2]))
+    plane = component.constructionPlanes.add(entry)
+    plane.name = f"{name}_plane"
+    plane.isLightBulbOn = show
+    sketch = component.sketches.add(plane)
+    sketch.name = name
+    sketch.isLightBulbOn = show
+    spot = sketch.modelToSketchSpace(make(*point))
+    return sketch.sketchPoints.add(make(spot.x, spot.y, 0.0)), sketch, plane
+
+
+def anchor_points(component, points, name, show=False, make=None):
+    """Sketch points at *points*, for a definition that needs entities and not coordinates.
+
+    Fusion refuses a construction point at fixed coordinates in a parametric
+    design, so a sketch point is the only legal handle on a place in space.
+    *points* are in *component*'s space, in cm, and each sketch is named from
+    *name* with its light bulb off unless *show*. Returns ``{"points", "rows",
+    "unused"}``.
+
+    All the points go in one sketch, keeping sketch-space z. If that sketch does
+    not hold them where asked, each gets its own plane and sketch. The first
+    sketch then anchors nothing and is reported in ``unused``, because this
+    function never deletes: an anchor removed takes its plane with it, and every
+    profile sketched on that plane.
+    """
+    make = make or adsk.core.Point3D.create
+    sketch = component.sketches.add(component.xYConstructionPlane)
+    sketch.name = f"{name}_anchors"
+    sketch.isLightBulbOn = show
+    placed = [sketch.sketchPoints.add(sketch.modelToSketchSpace(make(*point))) for point in points]
+    if all(_held(sketch, spot, point) for spot, point in zip(placed, points)):
+        return {"points": placed, "rows": [_anchor_row(sketch, spot) for spot in placed], "unused": []}
+    alone = [_anchor_alone(component, point, f"{name}_anchors_{i}", show, make) for i, point in enumerate(points, 1)]
+    return {"points": [spot for spot, _, _ in alone],
+            "rows": [_anchor_row(own, spot, plane) for spot, own, plane in alone],
+            "unused": [safe(sketch, "name")]}
 
 
 # -- Adding a feature -----------------------------------------------------------

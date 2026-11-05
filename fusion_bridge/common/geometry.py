@@ -6,6 +6,9 @@ import math
 UNIT_FACTORS = {"in": 1.0 / 2.54, "cm": 1.0, "mm": 10.0}
 CM_PER_UNIT = {"in": 2.54, "cm": 1.0, "mm": 0.1}
 DIGITS = 5
+COLLINEAR_SINE = 1e-6
+SAME_PLANE_CM = 1e-4
+SAME_PLANE_DOT = 1.0 - 1e-9
 
 
 # -- Vectors -------------------------------------------------------------------
@@ -51,6 +54,52 @@ def to_local(point, frame):
     origin, *axes = frame
     offset = sub(point, origin)
     return tuple(dot(offset, axis) for axis in axes)
+
+
+def perpendicular_pair(direction):
+    """Two unit vectors spanning the plane normal to *direction*; None for a zero vector.
+
+    ``cross(first, second)`` is the normal. The seed is the world axis least along
+    the normal: a cross product vanishes between parallel vectors, and that axis
+    is at least 54.7 degrees off any direction.
+    """
+    normal = unit(direction)
+    if normal is None:
+        return None
+    seed = [0.0, 0.0, 0.0]
+    seed[min(range(3), key=lambda axis: abs(normal[axis]))] = 1.0
+    across = unit(cross(seed, normal))
+    return across, cross(normal, across)
+
+
+def rotate_about(vector, axis, angle_deg):
+    """*vector* turned right-handed about unit *axis* through the origin (Rodrigues)."""
+    angle = math.radians(angle_deg)
+    cosine, sine = math.cos(angle), math.sin(angle)
+    return add(add(scaled(vector, cosine), scaled(cross(axis, vector), sine)),
+               scaled(axis, dot(axis, vector) * (1.0 - cosine)))
+
+
+def collinear(a, b, c, sine_limit=COLLINEAR_SINE):
+    """Do three points lie on a line, coincident ones included?
+
+    Judged on the sine of the angle at *a*, so the size of the triangle does not
+    matter: three points a micron apart can still define a plane, and three a
+    meter apart in a line cannot.
+    """
+    first, second = unit(sub(b, a)), unit(sub(c, a))
+    if first is None or second is None:
+        return True
+    turn = cross(first, second)
+    return math.sqrt(dot(turn, turn)) <= sine_limit
+
+
+def same_plane(point_a, normal_a, point_b, normal_b, distance_cm=SAME_PLANE_CM, parallel_dot=SAME_PLANE_DOT):
+    """Are two ``(point, normal)`` planes one plane? Normals may run opposite ways."""
+    first, second = unit(normal_a), unit(normal_b)
+    if first is None or second is None or abs(dot(first, second)) < parallel_dot:
+        return False
+    return abs(dot(sub(point_b, point_a), first)) <= distance_cm
 
 
 # -- Units ---------------------------------------------------------------------

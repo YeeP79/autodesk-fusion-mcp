@@ -63,6 +63,7 @@ class ToolSurfaceTests(unittest.TestCase):
         "compare_files",
         "compare_bodies",
         "combine_bodies",
+        "construction_plane",
         "apply_thread",
     }
 

@@ -12,6 +12,57 @@ import _fusion_test_bootstrap  # noqa: F401
 from fusion_bridge.common import api, app_log, args, bodies, cloud, documents, geometry, results, timeline
 
 
+class PlaneGeometryTests(unittest.TestCase):
+    def assert_close(self, a, b):
+        for x, y in zip(a, b):
+            self.assertAlmostEqual(x, y, places=9)
+
+    def test_perpendicular_pair_on_axes_and_oblique(self):
+        for normal in ((0, 0, 1), (0, 0, -2), (1, 0, 0), (0, 1, 0), (1, 1, 1), (0, 0.5, 0.866), (-3, 2, 0.1)):
+            with self.subTest(normal=normal):
+                first, second = geometry.perpendicular_pair(normal)
+                axis = geometry.unit(normal)
+                self.assertAlmostEqual(geometry.dot(first, first), 1.0)
+                self.assertAlmostEqual(geometry.dot(second, second), 1.0)
+                self.assertAlmostEqual(geometry.dot(first, second), 0.0)
+                self.assertAlmostEqual(geometry.dot(first, axis), 0.0)
+                self.assert_close(geometry.cross(first, second), axis)
+
+    def test_perpendicular_pair_zero(self):
+        self.assertIsNone(geometry.perpendicular_pair((0, 0, 0)))
+
+    def test_rotate_about(self):
+        z = (0.0, 0.0, 1.0)
+        self.assert_close(geometry.rotate_about((1.0, 0.0, 0.0), z, 0), (1, 0, 0))
+        self.assert_close(geometry.rotate_about((1.0, 0.0, 0.0), z, 90), (0, 1, 0))
+        self.assert_close(geometry.rotate_about((1.0, 0.0, 0.0), z, 180), (-1, 0, 0))
+        self.assert_close(geometry.rotate_about((1.0, 0.0, 0.0), z, -90), (0, -1, 0))
+
+    def test_rotate_about_leaves_the_axis_alone(self):
+        self.assert_close(geometry.rotate_about((0.0, 0.0, 2.0), (0.0, 0.0, 1.0), 37), (0, 0, 2))
+
+    def test_collinear_threshold(self):
+        a, b = (0, 0, 0), (10, 0, 0)
+        self.assertTrue(geometry.collinear(a, b, (20, 0, 0)))
+        self.assertTrue(geometry.collinear(a, b, (20, 1e-6, 0)))
+        self.assertFalse(geometry.collinear(a, b, (20, 1e-3, 0)))
+
+    def test_collinear_ignores_size(self):
+        self.assertFalse(geometry.collinear((0, 0, 0), (1e-4, 0, 0), (0, 1e-4, 0)))
+
+    def test_coincident_points_are_collinear(self):
+        self.assertTrue(geometry.collinear((1, 1, 1), (1, 1, 1), (2, 0, 0)))
+        self.assertTrue(geometry.collinear((1, 1, 1), (2, 0, 0), (1, 1, 1)))
+
+    def test_same_plane(self):
+        up = (0, 0, 1)
+        self.assertTrue(geometry.same_plane((0, 0, 1), up, (5, -3, 1), up))
+        self.assertTrue(geometry.same_plane((0, 0, 1), up, (5, -3, 1), (0, 0, -1)))
+        self.assertFalse(geometry.same_plane((0, 0, 1), up, (0, 0, 1.01), up))
+        self.assertFalse(geometry.same_plane((0, 0, 0), up, (0, 0, 0), (0, 0.01, 1)))
+        self.assertFalse(geometry.same_plane((0, 0, 0), (0, 0, 0), (0, 0, 0), up))
+
+
 class ResultsTests(unittest.TestCase):
     def text(self, result):
         return result["content"][0]["text"]
