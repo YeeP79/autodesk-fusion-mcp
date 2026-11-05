@@ -244,8 +244,8 @@ def _without_kept_tools(bodies, tools, keep_tools):
     """The feature's result bodies: a kept tool is not a result."""
     if not keep_tools:
         return bodies
-    names = {safe(tool["body"], "name") for tool in tools}
-    return [body for body in bodies if safe(body, "name") not in names]
+    kept = [native(tool["_body"]) for tool in tools]
+    return [body for body in bodies if not any(same_entity(native(body), tool) for tool in kept)]
 
 
 def _entry_of(body, entries, path):

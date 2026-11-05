@@ -672,11 +672,15 @@ class KeptToolResultTests(unittest.TestCase):
 
     def test_kept_tool_is_not_a_result(self):
         plate, tube = self._Body("Plate"), self._Body("Tube")
-        self.assertEqual(cb._without_kept_tools([plate, tube], [{"body": tube}], True), [plate])
+        self.assertEqual(cb._without_kept_tools([plate, tube], [{"body": "Tube", "_body": tube}], True), [plate])
+
+    def test_a_result_sharing_a_tools_name_stays(self):
+        result, tool = self._Body("Tube"), self._Body("Tube")
+        self.assertEqual(cb._without_kept_tools([result, tool], [{"body": "Tube", "_body": tool}], True), [result])
 
     def test_nothing_is_dropped_when_tools_are_consumed(self):
         plate = self._Body("Plate")
-        self.assertEqual(cb._without_kept_tools([plate], [{"body": self._Body("Tube")}], False), [plate])
+        self.assertEqual(cb._without_kept_tools([plate], [{"body": "Tube", "_body": self._Body("Tube")}], False), [plate])
 
 
 if __name__ == "__main__":
