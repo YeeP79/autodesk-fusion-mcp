@@ -76,6 +76,8 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `set_viewport` | Standard views, projection, orbit, pan, zoom, fit and camera restoration |
 | `get_active_selection` | Get objects currently selected in the viewport |
 | `manage_annotations` | List, claim, complete or release session-only selection annotations |
+| `save_document` | Save with a version comment and verify a new cloud version actually landed (diagnoses stalled saves) |
+| `open_document` | Open a cloud file by id or project path, reusing an already-open instance |
 | `fetch_api_documentation` | Search Fusion API metadata via runtime introspection |
 | `fetch_online_documentation` | Fetch Autodesk cloudhelp docs for a class/member |
 | `fetch_design_guide` | Read the bundled design guide |
