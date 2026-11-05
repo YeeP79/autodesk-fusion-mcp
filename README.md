@@ -83,6 +83,8 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 | `load_script` | Load a previously saved script |
 | `list_scripts` | List saved scripts with metadata |
 | `delete_script` | Delete a saved script |
+| `timeline_insert` | Run Python with the marker rolled back before a named timeline item, then always restore it and report what changed (dry run by default) |
+| `compare_files` | Compare two design files by occurrences, bodies, volume, component names and timeline length, closing only what it opened |
 
 ### Generic API example
 

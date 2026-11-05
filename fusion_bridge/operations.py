@@ -8,10 +8,12 @@ import adsk.core
 
 from . import (
     annotations,
+    compare_files,
     doc_lookup,
     python_exec,
     script_store,
     selection,
+    timeline_insert,
     tool_surface,
     value_builders,
     viewport,
@@ -151,4 +153,6 @@ TOOL_HANDLERS = tool_surface.build_tool_handlers(
     delete_script=_wrap(script_store.delete_script),
     get_active_selection=_wrap(selection.get_active_selection),
     manage_annotations=_wrap(annotations.manage_annotations),
+    timeline_insert=_wrap(timeline_insert.timeline_insert),
+    compare_files=_wrap(compare_files.compare_files),
 )
