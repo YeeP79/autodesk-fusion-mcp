@@ -226,7 +226,9 @@ TOOL_DEFINITIONS = [
             "method per feature tool (find_entities, sketch_profile, extrude_profile, edge_treatment, "
             "pattern_features, combine_bodies, construction_plane, apply_thread, compare_bodies, "
             "check_solids): keyword arguments as in the tool, from_ for from, and the payload back as a "
-            "dict. A refused tool does not raise: read status and ok."
+            "dict. A refused tool does not raise: read status and ok. macros has bored_boss, flanged_plate, "
+            "gusset and drilled_hole, built from those: keyword arguments, and a result with status, ok, "
+            "steps and built; ok is true only when every step was."
         ),
         "inputSchema": {
             "type": "object",
