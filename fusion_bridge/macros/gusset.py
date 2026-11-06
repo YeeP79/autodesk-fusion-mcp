@@ -170,6 +170,7 @@ def parse(arguments):
     args["fillet_radius"], args["fillet_points"] = _fillet(arguments)
     args["body_name"] = _name(arguments, "body_name", "Gusset")
     args["plane_name"] = _name(arguments, "plane_name", f"{args['body_name']} plane")
+    args["unique_plane"] = arguments.get("plane_name") is None
     return args
 
 
@@ -201,7 +202,8 @@ def build(run, args):
                             "tip_a": list(outline[1]), "tip_b": list(outline[2])}
     where = st.placement(body_a)
     plane = run.tool("plane", "construction_plane", mode="point_normal", name=args["plane_name"],
-                     point=list(frame["corner"]), normal=list(frame["normal"]), **where)
+                     unique_name=args["unique_plane"], point=list(frame["corner"]), normal=list(frame["normal"]),
+                     **where)
     sketch = run.tool("outline", "sketch_profile", action="closed_polyline", space="world",
                       plane_entity_token=plane["plane"]["token"], points=[list(p) for p in outline], **where)
     plate = run.tool("plate", "extrude_profile", sketch_token=sketch["sketch"]["entity_token"], profile_select="only",

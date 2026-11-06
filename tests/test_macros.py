@@ -780,6 +780,7 @@ class GussetTests(MacroCase):
         plane_call = tools.named("construction_plane")[0]
         self.assertEqual(plane_call["mode"], "point_normal")
         self.assertEqual(plane_call["name"], "Gusset plane")
+        self.assertIs(plane_call["unique_name"], True)
         self.assertEqual(plane_call["point"], [0.0, 2.0, 0.0])
         self.assertEqual(plane_call["normal"], [0.0, -1.0, 0.0])
         outline = tools.named("sketch_profile")[0]

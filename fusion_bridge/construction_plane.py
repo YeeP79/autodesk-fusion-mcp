@@ -79,7 +79,8 @@ _MODE_KEYS = {
     "angle": _PARENT_KEYS | {"axis", "angle_deg", "angle_expression"},
     "point_normal": {"point", "normal"},
 }
-_COMMON_KEYS = {"mode", "name", "component", "occurrence_path", "reuse_existing", "show_anchors", "units", "dry_run"}
+_COMMON_KEYS = {"mode", "name", "component", "occurrence_path", "reuse_existing", "unique_name", "show_anchors", "units",
+                "dry_run"}
 _ALL_MODE_KEYS = set().union(*_MODE_KEYS.values())
 
 # Three points a micron apart describe a plane in theory and a numerically hopeless
@@ -170,6 +171,7 @@ def validate_args(arguments):
     opts = {"mode": mode, "name": text_arg(arguments, "name", required=True).strip(), "units": units,
             "component": component, "occurrence_path": occurrence_path,
             "reuse_existing": bool_arg(arguments, "reuse_existing", True),
+            "unique_name": bool_arg(arguments, "unique_name", False),
             "show_anchors": bool_arg(arguments, "show_anchors", False),
             "dry_run": bool_arg(arguments, "dry_run", False)}
     if mode == "offset":
@@ -475,6 +477,8 @@ def run(design, document, opts, layer):
         return fo.refused(units, refusals, dry_run=dry_run, warnings=warnings)
 
     existing = find_existing(layer.planes(), plan) if opts["reuse_existing"] else None
+    if existing is None and opts["unique_name"]:
+        opts = {**opts, "name": free_name(opts["name"], layer.has_plane_named)}
     if existing is None and layer.has_plane_named(opts["name"]):
         return fo.refused(units, [f"a plane named {opts['name']!r} already exists in {layer.component_name!r}, "
                                   "and it is not one this call can reuse; pick another name"],
@@ -501,6 +505,16 @@ def _owner(entity):
         return safe(context, "component")
     return present(safe(entity, "body"), "parentComponent",
                    present(safe(entity, "parentSketch"), "parentComponent", safe(entity, "component")))
+
+
+def free_name(name, taken):
+    """*name*, or the first of ``<name> 2``, ``<name> 3``... that *taken* does not hold."""
+    number = 1
+    candidate = name
+    while taken(candidate):
+        number += 1
+        candidate = f"{name} {number}"
+    return candidate
 
 
 def prepare_entities(entities, component, occurrence):
