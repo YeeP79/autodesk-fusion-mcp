@@ -17,6 +17,9 @@ _MAX_FOLDER_DEPTH = 64
 
 READ_ONLY_WARNING = "active document is read-only: saves will not stick"
 UNSAVED_WARNING = "active document has unsaved changes"
+# Seen live twice: a tab loaded through its parent saved nothing while Save returned True.
+HELD_BY_PARENT_WARNING = ("active document is linked by open document(s) {parents}: edits in this tab may not save. "
+                          "Close them and open this file on its own before editing it")
 NO_ACTIVE_WARNING = "no document is active"
 DUPLICATE_WARNING = (
     "{count} open instances of {name!r} (DataFile {file_id}, loaded versions {versions}): "
@@ -158,6 +161,8 @@ def status_warnings(infos):
         warnings.append(READ_ONLY_WARNING)
     if active.get("is_modified") is True:
         warnings.append(UNSAVED_WARNING)
+    if active.get("referenced_by"):
+        warnings.append(HELD_BY_PARENT_WARNING.format(parents=", ".join(active["referenced_by"])))
     return warnings
 
 
@@ -244,6 +249,7 @@ def activate_document(arguments):
                 "candidates": [_candidate(infos[i]) for i in matches],
             }, True)
 
+        attach_references(infos, [referenced_ids(doc) for doc in docs])
         target = docs[matches[0]]
         was_active = infos[matches[0]]["is_active"]
         if not was_active and not target.activate():
@@ -253,6 +259,7 @@ def activate_document(arguments):
         active = describe_document(active_doc) if active_doc is not None else None
         if active is not None:
             active["is_active"] = True  # it is app.activeDocument, whatever isActive says
+            active["referenced_by"] = infos[matches[0]]["referenced_by"]
         result = {
             "already_active": was_active,
             "active_document": active,

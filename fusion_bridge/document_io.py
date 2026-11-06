@@ -45,7 +45,8 @@ _LOG_TS = re.compile(r"^(\d{8}T\d{6})\s")
 _INSTANCE_SUFFIX = re.compile(r"\((\d+)\)(?:\s+v\d+)?\s*$")
 
 STUCK_INSTANCE_FIX = (
-    "Close the stuck document tab WITHOUT saving, reopen the file fresh (open_document), "
+    "Close any open document that links this file, close the stuck tab WITHOUT saving, reopen "
+    "the file fresh on its own (open_document), "
     "redo the edit, then save again. Closing also closes documents it links, so save or "
     "note those first. This tool never closes anything itself."
 )
