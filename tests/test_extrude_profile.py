@@ -1232,7 +1232,7 @@ class Occurrences(FusionStubs):
         self.assertEqual(result["extrude"]["through_all_route"], "measured")
         self.assertEqual(self.sub.extrudes.inputs[-1].extent[0], "one")
         self.assertEqual(self.sub.extrudes.inputs[-1].extent[1].value.text.split()[1], "in")
-        self.assertEqual(len(self.sub.extrudes.inputs), 2)
+        self.assertEqual(len(self.sub.extrudes.inputs), 3)  # the plan's, the refused add, the retry
         self.assertTrue(any("measured distance" in w for w in result["warnings"]))
 
     def test_both_sides_becomes_two_measured_distances(self):
