@@ -1725,6 +1725,8 @@ TOOL_DEFINITIONS = [
                 "point": {**NUMBERS_SCHEMA, "description": "point_normal: world [x, y, z] on the plane."},
                 "normal": {**NUMBERS_SCHEMA, "description": "point_normal: [x, y, z]."},
                 "reuse_existing": {"type": "boolean", "description": "Default true."},
+                "unique_name": {"type": "boolean",
+                                "description": "A taken name gets ' 2', ' 3' instead of a refusal. Default false."},
                 "show_anchors": {"type": "boolean", "description": "Light bulb on for the anchors. Default false."},
                 "units": {"type": "string", "enum": ["in", "cm", "mm"], "description": "Default in."},
                 "dry_run": {"type": "boolean", "description": "Default false."},

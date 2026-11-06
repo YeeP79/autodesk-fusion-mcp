@@ -816,5 +816,14 @@ def safe_path(occurrence):
     return occurrence.fullPathName if occurrence else None
 
 
+class FreeNameTests(unittest.TestCase):
+    def test_a_free_name_is_kept(self):
+        self.assertEqual(cp.free_name("P", lambda name: False), "P")
+
+    def test_a_taken_name_gets_the_next_number(self):
+        taken = {"P", "P 2"}
+        self.assertEqual(cp.free_name("P", taken.__contains__), "P 3")
+
+
 if __name__ == "__main__":
     unittest.main()
