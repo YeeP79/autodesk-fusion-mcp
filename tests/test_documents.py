@@ -192,6 +192,18 @@ class DocumentStatusTests(unittest.TestCase):
         self.assertEqual(body(self.status())["warnings"],
                          [documents.READ_ONLY_WARNING, documents.UNSAVED_WARNING])
 
+    def test_the_active_document_held_by_a_parent_warns(self):
+        info = {"name": "Stock", "is_active": True, "data_file": {"is_read_only": False}, "is_modified": False,
+                "referenced_by": ["Assembly", "Other"]}
+        warning = documents.status_warnings([info])[0]
+        self.assertIn("Assembly, Other", warning)
+        self.assertIn("on its own", warning)
+
+    def test_an_active_document_nothing_links_does_not_warn(self):
+        info = {"name": "Stock", "is_active": True, "data_file": {"is_read_only": False}, "is_modified": False,
+                "referenced_by": []}
+        self.assertEqual(documents.status_warnings([info]), [])
+
     def test_unknown_read_only(self):
         self.assembly.dataFile = SimpleNamespace(id="f-frame", name="Frame", parentFolder=ROOT)
         result = body(self.status())
